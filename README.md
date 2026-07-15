@@ -30,193 +30,61 @@ pi 0.74.0 or newer. pi renamed its npm scope from `@mariozechner/*` to `@earendi
 
 ## Configuration
 
-Set in `.pi/settings.json` or `~/.pi/settings.json`:
+Open the Claudify screen with `/claudify`. From the Hub, use the arrow keys to choose a Section and press Enter to open it. Press Esc to return to the Hub, then Esc again to close the screen.
 
-```json
-{
-  "toolBackground": "transparent",
-  "readOutputMode": "preview",
-  "searchOutputMode": "preview",
-  "mcpOutputMode": "preview",
-  "previewLines": 8,
-  "bashOutputMode": "opencode",
-  "bashCollapsedLines": 10,
-  "bashStackConsecutive": true,
-  "bashSemanticDisplay": true,
-  "readOnlyToolGrouping": true,
-  "readOnlyToolGroupLimit": 5,
-  "diffCollapsedLines": 24,
-  "themeAdaptive": true,
-  "diffPalette": "claude",
-  "toolChrome": "claude",
-  "diffTheme": "monokai",
-  "spinnerColor": "borderAccent",
-  "spinnerVerbs": ["Reviewing", "Polishing"],
-  "spinnerVerbMode": "append",
-  "messageStyle": "claude",
-  "assistantPrefix": "⏺",
-  "thinkingPrefix": "✻",
-  "messageSpacing": "comfortable",
-  "hiddenThinkingLabel": "Pondering...",
-  "workedVerbs": ["Hacked", "Tinkered"],
-  "workedVerbMode": "append"
-}
-```
+Most rows save as soon as they change. Pickers preview the highlighted choice live; Enter commits it, while Esc cancels the preview and restores the saved value.
 
-### Theme integration
+### Sections
 
-When `themeAdaptive` is `true` (the default), these colors are derived from the active pi theme on every render and re-derived whenever the theme changes:
+#### Theme
 
-| Element | Derived from |
-|---------|--------------|
-| Tool outline borders (top/bottom rules) | `borderMuted` |
-| Branch connectors (`├─`, `└─`, `│`) | `dim` (fallback: `muted`) |
-| "✻ Cooked for 8s" worked line | `muted` |
-| Thinking-block italic gray | `muted` |
-| Diff add/remove accents | `toolDiffAdded` / `toolDiffRemoved` (only when `diffPalette: "theme"`) |
-| Diff background tints | mixed against `toolSuccessBg` base (only when `diffPalette: "theme"`) |
-| Spinner glyph + verb text (`✻ Working…`) | `borderAccent` (fallback: `accent`) |
-| Spinner status text | `muted` |
+- **Adaptive colors** (`themeAdaptive`) controls whether borders, connectors, spinner accents, and eligible diff colors follow the active pi theme.
+- **Diff palette** (`diffPalette`) switches between the fixed Claude Code palette and theme-derived diff colors.
+- **Tool chrome** (`toolChrome`) switches between Claude-style status bullets and pi theme accents.
+- **Diff theme** (`diffTheme`) is a live-preview Picker over the available diff presets.
 
-User-supplied `diffTheme` presets and `diffColors` overrides always win over theme-derived defaults. File-type icons (`ts`, `py`, `rs`, and so on) keep their language-identity colors.
+#### Diffs
 
-Set `themeAdaptive: false` to keep the fixed Claude-style palette no matter which pi theme is active.
+- **Collapsed diff lines** (`diffCollapsedLines`) sets how many diff lines remain visible before a diff collapses.
 
-### Tool row chrome
+#### Spinner
 
-`toolChrome` defaults to `"claude"`, which mirrors how Claude Code signals what a tool is doing and whether it worked:
+- **Spinner color** (`spinnerColor`) and **Status color** (`spinnerStatusColor`) are live-preview Pickers over pi theme color keys.
+- **While working** edits the present-tense Spinner verb pool (`spinnerVerbs`) used in lines such as `✻ Reviewing…`.
+- **After finishing** edits the past-tense Worked verb pool (`workedVerbs`) used in lines such as `✻ Polished for 8s`.
 
-- The bullet carries the status. `⏺` is gray while the tool runs and turns green once it actually succeeded, or red on failure. It is the only color in the row.
-- File paths are clickable, not colored. Paths are wrapped in OSC 8 hyperlinks (`file://…`), so a supporting terminal (iTerm2, WezTerm, Ghostty, Kitty, VS Code) opens the file on click.
-- The tool name is bold in the default foreground, and the parens are plain.
-- Result rows bold the load-bearing facts, meaning the line counts and the path, with the `⎿` gutter in gray.
+Each verb editor has a mode row for **append** versus **replace**, an **Add…** row for new verbs or phrases, and removal with Backspace or Delete. Append mode combines custom verbs with the built-in pool; replace mode uses only custom verbs, with a safe fallback to the built-ins when the custom list is empty.
 
-Terminals without OSC 8 support ignore the escape and show the plain path. The links are zero-width, so they never affect wrapping or alignment.
+#### Messages
 
-Set `toolChrome: "theme"` to go back to accent-tinted arguments and a themed tool title.
+- **Message style** (`messageStyle`) chooses Claude-style or classic transcript rhythm.
+- **Assistant prefix** (`assistantPrefix`) and **Thinking prefix** (`thinkingPrefix`) control the visible message glyphs or text.
+- **Message spacing** (`messageSpacing`) chooses compact or comfortable paragraph spacing.
+- **Hidden thinking label** (`hiddenThinkingLabel`) controls the text shown when thinking content is collapsed.
 
-### Diff palette
+#### Tool output
 
-`diffPalette` defaults to `"claude"`: diffs render exactly as Claude Code does. Always unified, no box chrome, and a fixed palette taken from Claude Code's own output (removed `#3D0100` on `#DC5A5A`, added `#022800` on `#50C850`, with brighter backgrounds on the changed token). Pair it with `diffTheme: "monokai"` for Claude's syntax colors.
+- **Tool background** (`toolBackground`) chooses standard pi backgrounds, transparent rows, or outlined rows.
+- **MCP output** (`mcpOutputMode`) and **Bash output** (`bashOutputMode`) control their collapsed presentation.
+- **Preview lines** (`previewLines`) and **Collapsed Bash lines** (`bashCollapsedLines`) set collapsed preview counts.
+- **Stack consecutive Bash** (`bashStackConsecutive`) and **Semantic Bash display** (`bashSemanticDisplay`) control Bash row layout and read-only command labeling.
+- **Group read-only tools** (`readOnlyToolGrouping`) and **Read-only group limit** (`readOnlyToolGroupLimit`) control inspection aggregation.
+- **Expanded preview max lines** (`expandedPreviewMaxLines`) caps fully expanded output.
 
-Set `diffPalette: "theme"` to restore the theme-derived tints and the adaptive split/unified layout.
+### Migration from 1.x
 
-#### Toggle at runtime with `/cc-theme`
+The 2.0.0 release removes the legacy runtime commands. Their settings now live here:
 
-```text
-/cc-theme           # show current setting + theme name
-/cc-theme status    # show current setting + color preview (incl. spinner)
-/cc-theme on        # follow pi theme
-/cc-theme off       # keep fixed Claude palette
-/cc-theme toggle    # flip the current value
-```
+| Removed command | Now in the `/claudify` screen |
+| --- | --- |
+| `/cc-tools <mode>` | Tool output → **Tool background** |
+| `/cc-theme on\|off` | Theme → **Adaptive colors** |
+| `/cc-spinner color\|status <key>` | Spinner → **Spinner color** / **Status color** Pickers |
+| `/cc-spinner verbs …` | Spinner → **While working** verb editor |
+| `/cc-message style\|spacing\|…-prefix\|hidden-thinking-label` | Messages → the matching rows |
+| `/cc-message verbs …` | Spinner → **After finishing** verb editor |
 
-The selection is persisted to `~/.pi/settings.json` and applied to the next rendered tool row. No restart needed.
-
-#### Repaint the spinner with `/cc-spinner`
-
-The spinner glyph and verb text (`✻ Cooking…`) share `borderAccent` by default so the working indicator reads as one unit. The status suffix (`(thinking · ↓ 10 tokens · 2s)`) follows `muted`. Use `/cc-spinner` to bind either element to any other theme color key:
-
-```text
-/cc-spinner preview                  # list every common theme key with a colored sample
-/cc-spinner color <key>              # change glyph + verb color together (e.g. thinkingHigh)
-/cc-spinner verb <key>               # alias for color, kept for older muscle memory
-/cc-spinner status <key>             # change the status suffix color
-/cc-spinner reset                    # restore color defaults (spinner=borderAccent, status=muted)
-/cc-spinner verbs list               # show custom spinner verbs and append/replace mode
-/cc-spinner verbs add Reviewing      # add a custom verb or phrase
-/cc-spinner verbs remove Reviewing   # remove a custom verb or phrase
-/cc-spinner verbs mode append        # append custom verbs to the defaults
-/cc-spinner verbs mode replace       # use only custom verbs, with safe fallback to defaults
-/cc-spinner verbs reset              # remove user custom verbs and mode
-```
-
-Color selections are persisted as `spinnerColor` / `spinnerStatusColor` in `~/.pi/settings.json` and applied on the next spinner tick. Older `spinnerVerbColor` settings still work as an alias. Custom verbs are persisted as `spinnerVerbs` and `spinnerVerbMode` and picked up at the next turn start. When both project and user spinner settings exist, project settings apply first and user settings second.
-
-#### Tune assistant/thinking transcript chrome with `/cc-message`
-
-```text
-/cc-message                              # show current message chrome settings
-/cc-message style claude                 # screenshot-style transcript rhythm
-/cc-message style classic                # older package spacing/prefix behavior
-/cc-message spacing comfortable          # keep one blank line between paragraphs
-/cc-message spacing compact              # remove blank lines inside assistant/thinking blocks
-/cc-message assistant-prefix ⏺           # set assistant paragraph prefix
-/cc-message thinking-prefix ✻            # set visible thinking prefix
-/cc-message hidden-thinking-label Pondering...
-/cc-message reset                        # restore message chrome defaults
-```
-
-`messageStyle: "claude"` trims leading and trailing blank render lines, collapses paragraph gaps, and aligns wrapped assistant and thinking lines under the message body, matching Claude Code's sparse transcript grammar. `messageStyle: "classic"` keeps the previous package behavior.
-
-#### Custom worked verbs
-
-Each finished turn is named with a past-tense verb, like `✻ Cooked for 8s` or `✻ Sautéed for 11s`. One is picked per turn and stays stable across repaints. You can supply your own:
-
-```text
-/cc-message verbs list                   # show custom verbs, mode, and the active pool
-/cc-message verbs add Hacked             # add a verb
-/cc-message verbs add Cooked up a storm  # multi-word phrases work
-/cc-message verbs remove Hacked          # remove one
-/cc-message verbs mode replace           # use ONLY your verbs
-/cc-message verbs mode append            # add yours to the built-in pool (default)
-/cc-message verbs reset                  # back to the built-in verbs
-```
-
-Or set them directly in `settings.json`:
-
-```json
-{
-  "workedVerbs": ["Hacked", "Tinkered", "Cooked up a storm"],
-  "workedVerbMode": "replace"
-}
-```
-
-`append` (the default) merges your verbs into the built-in pool, and `replace` draws only from yours. An empty list always falls back to the built-ins, so a bad config cannot leave the worked line verbless. This one is a deliberate departure from Claude Code, which has no such setting.
-
-### Tool background modes
-
-| Value | Behavior |
-|-------|----------|
-| `default` | Standard pi tool backgrounds |
-| `transparent` | Transparent tool backgrounds |
-| `border` | Transparent backgrounds with top/bottom border lines (alias for `outlines`) |
-| `outlines` | Transparent backgrounds with top/bottom border lines |
-
-### Output modes
-
-| Setting | Values | Default |
-|---------|--------|---------|
-| `readOutputMode` | `hidden`, `summary`, `preview` | `preview` |
-| `searchOutputMode` | `hidden`, `count`, `preview` | `preview` |
-| `mcpOutputMode` | `hidden`, `summary`, `preview` | `preview` |
-| `bashOutputMode` | `opencode`, `summary`, `preview` | `opencode` |
-
-`bashOutputMode` behavior:
-
-| Value | Behavior |
-|-------|----------|
-| `opencode` | Compact status while collapsed, with a `Ctrl+O` hint for output preview on raw shell commands. Semantic read-only bash rows omit the repeated hint to stay closer to Claude Code. |
-| `summary` | Status only, with no output preview or expansion hint |
-| `preview` | Show a small output preview even while collapsed |
-
-### Boolean settings
-
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `bashStackConsecutive` | `true` | Remove the extra spacer between adjacent bash tool rows so command bursts render as a tight stack |
-| `bashSemanticDisplay` | `true` | Render common read-only shell file-inspection commands as semantic `Read` rows instead of raw `Bash` rows |
-| `readOnlyToolGrouping` | `true` | Aggregate adjacent read-only tools (`read`/`grep`/`find`/`ls`/`bash`) under one gerund header that collapses to a dim past-tense summary once they settle; mutating `write`/`edit`/`apply_patch` rows stay independent |
-
-### Numeric settings
-
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `previewLines` | `8` | Lines shown in collapsed preview mode |
-| `expandedPreviewMaxLines` | `4000` | Max lines when fully expanded |
-| `bashCollapsedLines` | `10` | Lines for collapsed bash output |
-| `diffCollapsedLines` | `24` | Diff lines before collapsing |
-| `readOnlyToolGroupLimit` | `5` | Max inspection entries shown inside a grouped read-only tool block |
+The screen writes user-scoped settings to `~/.pi/settings.json`. Settings written by 1.x remain compatible: `spinnerVerbColor` is read as `spinnerColor`, and `toolBackground: "border"` is read as `"outlines"`.
 
 ## Notes
 
