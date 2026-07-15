@@ -41,6 +41,7 @@ import {
 import * as Diff from "diff";
 import type { BundledLanguage, BundledTheme } from "shiki";
 
+import { ClaudifyScreen } from "./claudify-screen.ts";
 import {
 	describeInspectionsActive,
 	describeInspectionsDone,
@@ -4477,7 +4478,7 @@ function renderOpenAiToolResult(name: string, result: any, expanded: boolean, is
 // Extension
 // ===========================================================================
 
-export default function (pi: ExtensionAPI) {
+export default function (pi: ExtensionAPI): void {
 	patchToolRenderCacheInvalidation();
 	patchReadImageExpansion();
 	patchGlobalToolBorders();
@@ -4488,6 +4489,24 @@ export default function (pi: ExtensionAPI) {
 	patchToolExecutionRenderers();
 	applyDiffPalette();
 	registerThinkingLabels(pi);
+
+	pi.registerCommand("claudify", {
+		description: "Open the Claudify settings screen",
+		async handler(_args, ctx) {
+			if (ctx.mode !== "tui" || !ctx.hasUI) {
+				ctx.ui.notify("/claudify needs the interactive TUI", "info");
+				return;
+			}
+
+			await ctx.ui.custom<void>(
+				(tui, theme, keybindings, done) => new ClaudifyScreen(tui, theme, keybindings, () => done(undefined)),
+				{
+					overlay: true,
+					overlayOptions: { width: "100%", maxHeight: "100%", anchor: "top-left" },
+				},
+			);
+		},
+	});
 
 	// /cc-tools command — toggle tool border style at runtime
 	const TOOL_MODES = ["outlines", "transparent", "default"] as const;
