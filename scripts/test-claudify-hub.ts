@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { AssistantMessageComponent } from "@earendil-works/pi-coding-agent";
+import { Loader } from "@earendil-works/pi-tui";
 import { initTheme, theme } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 
 const sandbox = mkdtempSync(join(tmpdir(), "claudify-sections-"));
@@ -18,7 +19,7 @@ process.chdir(cwd);
 
 const { ClaudifyScreen } = await import("../extensions/claudify-screen.ts");
 const { default: extension, COMMON_COLOR_KEYS, DIFF_PRESET_KEYS } = await import("../extensions/index.ts");
-const { MAX_CUSTOM_SPINNER_VERBS, sanitizeSpinnerVerbs } = await import("../extensions/spinner.ts");
+const { default: spinnerExtension, MAX_CUSTOM_SPINNER_VERBS, sanitizeSpinnerVerbs } = await import("../extensions/spinner.ts");
 const { MAX_CUSTOM_WORKED_VERBS, sanitizeWorkedVerbs } = await import("../extensions/message-chrome.ts");
 const pickerCandidates = { diffThemes: DIFF_PRESET_KEYS, colorKeys: COMMON_COLOR_KEYS };
 
@@ -63,6 +64,20 @@ const keybindings = {
 };
 
 initTheme("dark", false);
+
+const liveLoader = new Loader(
+	{ stopped: false, theme, requestRender(): void {} } as any,
+	(value) => value,
+	(value) => value,
+	"Working…",
+);
+const initialLiveSpinner = stripAnsi(liveLoader.render(100).join("\n")).trim();
+await new Promise((resolve) => setTimeout(resolve, 300));
+const advancedLiveSpinner = stripAnsi(liveLoader.render(100).join("\n")).trim();
+liveLoader.stop();
+assert.equal(initialLiveSpinner, "· Working…", "the live Spinner starts with the captured Claude glyph");
+assert.equal(advancedLiveSpinner, "· Working…", "the live Spinner remains the static captured glyph after an animation tick");
+
 let renderRequests = 0;
 let closeCount = 0;
 const changedKeys: string[] = [];
@@ -430,6 +445,29 @@ class FakePi {
 
 const pi = new FakePi();
 extension(pi as any);
+
+const spinnerPi = new FakePi();
+spinnerExtension(spinnerPi as any);
+const spinnerWorkingMessages: Array<string | undefined> = [];
+const spinnerContext = {
+	hasUI: true,
+	ui: {
+		theme,
+		setWorkingMessage(message?: string): void {
+			spinnerWorkingMessages.push(message);
+		},
+	},
+};
+for (const handler of spinnerPi.events.get("before_agent_start") ?? []) await handler();
+for (const handler of spinnerPi.events.get("turn_start") ?? []) await handler({}, spinnerContext);
+for (const handler of spinnerPi.events.get("turn_end") ?? []) await handler({}, spinnerContext);
+assert.match(
+	stripAnsi(spinnerWorkingMessages.at(-1) ?? ""),
+	/^✻ Worked for \d+s$/,
+	"the settled worked line retains its captured thinking glyph",
+);
+for (const handler of spinnerPi.events.get("session_shutdown") ?? []) await handler();
+
 const finishedAssistant = new AssistantMessageComponent({
 	role: "assistant",
 	content: [{ type: "text", text: "Finished." }],
