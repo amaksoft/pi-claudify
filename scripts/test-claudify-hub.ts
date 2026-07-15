@@ -16,7 +16,8 @@ process.env.HOME = home;
 process.chdir(cwd);
 
 const { ClaudifyScreen } = await import("../extensions/claudify-screen.ts");
-const { default: extension } = await import("../extensions/index.ts");
+const { default: extension, COMMON_COLOR_KEYS, DIFF_PRESET_KEYS } = await import("../extensions/index.ts");
+const pickerCandidates = { diffThemes: DIFF_PRESET_KEYS, colorKeys: COMMON_COLOR_KEYS };
 
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
 
@@ -55,6 +56,8 @@ const screen = new ClaudifyScreen(
 	keybindings as any,
 	() => { closeCount += 1; },
 	(key) => { changedKeys.push(key); },
+	undefined,
+	pickerCandidates,
 );
 
 const hub = render(screen);
@@ -76,8 +79,9 @@ assert.match(movedHub, /^\s*❯ Spinner/m, "arrow navigation moves the Hub highl
 
 screen.handleInput("enter");
 const section = render(screen);
-assert.ok(section.includes("Spinner settings — coming soon"), "Enter drills into the highlighted placeholder Section");
-assert.ok(section.includes("Esc to go back"), "a placeholder Section renders its own footer");
+assert.ok(section.includes("Spinner color"), "Enter drills into the highlighted Spinner Section");
+assert.ok(section.includes("Status color"), "Spinner renders both color Picker rows");
+assert.ok(section.includes("Enter to choose · Esc to back"), "a Picker row renders its Section footer");
 assert.ok(!section.includes("Esc to close"), "a Section does not render the Hub footer");
 
 screen.handleInput("escape");
@@ -91,6 +95,8 @@ const settingsScreen = new ClaudifyScreen(
 	keybindings as any,
 	() => {},
 	(key) => { changedKeys.push(key); },
+	undefined,
+	pickerCandidates,
 );
 for (let index = 0; index < 4; index++) settingsScreen.handleInput("down");
 settingsScreen.handleInput("enter");
@@ -161,16 +167,102 @@ settingsScreen.handleInput("enter");
 assert.match(render(settingsScreen), /^\s*❯ Assistant prefix\s+◆/m, "submitting text updates the assembled render");
 assert.equal(readWrittenSettings().assistantPrefix, "◆", "sanitized text persists immediately");
 
-for (const [sectionIndex, placeholder] of [
-	[0, "Theme settings — coming soon"],
-	[1, "Diff settings — coming soon"],
-	[2, "Spinner settings — coming soon"],
-] as const) {
-	const placeholderScreen = new ClaudifyScreen({ requestRender(): void {} } as any, theme, keybindings as any, () => {});
-	for (let index = 0; index < sectionIndex; index++) placeholderScreen.handleInput("down");
-	placeholderScreen.handleInput("enter");
-	assert.ok(render(placeholderScreen).includes(placeholder), `${placeholder} remains untouched`);
+assert.deepEqual(DIFF_PRESET_KEYS, ["default", "midnight", "neon"], "the Picker consumes the renderer's exact diff preset keys");
+assert.ok(COMMON_COLOR_KEYS.includes("borderAccent") && COMMON_COLOR_KEYS.includes("muted"), "the Spinner Picker consumes the renderer's common color keys");
+
+const pickerChanges: Array<[string, unknown]> = [];
+const pickerPreviews: Array<[string, unknown]> = [];
+const pickerScreen = new ClaudifyScreen(
+	{ requestRender: () => { renderRequests += 1; } } as any,
+	theme,
+	keybindings as any,
+	() => {},
+	(key, value) => { pickerChanges.push([key, value]); },
+	(key, value) => { pickerPreviews.push([key, value]); },
+	pickerCandidates,
+);
+pickerScreen.handleInput("enter");
+let themeSection = render(pickerScreen);
+for (const label of ["Adaptive colors", "Diff palette", "Tool chrome", "Diff theme"]) {
+	assert.ok(themeSection.includes(label), `Theme renders ${label}`);
 }
+assert.doesNotMatch(themeSection, /coming soon/, "Theme no longer renders its placeholder");
+pickerScreen.handleInput("enter");
+assert.equal(readWrittenSettings().themeAdaptive, false, "Theme adaptive commits immediately");
+pickerScreen.handleInput("down");
+pickerScreen.handleInput("enter");
+assert.equal(readWrittenSettings().diffPalette, "theme", "Diff palette commits immediately");
+pickerScreen.handleInput("down");
+pickerScreen.handleInput("enter");
+assert.equal(readWrittenSettings().toolChrome, "theme", "Tool chrome commits immediately");
+pickerScreen.handleInput("down");
+pickerScreen.handleInput("enter");
+assert.ok(render(pickerScreen).includes("Enter to select · Esc to cancel"), "opening a Picker renders the captured footer");
+assert.match(render(pickerScreen), /None \(automatic\) ✔/, "the persisted unset diff theme keeps its marker");
+const beforeDiffPreview = readFileSync(settingsPath, "utf8");
+pickerScreen.handleInput("down");
+assert.deepEqual(pickerPreviews.at(-1), ["diffTheme", "default"], "moving the Picker highlight emits a live preview");
+assert.equal(readFileSync(settingsPath, "utf8"), beforeDiffPreview, "previewing a diff theme does not write settings");
+assert.match(render(pickerScreen), /^\s*❯ 2\. default/m, "the preview marker moves independently of the persisted marker");
+pickerScreen.handleInput("escape");
+assert.deepEqual(pickerPreviews.at(-1), ["diffTheme", undefined], "Esc clears the diff theme preview");
+assert.equal(readFileSync(settingsPath, "utf8"), beforeDiffPreview, "cancelling a diff theme Picker writes nothing");
+pickerScreen.handleInput("enter");
+pickerScreen.handleInput("down");
+pickerScreen.handleInput("down");
+pickerScreen.handleInput("enter");
+assert.equal(readWrittenSettings().diffTheme, "midnight", "Enter persists the highlighted diff theme");
+assert.deepEqual(pickerChanges.at(-1), ["diffTheme", "midnight"], "Picker commit notifies the host after clearing preview");
+
+const diffScreen = new ClaudifyScreen(
+	{ requestRender(): void {} } as any,
+	theme,
+	keybindings as any,
+	() => {},
+	(key) => { changedKeys.push(key); },
+	undefined,
+	pickerCandidates,
+);
+diffScreen.handleInput("down");
+diffScreen.handleInput("enter");
+assert.match(render(diffScreen), /^\s*❯ Collapsed diff lines\s+10/m, "Diffs renders its immediate-commit number row and default");
+assert.doesNotMatch(render(diffScreen), /coming soon/, "Diffs no longer renders its placeholder");
+diffScreen.handleInput("right");
+assert.equal(readWrittenSettings().diffCollapsedLines, 11, "collapsed diff lines commits immediately");
+for (let index = 0; index < 12; index++) diffScreen.handleInput("left");
+assert.equal(readWrittenSettings().diffCollapsedLines, 0, "collapsed diff lines accepts zero and clamps at its minimum");
+
+const spinnerScreen = new ClaudifyScreen(
+	{ requestRender(): void {} } as any,
+	theme,
+	keybindings as any,
+	() => {},
+	(key, value) => { pickerChanges.push([key, value]); },
+	(key, value) => { pickerPreviews.push([key, value]); },
+	pickerCandidates,
+);
+spinnerScreen.handleInput("down");
+spinnerScreen.handleInput("down");
+spinnerScreen.handleInput("enter");
+assert.match(render(spinnerScreen), /^\s*❯ Spinner color\s+borderAccent/m, "Spinner uses borderAccent as its effective default");
+assert.doesNotMatch(render(spinnerScreen), /coming soon/, "Spinner no longer renders its placeholder");
+spinnerScreen.handleInput("enter");
+const beforeSpinnerPreview = readFileSync(settingsPath, "utf8");
+spinnerScreen.handleInput("down");
+assert.deepEqual(pickerPreviews.at(-1), ["spinnerColor", "success"], "spinner highlight movement emits the selected color key");
+assert.equal(readFileSync(settingsPath, "utf8"), beforeSpinnerPreview, "spinner preview does not persist");
+spinnerScreen.handleInput("escape");
+assert.deepEqual(pickerPreviews.at(-1), ["spinnerColor", undefined], "Esc clears the spinner preview override");
+assert.equal(readFileSync(settingsPath, "utf8"), beforeSpinnerPreview, "cancelling the spinner Picker writes nothing");
+spinnerScreen.handleInput("enter");
+spinnerScreen.handleInput("down");
+spinnerScreen.handleInput("enter");
+assert.equal(readWrittenSettings().spinnerColor, "success", "Enter commits the spinner color");
+spinnerScreen.handleInput("down");
+spinnerScreen.handleInput("enter");
+spinnerScreen.handleInput("up");
+spinnerScreen.handleInput("enter");
+assert.equal(readWrittenSettings().spinnerStatusColor, "warning", "the status color Picker commits from the same candidate list");
 
 assert.ok(changedKeys.includes("toolBackground"), "commits notify the host for live side effects");
 assert.ok(changedKeys.includes("assistantPrefix"), "message commits notify the host for live side effects");

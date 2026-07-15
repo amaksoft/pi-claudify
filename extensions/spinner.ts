@@ -37,6 +37,8 @@ const CONTROL_CHARS_RE = /[\u0000-\u001F\u007F-\u009F]/g;
 // Cross-extension bust signal: /cc-spinner in index.ts bumps this counter
 // and we drop the cache when it changes.
 const SPINNER_BUST_KEY = Symbol.for("pi-claudify:spinner-settings-bust");
+const SPINNER_COLOR_PREVIEW_KEY = Symbol.for("pi-claudify:spinner-color-preview");
+const SPINNER_STATUS_COLOR_PREVIEW_KEY = Symbol.for("pi-claudify:spinner-status-color-preview");
 let _spinnerLastBust = 0;
 
 function sanitizeSpinnerVerb(value: unknown): string | null {
@@ -91,13 +93,19 @@ function readSpinnerSettings(): SpinnerSettings {
 	}
 	const raw = readSettings().values;
 	const adaptive = raw.themeAdaptive !== false;
+	const spinnerPreview = (globalThis as any)[SPINNER_COLOR_PREVIEW_KEY];
+	const statusPreview = (globalThis as any)[SPINNER_STATUS_COLOR_PREVIEW_KEY];
 	// Spinner glyph and verb share one theme color so they read as a single working indicator.
-	const verbColor = typeof raw.spinnerColor === "string" && raw.spinnerColor.length > 0
-		? raw.spinnerColor
-		: "borderAccent";
-	const statusColor = typeof raw.spinnerStatusColor === "string" && raw.spinnerStatusColor.length > 0
-		? raw.spinnerStatusColor
-		: "muted";
+	const verbColor = typeof spinnerPreview === "string" && spinnerPreview.length > 0
+		? spinnerPreview
+		: typeof raw.spinnerColor === "string" && raw.spinnerColor.length > 0
+			? raw.spinnerColor
+			: "borderAccent";
+	const statusColor = typeof statusPreview === "string" && statusPreview.length > 0
+		? statusPreview
+		: typeof raw.spinnerStatusColor === "string" && raw.spinnerStatusColor.length > 0
+			? raw.spinnerStatusColor
+			: "muted";
 	const customVerbs = Array.isArray(raw.spinnerVerbs) ? sanitizeSpinnerVerbs(raw.spinnerVerbs) : null;
 	const verbMode: SpinnerVerbMode = raw.spinnerVerbMode === "replace" ? "replace" : "append";
 	const value: SpinnerSettings = {
