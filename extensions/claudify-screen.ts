@@ -1,10 +1,6 @@
 import type { KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
 import { Container, Spacer, Text, type TUI } from "@earendil-works/pi-tui";
 
-const CLAUDE_ACCENT = "\x1b[38;2;215;119;87m";
-const CLAUDE_DIM = "\x1b[38;2;153;153;153m";
-const RESET_FOREGROUND = "\x1b[39m";
-
 export interface ClaudifySection {
 	readonly id: "theme" | "diffs" | "spinner" | "messages" | "tool-output";
 	readonly label: "Theme" | "Diffs" | "Spinner" | "Messages" | "Tool output";
@@ -26,14 +22,14 @@ type ClaudifyScreenState =
 type RenderRequester = Pick<TUI, "requestRender">;
 type ScreenKeybindings = Pick<KeybindingsManager, "matches">;
 
+// `accent | dim | text` are required core theme colors present in every loaded
+// theme, so `fg` does not throw here in normal operation. If a theme is missing
+// a core color the throw is surfaced cleanly by the command runner as a visible
+// extension error — preferable to silently rendering the wrong color. (A bare
+// catch also could not deliver theme-robustness anyway: the sibling
+// `theme.bold(...)` call in renderSection is likewise unguarded.)
 function themedText(theme: Theme, color: "accent" | "dim" | "text", text: string): string {
-	try {
-		return theme.fg(color, text);
-	} catch {
-		if (color === "accent") return `${CLAUDE_ACCENT}${text}${RESET_FOREGROUND}`;
-		if (color === "dim") return `${CLAUDE_DIM}${text}${RESET_FOREGROUND}`;
-		return text;
-	}
+	return theme.fg(color, text);
 }
 
 export class ClaudifyScreen extends Container {
