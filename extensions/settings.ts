@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { MessageSpacing, MessageStyle, WorkedVerbMode } from "./message-chrome.ts";
 
 export type SettingsSource = "user" | "project";
+export type SettingsFileStatus = "ok" | "missing" | "invalid";
 export type SpinnerVerbMode = "append" | "replace";
 
 export interface SettingsFile {
@@ -40,9 +41,21 @@ export interface SettingsFile {
 	workedVerbMode?: WorkedVerbMode;
 }
 
+export interface SettingsFileInfo {
+	path: string;
+	status: SettingsFileStatus;
+}
+
 export interface SettingsSnapshot {
 	values: SettingsFile;
 	sources: Record<string, SettingsSource>;
+	/**
+	 * Read status per settings file. An "invalid" file contributes no values,
+	 * which is indistinguishable from "missing" in `values`/`sources` alone —
+	 * consumers that surface provenance must check this to avoid claiming a
+	 * clean merge over a file that actually failed to parse.
+	 */
+	files: Record<SettingsSource, SettingsFileInfo>;
 }
 
 interface CachedSettings extends SettingsSnapshot {
@@ -53,14 +66,14 @@ interface CachedSettings extends SettingsSnapshot {
 const SETTINGS_CACHE_TTL_MS = 1_000;
 let settingsCache: CachedSettings | null = null;
 
-function readSettingsFile(path: string): Record<string, unknown> {
+function readSettingsFile(path: string): { data: Record<string, unknown>; status: SettingsFileStatus } {
+	if (!path || !existsSync(path)) return { data: {}, status: "missing" };
 	try {
-		if (!path || !existsSync(path)) return {};
 		const raw = JSON.parse(readFileSync(path, "utf8"));
-		if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
-		return raw as Record<string, unknown>;
+		if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { data: {}, status: "invalid" };
+		return { data: raw as Record<string, unknown>, status: "ok" };
 	} catch {
-		return {};
+		return { data: {}, status: "invalid" };
 	}
 }
 
@@ -79,6 +92,10 @@ function cloneSnapshot(snapshot: SettingsSnapshot): SettingsSnapshot {
 	return {
 		values: structuredClone(snapshot.values),
 		sources: { ...snapshot.sources },
+		files: {
+			user: { ...snapshot.files.user },
+			project: { ...snapshot.files.project },
+		},
 	};
 }
 
@@ -100,14 +117,20 @@ export function readSettings(): SettingsSnapshot {
 
 	const values: SettingsFile = {};
 	const sources: Record<string, SettingsSource> = {};
+	const files: Record<SettingsSource, SettingsFileInfo> = {
+		user: { path: userPath, status: "missing" },
+		project: { path: projectPath, status: "missing" },
+	};
 	for (const [source, path] of [["user", userPath], ["project", projectPath]] as const) {
-		const settings = normalizeAliases(readSettingsFile(path));
+		const { data, status } = readSettingsFile(path);
+		files[source] = { path, status };
+		const settings = normalizeAliases(data);
 		for (const [key, value] of Object.entries(settings)) {
 			values[key] = value;
 			sources[key] = source;
 		}
 	}
 
-	settingsCache = { values, sources, cacheKey, timestamp: now };
+	settingsCache = { values, sources, files, cacheKey, timestamp: now };
 	return cloneSnapshot(settingsCache);
 }

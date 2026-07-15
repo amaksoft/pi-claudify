@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { copyFileSync, existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { readFile as readFileAsync } from "node:fs/promises";
 import { extname, relative, resolve } from "node:path";
 
@@ -184,9 +184,22 @@ function writeSettingsKey(key: string, value: unknown): void {
 	const dir = `${home}/.pi`;
 	const path = `${dir}/settings.json`;
 	let settings: Record<string, unknown> = {};
+	let unparseable = false;
 	try {
 		if (existsSync(path)) settings = JSON.parse(readFileSync(path, "utf8")) ?? {};
-	} catch { /* start fresh */ }
+	} catch {
+		unparseable = true;
+	}
+	if (unparseable) {
+		// The rewrite below would replace the user's whole settings file with
+		// this single key. Keep the broken original recoverable; if even the
+		// backup fails, refuse to write.
+		try {
+			copyFileSync(path, `${path}.bak`);
+		} catch {
+			return;
+		}
+	}
 	if (value === undefined) {
 		delete settings[key];
 	} else {

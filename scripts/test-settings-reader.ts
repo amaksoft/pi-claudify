@@ -9,14 +9,18 @@ process.chdir(join(initialSandbox));
 
 const { readSettings } = await import("../extensions/settings.ts");
 
-function useSandbox(user: Record<string, unknown>, project: Record<string, unknown>) {
+function useSandbox(
+	user: Record<string, unknown> | string | null,
+	project: Record<string, unknown> | string | null,
+) {
 	const sandbox = mkdtempSync(join(tmpdir(), "cc-settings-"));
 	const home = join(sandbox, "home");
 	const cwd = join(sandbox, "project");
 	mkdirSync(join(home, ".pi"), { recursive: true });
 	mkdirSync(join(cwd, ".pi"), { recursive: true });
-	writeFileSync(join(home, ".pi", "settings.json"), JSON.stringify(user));
-	writeFileSync(join(cwd, ".pi", "settings.json"), JSON.stringify(project));
+	const serialize = (v: Record<string, unknown> | string) => (typeof v === "string" ? v : JSON.stringify(v));
+	if (user !== null) writeFileSync(join(home, ".pi", "settings.json"), serialize(user));
+	if (project !== null) writeFileSync(join(cwd, ".pi", "settings.json"), serialize(project));
 	process.env.HOME = home;
 	process.chdir(cwd);
 	return readSettings();
@@ -79,6 +83,24 @@ isolated.sources.diffColors = "project";
 const reread = readSettings();
 assert.equal(reread.values.diffColors!.added, "green", "callers cannot mutate cached settings values");
 assert.equal(reread.sources.diffColors, "user", "callers cannot mutate cached provenance");
+
+const statuses = useSandbox({ spinnerColor: "user-color" }, {});
+assert.equal(statuses.files.user.status, "ok");
+assert.equal(statuses.files.project.status, "ok");
+assert.ok(statuses.files.user.path.endsWith("/.pi/settings.json"));
+
+const brokenProject = useSandbox({ spinnerColor: "user-color" }, "{ not json");
+assert.equal(brokenProject.files.project.status, "invalid", "a malformed project file is reported, not treated as missing");
+assert.equal(brokenProject.files.user.status, "ok");
+assert.equal(brokenProject.values.spinnerColor, "user-color", "user values survive a malformed project file");
+assert.equal(brokenProject.sources.spinnerColor, "user");
+
+const arrayProject = useSandbox({}, '["spinnerColor", "red"]');
+assert.equal(arrayProject.files.project.status, "invalid", "non-object top-level JSON is invalid, not silently empty");
+
+const missingProject = useSandbox({ spinnerColor: "user-color" }, null);
+assert.equal(missingProject.files.project.status, "missing");
+assert.equal(missingProject.values.spinnerColor, "user-color");
 
 const refreshSandbox = mkdtempSync(join(tmpdir(), "cc-settings-refresh-"));
 const refreshHome = join(refreshSandbox, "home");
