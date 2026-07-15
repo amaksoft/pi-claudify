@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { readFile as readFileAsync } from "node:fs/promises";
 import { extname, relative, resolve } from "node:path";
 
@@ -48,7 +48,7 @@ import {
 	type InspectionKind,
 } from "./inspection-summary.ts";
 import { describeEdit, describeWrite, type SummaryEmphasis } from "./mutation-summary.ts";
-import { clearSettingsCache, readSettings, type SettingsFile, type SpinnerVerbMode } from "./settings.ts";
+import { readSettings, writeSettingsKey, type SettingsFile, type SpinnerVerbMode } from "./settings.ts";
 import {
 	DEFAULT_HIDDEN_THINKING_LABEL,
 	DEFAULT_USER_PREFIX,
@@ -176,40 +176,6 @@ function sanitizeSpinnerVerbs(value: unknown): string[] {
 
 function getSpinnerVerbMode(settings: SettingsFile): SpinnerVerbMode {
 	return settings.spinnerVerbMode === "replace" ? "replace" : "append";
-}
-
-function writeSettingsKey(key: string, value: unknown): void {
-	clearSettingsCache();
-	const home = process.env.HOME ?? "";
-	if (!home) return;
-	const dir = `${home}/.pi`;
-	const path = `${dir}/settings.json`;
-	let settings: Record<string, unknown> = {};
-	let unparseable = false;
-	try {
-		if (existsSync(path)) settings = JSON.parse(readFileSync(path, "utf8")) ?? {};
-	} catch {
-		unparseable = true;
-	}
-	if (unparseable) {
-		// The rewrite below would replace the user's whole settings file with
-		// this single key. Keep the broken original recoverable; if even the
-		// backup fails, refuse to write.
-		try {
-			copyFileSync(path, `${path}.bak`);
-		} catch {
-			return;
-		}
-	}
-	if (value === undefined) {
-		delete settings[key];
-	} else {
-		settings[key] = value;
-	}
-	try {
-		mkdirSync(dir, { recursive: true });
-		writeFileSync(path, JSON.stringify(settings, null, 2) + "\n");
-	} catch { /* best effort */ }
 }
 
 let toolBackgroundOverride: "default" | "transparent" | "outlines" | null = null;
@@ -4499,7 +4465,19 @@ export default function (pi: ExtensionAPI): void {
 			}
 
 			await ctx.ui.custom<void>(
-				(tui, theme, keybindings, done) => new ClaudifyScreen(tui, theme, keybindings, () => done(undefined)),
+				(tui, theme, keybindings, done) => new ClaudifyScreen(
+					tui,
+					theme,
+					keybindings,
+					() => done(undefined),
+					(key) => {
+						if (key === "toolBackground") {
+							toolBackgroundOverride = null;
+							applyToolBackgroundMode(ctx.ui.theme);
+						}
+						if (key === "hiddenThinkingLabel") applyHiddenThinkingLabel(ctx);
+					},
+				),
 				{
 					overlay: true,
 					overlayOptions: { width: "100%", maxHeight: "100%", anchor: "top-left" },

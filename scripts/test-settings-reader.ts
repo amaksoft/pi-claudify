@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -7,7 +7,7 @@ const initialSandbox = mkdtempSync(join(tmpdir(), "cc-settings-initial-"));
 process.env.HOME = join(initialSandbox, "home");
 process.chdir(join(initialSandbox));
 
-const { readSettings } = await import("../extensions/settings.ts");
+const { readSettings, writeSettingsKey } = await import("../extensions/settings.ts");
 
 function useSandbox(
 	user: Record<string, unknown> | string | null,
@@ -72,6 +72,9 @@ assert.equal(reread.values.diffColors!.added, "green", "callers cannot mutate ca
 const brokenUser = useSandbox("{ not json", { spinnerColor: "project-color" });
 assert.equal(brokenUser.file.status, "invalid", "a malformed user file is reported, not treated as missing");
 assert.deepEqual(brokenUser.values, {}, "a malformed user file contributes no values");
+writeSettingsKey("previewLines", 12);
+assert.equal(readFileSync(`${brokenUser.file.path}.bak`, "utf8"), "{ not json", "writing backs up an unparseable user file");
+assert.deepEqual(JSON.parse(readFileSync(brokenUser.file.path, "utf8")), { previewLines: 12 }, "writing replaces an unparseable file only after backup succeeds");
 
 const arrayUser = useSandbox('["spinnerColor", "red"]', {});
 assert.equal(arrayUser.file.status, "invalid", "non-object top-level JSON is invalid, not silently empty");
