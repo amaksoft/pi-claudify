@@ -50,7 +50,7 @@ interface CachedSettings extends SettingsSnapshot {
 	timestamp: number;
 }
 
-const SETTINGS_CACHE_TTL_MS = 5_000;
+const SETTINGS_CACHE_TTL_MS = 1_000;
 let settingsCache: CachedSettings | null = null;
 
 function readSettingsFile(path: string): Record<string, unknown> {

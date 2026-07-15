@@ -80,4 +80,23 @@ const reread = readSettings();
 assert.equal(reread.values.diffColors!.added, "green", "callers cannot mutate cached settings values");
 assert.equal(reread.sources.diffColors, "user", "callers cannot mutate cached provenance");
 
+const refreshSandbox = mkdtempSync(join(tmpdir(), "cc-settings-refresh-"));
+const refreshHome = join(refreshSandbox, "home");
+const refreshCwd = join(refreshSandbox, "project");
+mkdirSync(join(refreshHome, ".pi"), { recursive: true });
+mkdirSync(join(refreshCwd, ".pi"), { recursive: true });
+const refreshPath = join(refreshCwd, ".pi", "settings.json");
+writeFileSync(refreshPath, JSON.stringify({ spinnerColor: "before" }));
+process.env.HOME = refreshHome;
+process.chdir(refreshCwd);
+assert.equal(readSettings().values.spinnerColor, "before");
+writeFileSync(refreshPath, JSON.stringify({ spinnerColor: "after" }));
+const realDateNow = Date.now;
+Date.now = () => realDateNow() + 1_001;
+try {
+	assert.equal(readSettings().values.spinnerColor, "after", "same-path edits refresh after the spinner cache window");
+} finally {
+	Date.now = realDateNow;
+}
+
 console.log("settings reader tests passed");
