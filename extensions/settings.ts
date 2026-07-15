@@ -8,7 +8,7 @@ export type SpinnerVerbMode = "append" | "replace";
 
 export interface SettingsFile {
 	[key: string]: unknown;
-	toolBackground?: "default" | "transparent" | "outlines" | "border";
+	toolBackground?: "default" | "transparent" | "outlines";
 	readOutputMode?: "hidden" | "summary" | "preview";
 	searchOutputMode?: "hidden" | "count" | "preview";
 	mcpOutputMode?: "hidden" | "summary" | "preview";
@@ -28,7 +28,6 @@ export interface SettingsFile {
 	toolChrome?: "claude" | "theme";
 	themeAdaptive?: boolean;
 	spinnerColor?: string;
-	spinnerVerbColor?: string;
 	spinnerStatusColor?: string;
 	spinnerVerbs?: string[];
 	spinnerVerbMode?: SpinnerVerbMode;
@@ -54,26 +53,26 @@ interface CachedSettings extends SettingsSnapshot {
 const SETTINGS_CACHE_TTL_MS = 5_000;
 let settingsCache: CachedSettings | null = null;
 
-function readSettingsFile(path: string): SettingsFile {
+function readSettingsFile(path: string): Record<string, unknown> {
 	try {
 		if (!path || !existsSync(path)) return {};
 		const raw = JSON.parse(readFileSync(path, "utf8"));
 		if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
-		return raw as SettingsFile;
+		return raw as Record<string, unknown>;
 	} catch {
 		return {};
 	}
 }
 
-function normalizeAliases(settings: SettingsFile): SettingsFile {
+function normalizeAliases(settings: Record<string, unknown>): SettingsFile {
 	const normalized = structuredClone(settings);
 	if (!Object.prototype.hasOwnProperty.call(normalized, "spinnerColor")
 		&& Object.prototype.hasOwnProperty.call(normalized, "spinnerVerbColor")) {
-		normalized.spinnerColor = normalized.spinnerVerbColor as string;
+		normalized.spinnerColor = normalized.spinnerVerbColor;
 	}
 	delete normalized.spinnerVerbColor;
 	if (normalized.toolBackground === "border") normalized.toolBackground = "outlines";
-	return normalized;
+	return normalized as SettingsFile;
 }
 
 function cloneSnapshot(snapshot: SettingsSnapshot): SettingsSnapshot {

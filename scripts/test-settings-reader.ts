@@ -48,6 +48,13 @@ assert.equal(legacy.sources.spinnerColor, "user");
 assert.equal(legacy.values.toolBackground, "outlines", 'toolBackground: "border" remains an alias for "outlines"');
 assert.equal(legacy.sources.toolBackground, "user");
 
+const projectLegacy = useSandbox(
+	{ spinnerColor: "user-canonical" },
+	{ spinnerVerbColor: "project-legacy" },
+);
+assert.equal(projectLegacy.values.spinnerColor, "project-legacy", "a project legacy alias overrides a user canonical value");
+assert.equal(projectLegacy.sources.spinnerColor, "project");
+
 const canonical = useSandbox(
 	{
 		spinnerColor: "user-canonical",
