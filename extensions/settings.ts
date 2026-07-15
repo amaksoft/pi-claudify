@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import type { MessageSpacing, MessageStyle, WorkedVerbMode } from "./message-chrome.ts";
@@ -89,6 +89,40 @@ function cloneSnapshot(snapshot: SettingsSnapshot): SettingsSnapshot {
 
 export function clearSettingsCache(): void {
 	settingsCache = null;
+}
+
+export function writeSettingsKey(key: string, value: unknown): void {
+	clearSettingsCache();
+	const home = process.env.HOME ?? "";
+	if (!home) return;
+	const dir = join(home, ".pi");
+	const path = join(dir, "settings.json");
+	let settings: Record<string, unknown> = {};
+	let unparseable = false;
+	try {
+		if (existsSync(path)) settings = JSON.parse(readFileSync(path, "utf8")) ?? {};
+	} catch {
+		unparseable = true;
+	}
+	if (unparseable) {
+		// Refuse to replace the user's whole settings file unless the broken
+		// original remains recoverable.
+		try {
+			copyFileSync(path, `${path}.bak`);
+		} catch {
+			return;
+		}
+	}
+	settings = normalizeAliases(settings);
+	if (value === undefined) {
+		delete settings[key];
+	} else {
+		settings[key] = value;
+	}
+	try {
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(path, JSON.stringify(settings, null, 2) + "\n");
+	} catch { /* best effort */ }
 }
 
 export function readSettings(): SettingsSnapshot {

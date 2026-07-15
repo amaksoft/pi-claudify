@@ -1,13 +1,35 @@
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { initTheme, theme } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
-import { ClaudifyScreen } from "../extensions/claudify-screen.ts";
-import extension from "../extensions/index.ts";
+
+const sandbox = mkdtempSync(join(tmpdir(), "claudify-sections-"));
+const home = join(sandbox, "home");
+const cwd = join(sandbox, "project");
+const settingsPath = join(home, ".pi", "settings.json");
+mkdirSync(join(home, ".pi"), { recursive: true });
+mkdirSync(cwd, { recursive: true });
+writeFileSync(settingsPath, JSON.stringify({ spinnerVerbColor: "legacy-color", toolBackground: "border" }));
+process.env.HOME = home;
+process.chdir(cwd);
+
+const { ClaudifyScreen } = await import("../extensions/claudify-screen.ts");
+const { default: extension } = await import("../extensions/index.ts");
 
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
 
 function stripAnsi(text: string): string {
 	return text.replace(ANSI_RE, "");
+}
+
+function render(screen: InstanceType<typeof ClaudifyScreen>): string {
+	return stripAnsi(screen.render(100).join("\n"));
+}
+
+function readWrittenSettings(): Record<string, unknown> {
+	return JSON.parse(readFileSync(settingsPath, "utf8"));
 }
 
 const keybindings = {
@@ -17,6 +39,8 @@ const keybindings = {
 			|| (action === "tui.select.down" && data === "down")
 			|| (action === "tui.select.confirm" && data === "enter")
 			|| (action === "tui.select.cancel" && data === "escape")
+			|| (action === "tui.editor.cursorLeft" && data === "left")
+			|| (action === "tui.editor.cursorRight" && data === "right")
 		);
 	},
 };
@@ -24,14 +48,16 @@ const keybindings = {
 initTheme("dark", false);
 let renderRequests = 0;
 let closeCount = 0;
+const changedKeys: string[] = [];
 const screen = new ClaudifyScreen(
 	{ requestRender: () => { renderRequests += 1; } } as any,
 	theme,
 	keybindings as any,
 	() => { closeCount += 1; },
+	(key) => { changedKeys.push(key); },
 );
 
-const hub = stripAnsi(screen.render(80).join("\n"));
+const hub = render(screen);
 const sectionNames = ["Theme", "Diffs", "Spinner", "Messages", "Tool output"];
 let previousIndex = -1;
 for (const sectionName of sectionNames) {
@@ -45,20 +71,112 @@ assert.ok(hub.includes("↑/↓ to move · Enter to open · Esc to close"), "the
 
 screen.handleInput("down");
 screen.handleInput("down");
-const movedHub = stripAnsi(screen.render(80).join("\n"));
+const movedHub = render(screen);
 assert.match(movedHub, /^\s*❯ Spinner/m, "arrow navigation moves the Hub highlight");
 
 screen.handleInput("enter");
-const section = stripAnsi(screen.render(80).join("\n"));
-assert.ok(section.includes("Spinner settings — coming soon"), "Enter drills into the highlighted Section");
-assert.ok(section.includes("Esc to go back"), "a Section renders its own footer");
+const section = render(screen);
+assert.ok(section.includes("Spinner settings — coming soon"), "Enter drills into the highlighted placeholder Section");
+assert.ok(section.includes("Esc to go back"), "a placeholder Section renders its own footer");
 assert.ok(!section.includes("Esc to close"), "a Section does not render the Hub footer");
 
 screen.handleInput("escape");
-assert.match(stripAnsi(screen.render(80).join("\n")), /^\s*❯ Spinner/m, "Esc returns to the Hub and preserves its highlight");
+assert.match(render(screen), /^\s*❯ Spinner/m, "Esc returns to the Hub and preserves its highlight");
 screen.handleInput("escape");
 assert.equal(closeCount, 1, "Esc from the Hub closes the Claudify screen");
-assert.ok(renderRequests >= 4, "navigation requests TUI repaints");
+
+const settingsScreen = new ClaudifyScreen(
+	{ requestRender: () => { renderRequests += 1; } } as any,
+	theme,
+	keybindings as any,
+	() => {},
+	(key) => { changedKeys.push(key); },
+);
+for (let index = 0; index < 4; index++) settingsScreen.handleInput("down");
+settingsScreen.handleInput("enter");
+const toolOutput = render(settingsScreen);
+for (const label of [
+	"Tool background",
+	"Read output",
+	"Search output",
+	"MCP output",
+	"Bash output",
+	"Preview lines",
+	"Collapsed Bash lines",
+	"Stack consecutive Bash",
+	"Semantic Bash display",
+	"Group read-only tools",
+	"Read-only group limit",
+	"Expanded preview max lines",
+]) {
+	assert.ok(toolOutput.includes(label), `Tool output renders ${label}`);
+}
+assert.match(toolOutput, /^\s*❯ Tool background\s+outlines/m, "Tool output selects its first row and shows the effective legacy value");
+assert.doesNotMatch(toolOutput, /[╭╮╰╯│]/, "Tool output rows are unboxed");
+assert.ok(toolOutput.includes("Enter/Space to change · Esc to back"), "enum rows render the change footer");
+
+settingsScreen.handleInput("left");
+settingsScreen.handleInput("right");
+assert.match(render(settingsScreen), /^\s*❯ Tool background\s+outlines/m, "cycling an enum updates the assembled render and keeps selection");
+let written = readWrittenSettings();
+assert.equal(written.toolBackground, "outlines", "the enum persists its canonical value");
+assert.equal(written.spinnerColor, "legacy-color", "writing preserves a legacy alias value under its canonical key");
+assert.ok(!Object.hasOwn(written, "spinnerVerbColor"), "writing drops the legacy alias key");
+
+for (let index = 0; index < 7; index++) settingsScreen.handleInput("down");
+assert.match(render(settingsScreen), /^\s*❯ Stack consecutive Bash\s+true/m, "boolean navigation reaches the expected row");
+settingsScreen.handleInput("enter");
+assert.match(render(settingsScreen), /^\s*❯ Stack consecutive Bash\s+false/m, "toggling a boolean updates the assembled render");
+assert.equal(readWrittenSettings().bashStackConsecutive, false, "the boolean change persists immediately");
+
+settingsScreen.handleInput("up");
+settingsScreen.handleInput("up");
+assert.match(render(settingsScreen), /^\s*❯ Preview lines\s+8/m, "number navigation reaches the expected row and default");
+settingsScreen.handleInput("right");
+assert.match(render(settingsScreen), /^\s*❯ Preview lines\s+9/m, "adjusting a number updates the assembled render");
+assert.equal(readWrittenSettings().previewLines, 9, "the number change persists immediately");
+
+settingsScreen.handleInput("escape");
+settingsScreen.handleInput("up");
+settingsScreen.handleInput("enter");
+const messages = render(settingsScreen);
+for (const [label, value] of [
+	["Message style", "claude"],
+	["Assistant prefix", "⏺"],
+	["Thinking prefix", "✻"],
+	["Message spacing", "comfortable"],
+	["Hidden thinking label", "Pondering..."],
+]) {
+	assert.ok(messages.includes(label) && messages.includes(value), `Messages renders ${label} with its effective value`);
+}
+assert.match(messages, /^\s*❯ Message style\s+claude/m, "Messages selects its first row");
+assert.doesNotMatch(messages, /[╭╮╰╯│]/, "Messages rows are unboxed");
+
+settingsScreen.handleInput("enter");
+assert.match(render(settingsScreen), /^\s*❯ Message style\s+classic/m, "cycling a message enum updates the assembled render");
+assert.equal(readWrittenSettings().messageStyle, "classic", "the message enum persists immediately");
+settingsScreen.handleInput("down");
+settingsScreen.handleInput("enter");
+assert.ok(render(settingsScreen).includes("Type a value · Enter to save · Esc to cancel"), "a text row opens an in-component input with a stateful footer");
+settingsScreen.handleInput("◆");
+settingsScreen.handleInput("enter");
+assert.match(render(settingsScreen), /^\s*❯ Assistant prefix\s+◆/m, "submitting text updates the assembled render");
+assert.equal(readWrittenSettings().assistantPrefix, "◆", "sanitized text persists immediately");
+
+for (const [sectionIndex, placeholder] of [
+	[0, "Theme settings — coming soon"],
+	[1, "Diff settings — coming soon"],
+	[2, "Spinner settings — coming soon"],
+] as const) {
+	const placeholderScreen = new ClaudifyScreen({ requestRender(): void {} } as any, theme, keybindings as any, () => {});
+	for (let index = 0; index < sectionIndex; index++) placeholderScreen.handleInput("down");
+	placeholderScreen.handleInput("enter");
+	assert.ok(render(placeholderScreen).includes(placeholder), `${placeholder} remains untouched`);
+}
+
+assert.ok(changedKeys.includes("toolBackground"), "commits notify the host for live side effects");
+assert.ok(changedKeys.includes("assistantPrefix"), "message commits notify the host for live side effects");
+assert.ok(renderRequests >= 20, "navigation and commits request TUI repaints");
 
 class FakePi {
 	readonly tools = new Map<string, any>();
@@ -97,7 +215,9 @@ await command.handler("", {
 	mode: "tui",
 	hasUI: true,
 	ui: {
+		theme,
 		notify(): void {},
+		setHiddenThinkingLabel(): void {},
 		custom(factory: any, options: any): Promise<void> {
 			tuiCustomCalls += 1;
 			receivedOverlayOptions = options;
@@ -139,4 +259,4 @@ for (const mode of ["rpc", "json", "print"] as const) {
 	assert.deepEqual(notices, [["/claudify needs the interactive TUI", "info"]], `${mode} mode emits the TUI notice`);
 }
 
-console.log("claudify Hub tests passed");
+console.log("claudify Hub and immediate-commit Section tests passed");
