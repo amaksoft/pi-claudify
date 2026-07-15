@@ -1,6 +1,6 @@
 {
   "name": "@owlburtoe/pi-claudify",
-  "version": "1.5.1",
+  "version": "2.0.0",
   "description": "Claude Code-style tool rows for pi with Ctrl+O image previews and consistent built-in, MCP, and custom tool rendering",
   "keywords": [
     "pi-package",

@@ -18,8 +18,8 @@ const RESET = "\x1b[0m";
 let CLAUDE_ORANGE = "\x1b[38;2;215;119;87m";
 let STATUS_DIM = "\x1b[38;2;153;153;153m";
 
-// Short TTL so /cc-spinner changes are picked up within ~1s without
-// re-reading the file on every 250ms spinner tick.
+// Short TTL so Claudify screen spinner changes are picked up within ~1s
+// without re-reading the file on every 250ms spinner tick.
 type SpinnerVerbMode = "append" | "replace";
 interface SpinnerSettings {
 	adaptive: boolean;
@@ -34,8 +34,8 @@ export const MAX_CUSTOM_SPINNER_VERBS = 200;
 export const MAX_SPINNER_VERB_LENGTH = 48;
 const ANSI_ESCAPE_SEQUENCE_RE = /\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\))/g;
 const CONTROL_CHARS_RE = /[\u0000-\u001F\u007F-\u009F]/g;
-// Cross-extension bust signal: /cc-spinner in index.ts bumps this counter
-// and we drop the cache when it changes.
+// Cross-extension bust signal: the Claudify screen in index.ts bumps this
+// counter and we drop the cache when it changes.
 const SPINNER_BUST_KEY = Symbol.for("pi-claudify:spinner-settings-bust");
 const SPINNER_COLOR_PREVIEW_KEY = Symbol.for("pi-claudify:spinner-color-preview");
 const SPINNER_STATUS_COLOR_PREVIEW_KEY = Symbol.for("pi-claudify:spinner-status-color-preview");
@@ -569,7 +569,7 @@ export default function (pi: ExtensionAPI) {
 
 	function syncWorkingMessage(force = false): void {
 		if (!activeCtx?.hasUI) return;
-		// Re-derive colors on every tick so /cc-spinner color/status changes
+		// Re-derive colors on every tick so Claudify screen color/status changes
 		// take effect within ~250 ms without waiting for the next pi event.
 		// applyThemeColors is identity-cached on (theme, spinnerKey, statusKey) so
 		// this is cheap when nothing changed.
@@ -593,7 +593,7 @@ export default function (pi: ExtensionAPI) {
 	function getWorkingMessageIntervalMs(): number {
 		const elapsed = Date.now() - (agentStartTime || turnStartTime);
 		const tokenCount = Math.max(0, Math.round(responseLength / 4));
-		// Keep ticking once per second even when idle so /cc-spinner changes
+		// Keep ticking once per second even when idle so Claudify screen changes
 		// take effect within ~1s and elapsed-time crossover into the timer-on
 		// state still fires close to 30s. syncWorkingMessage short-circuits
 		// when the rendered string is unchanged, so the cost is negligible.
