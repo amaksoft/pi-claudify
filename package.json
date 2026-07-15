@@ -27,6 +27,7 @@
     "README.md",
     "config/config.example.json",
     "extensions/index.ts",
+    "extensions/claudify-screen.ts",
     "extensions/inspection-summary.ts",
     "extensions/message-chrome.ts",
     "extensions/mutation-summary.ts",
@@ -41,11 +42,12 @@
     "test:diff-body": "bun scripts/test-diff-body.ts",
     "test:inspection-summary": "bun scripts/test-inspection-summary.ts",
     "test:mutation-summary": "bun scripts/test-mutation-summary.ts",
-    "test": "bun scripts/test-settings-reader.ts && bun scripts/test-message-chrome.ts && bun scripts/test-bash-display.ts && bun scripts/test-inspection-summary.ts && bun scripts/test-mutation-summary.ts && bun scripts/test-diff-body.ts && bun scripts/test-worked-verbs.ts && bun scripts/test-tool-chrome.ts && bun scripts/test-mcp-display.ts && bun scripts/test-readonly-aggregation.ts",
+    "test": "bun scripts/test-settings-reader.ts && bun scripts/test-message-chrome.ts && bun scripts/test-bash-display.ts && bun scripts/test-inspection-summary.ts && bun scripts/test-mutation-summary.ts && bun scripts/test-diff-body.ts && bun scripts/test-worked-verbs.ts && bun scripts/test-tool-chrome.ts && bun scripts/test-mcp-display.ts && bun scripts/test-readonly-aggregation.ts && bun scripts/test-claudify-hub.ts",
     "test:mcp-display": "bun scripts/test-mcp-display.ts",
     "test:readonly-aggregation": "bun scripts/test-readonly-aggregation.ts",
     "test:worked-verbs": "bun scripts/test-worked-verbs.ts",
-    "test:tool-chrome": "bun scripts/test-tool-chrome.ts"
+    "test:tool-chrome": "bun scripts/test-tool-chrome.ts",
+    "test:claudify-hub": "bun scripts/test-claudify-hub.ts"
   },
   "dependencies": {
     "@shikijs/cli": "^4.3.1",
