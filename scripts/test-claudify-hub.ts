@@ -97,8 +97,6 @@ settingsScreen.handleInput("enter");
 const toolOutput = render(settingsScreen);
 for (const label of [
 	"Tool background",
-	"Read output",
-	"Search output",
 	"MCP output",
 	"Bash output",
 	"Preview lines",
@@ -123,7 +121,7 @@ assert.equal(written.toolBackground, "outlines", "the enum persists its canonica
 assert.equal(written.spinnerColor, "legacy-color", "writing preserves a legacy alias value under its canonical key");
 assert.ok(!Object.hasOwn(written, "spinnerVerbColor"), "writing drops the legacy alias key");
 
-for (let index = 0; index < 7; index++) settingsScreen.handleInput("down");
+for (let index = 0; index < 5; index++) settingsScreen.handleInput("down");
 assert.match(render(settingsScreen), /^\s*❯ Stack consecutive Bash\s+true/m, "boolean navigation reaches the expected row");
 settingsScreen.handleInput("enter");
 assert.match(render(settingsScreen), /^\s*❯ Stack consecutive Bash\s+false/m, "toggling a boolean updates the assembled render");

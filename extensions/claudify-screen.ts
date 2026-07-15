@@ -31,8 +31,6 @@ type MessageTextSettingsKey = "assistantPrefix" | "thinkingPrefix" | "hiddenThin
 
 type EditableSettingsKey =
 	| "toolBackground"
-	| "readOutputMode"
-	| "searchOutputMode"
 	| "mcpOutputMode"
 	| "bashOutputMode"
 	| "previewLines"
@@ -122,8 +120,10 @@ type ToolOutputRowDefinition = EnumRowDefinition | BooleanRowDefinition | Number
 
 const TOOL_OUTPUT_ROWS: readonly ToolOutputRowDefinition[] = [
 	{ kind: "enum", key: "toolBackground", label: "Tool background", values: ["default", "transparent", "outlines"], defaultValue: "transparent" },
-	{ kind: "enum", key: "readOutputMode", label: "Read output", values: ["hidden", "summary", "preview"], defaultValue: "preview" },
-	{ kind: "enum", key: "searchOutputMode", label: "Search output", values: ["hidden", "count", "preview"], defaultValue: "preview" },
+	// readOutputMode / searchOutputMode intentionally omitted: no renderer reads
+	// them yet, so exposing them as immediate-commit rows would be controls that
+	// persist but change nothing in the transcript. Re-add once the read/grep
+	// result handlers consume them (tracked as a CLFY-4 follow-up).
 	{ kind: "enum", key: "mcpOutputMode", label: "MCP output", values: ["hidden", "summary", "preview"], defaultValue: "preview" },
 	{ kind: "enum", key: "bashOutputMode", label: "Bash output", values: ["opencode", "summary", "preview"], defaultValue: "opencode" },
 	{ kind: "number", key: "previewLines", label: "Preview lines", defaultValue: 8, min: 1 },
