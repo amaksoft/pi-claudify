@@ -4520,7 +4520,11 @@ export default function (pi: ExtensionAPI): void {
 								applyToolBackgroundMode(ctx.ui.theme);
 							}
 							if (key === "hiddenThinkingLabel") applyHiddenThinkingLabel(ctx);
-							if (key === "spinnerColor" || key === "spinnerStatusColor" || key === "themeAdaptive") {
+							if (key === "spinnerColor"
+								|| key === "spinnerStatusColor"
+								|| key === "spinnerVerbs"
+								|| key === "spinnerVerbMode"
+								|| key === "themeAdaptive") {
 								bustSpinnerSettingsCache();
 							}
 							if (key === "diffTheme" || key === "diffPalette" || key === "themeAdaptive") refreshDiffPalette();

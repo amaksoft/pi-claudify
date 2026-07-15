@@ -62,8 +62,8 @@ export const DEFAULT_WORKED_VERBS: readonly string[] = [
 
 export type WorkedVerbMode = "append" | "replace";
 
-const MAX_CUSTOM_WORKED_VERBS = 200;
-const MAX_WORKED_VERB_LENGTH = 48;
+export const MAX_CUSTOM_WORKED_VERBS = 200;
+export const MAX_WORKED_VERB_LENGTH = 48;
 
 export function sanitizeWorkedVerbs(value: unknown): string[] {
 	if (!Array.isArray(value)) return [];

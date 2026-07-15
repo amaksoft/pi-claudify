@@ -30,8 +30,8 @@ interface SpinnerSettings {
 
 let _spinnerSettingsCache: { value: SpinnerSettings; expires: number } | null = null;
 const SPINNER_SETTINGS_TTL_MS = 1_000;
-const MAX_CUSTOM_SPINNER_VERBS = 200;
-const MAX_SPINNER_VERB_LENGTH = 48;
+export const MAX_CUSTOM_SPINNER_VERBS = 200;
+export const MAX_SPINNER_VERB_LENGTH = 48;
 const ANSI_ESCAPE_SEQUENCE_RE = /\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\))/g;
 const CONTROL_CHARS_RE = /[\u0000-\u001F\u007F-\u009F]/g;
 // Cross-extension bust signal: /cc-spinner in index.ts bumps this counter
@@ -51,7 +51,7 @@ function sanitizeSpinnerVerb(value: unknown): string | null {
 	return Array.from(cleaned).slice(0, MAX_SPINNER_VERB_LENGTH).join("");
 }
 
-function sanitizeSpinnerVerbs(value: unknown): string[] {
+export function sanitizeSpinnerVerbs(value: unknown): string[] {
 	if (!Array.isArray(value)) return [];
 	const seen = new Set<string>();
 	const verbs: string[] = [];
@@ -67,7 +67,7 @@ function sanitizeSpinnerVerbs(value: unknown): string[] {
 	return verbs;
 }
 
-function resolveSpinnerVerbs(customVerbs: readonly string[] | null, mode: SpinnerVerbMode): readonly string[] {
+export function resolveSpinnerVerbs(customVerbs: readonly string[] | null, mode: SpinnerVerbMode): readonly string[] {
 	if (!customVerbs || customVerbs.length === 0) return DEFAULT_SPINNER_VERBS;
 	if (mode === "replace") return customVerbs;
 	const seen = new Set<string>();
@@ -250,7 +250,7 @@ Loader.prototype.stop = function patchedStop() {
 // Spinner verbs — fun/whimsical loading messages (different set from OpenBrawd)
 // ---------------------------------------------------------------------------
 
-const DEFAULT_SPINNER_VERBS = [
+export const DEFAULT_SPINNER_VERBS = [
 	"Accomplishing",
 	"Actioning",
 	"Actualizing",
