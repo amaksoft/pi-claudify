@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import type { MessageSpacing, MessageStyle, WorkedVerbMode } from "./message-chrome.ts";
@@ -121,7 +121,12 @@ export function writeSettingsKey(key: string, value: unknown): void {
 	}
 	try {
 		mkdirSync(dir, { recursive: true });
-		writeFileSync(path, JSON.stringify(settings, null, 2) + "\n");
+		// Write atomically: a failed/interrupted write must never truncate the
+		// existing (healthy) settings file. Immediate-commit editing calls this
+		// on every keystroke, so a torn write is a real exposure.
+		const tmp = `${path}.tmp`;
+		writeFileSync(tmp, JSON.stringify(settings, null, 2) + "\n");
+		renameSync(tmp, path);
 	} catch { /* best effort */ }
 }
 

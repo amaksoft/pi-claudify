@@ -367,6 +367,13 @@ export class ClaudifyScreen extends Container implements Focusable {
 		if (this.state.kind !== "section") return;
 		const row = sectionRows(this.state.section)[this.state.selectedIndex];
 		if (!row || row.kind !== "text") return;
+		// An empty/whitespace-only submit cancels rather than resetting to the
+		// built-in default: opening a text row (Enter) then a reflexive second
+		// Enter must not silently wipe the user's customized prefix/label.
+		if (rawValue.trim().length === 0) {
+			this.finishTextInput();
+			return;
+		}
 		const settings = readSettings().values;
 		const resolved = resolveMessageChromeSettings({ ...settings, [row.key]: rawValue });
 		this.finishTextInput(false);
