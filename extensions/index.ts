@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { copyFileSync, existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { readFile as readFileAsync } from "node:fs/promises";
 import { extname, relative, resolve } from "node:path";
 
@@ -47,6 +47,7 @@ import {
 	type InspectionKind,
 } from "./inspection-summary.ts";
 import { describeEdit, describeWrite, type SummaryEmphasis } from "./mutation-summary.ts";
+import { clearSettingsCache, readSettings, type SettingsFile, type SpinnerVerbMode } from "./settings.ts";
 import {
 	DEFAULT_HIDDEN_THINKING_LABEL,
 	DEFAULT_USER_PREFIX,
@@ -121,113 +122,6 @@ function linkedPath(cwd: string, displayPath: string, absolutePath?: string): st
 	return osc8Link(target, displayPath);
 }
 
-type SpinnerVerbMode = "append" | "replace";
-
-interface SettingsFile {
-	toolBackground?: "default" | "transparent" | "outlines" | "border";
-	readOutputMode?: "hidden" | "summary" | "preview";
-	searchOutputMode?: "hidden" | "count" | "preview";
-	mcpOutputMode?: "hidden" | "summary" | "preview";
-	previewLines?: number;
-	expandedPreviewMaxLines?: number;
-	bashOutputMode?: "opencode" | "summary" | "preview";
-	bashCollapsedLines?: number;
-	/** When true (default), consecutive bash tool rows render without the extra inter-tool spacer. */
-	bashStackConsecutive?: boolean;
-	/** When true (default), read-only shell file-inspection one-liners render as semantic Read rows instead of raw Bash rows. */
-	bashSemanticDisplay?: boolean;
-	readOnlyToolGrouping?: boolean;
-	readOnlyToolGroupLimit?: number;
-	showTruncationHints?: boolean;
-	diffCollapsedLines?: number;
-	diffTheme?: string;
-	diffColors?: Record<string, string>;
-	/**
-	 * "claude" (default) renders diffs exactly as Claude Code does: unified layout,
-	 * fixed red/green palette, no box chrome. "theme" restores the theme-derived
-	 * tints and the adaptive split/unified layout.
-	 */
-	diffPalette?: "claude" | "theme";
-	/**
-	 * "claude" (default) renders tool rows with Claude Code's chrome: a status
-	 * bullet that goes gray → green, a bold tool name in the default foreground,
-	 * and OSC 8 hyperlinked file paths. "theme" keeps the accent-tinted rows.
-	 */
-	toolChrome?: "claude" | "theme";
-	/**
-	 * When true (default), derive borders, dim text, branch rules, and diff
-	 * accents from the active pi theme via `theme.getFgAnsi`/`getBgAnsi`.
-	 * Explicit `diffTheme` / `diffColors` always win over theme-derived
-	 * defaults so users keep full control.
-	 */
-	themeAdaptive?: boolean;
-	/**
-	 * Theme color key used for the spinner glyph and verb text (e.g. "✻ Cooking…").
-	 * Defaults to "borderAccent". Valid keys are any of the pi theme `ThemeColor`
-	 * names (e.g. accent, borderAccent, success, warning, mdHeading, thinkingMedium, bashMode).
-	 */
-	spinnerColor?: string;
-	/** Backward-compatible alias for spinnerColor from earlier releases. */
-	spinnerVerbColor?: string;
-	/**
-	 * Theme color key used for the spinner status suffix (the parenthesized
-	 * "(thinking · ↓ 10 tokens · 2s)" trailer). Defaults to "muted".
-	 */
-	spinnerStatusColor?: string;
-	/**
-	 * Optional custom spinner verbs. These are appended to defaults unless
-	 * spinnerVerbMode is "replace". Values are sanitized before display.
-	 */
-	spinnerVerbs?: string[];
-	/** Whether custom spinnerVerbs append to or replace the default verb list. */
-	spinnerVerbMode?: SpinnerVerbMode;
-	/** Assistant/thinking transcript chrome style. "claude" trims spacing like Claude Code; "classic" keeps the older package rhythm. */
-	messageStyle?: MessageStyle;
-	/** Prefix glyph/text for assistant paragraphs. Defaults to Claude Code-style "●". */
-	assistantPrefix?: string;
-	/** Prefix glyph/text for visible thinking paragraphs. Defaults to "✻". */
-	thinkingPrefix?: string;
-	/** Blank-line normalization in assistant/thinking transcript blocks. */
-	messageSpacing?: MessageSpacing;
-	/** Label shown when thinking blocks are hidden by the Pi UI. */
-	hiddenThinkingLabel?: string;
-	/**
-	 * Custom verbs for the end-of-turn worked line ("✻ Cooked for 8s"). One is
-	 * picked per turn. Combined with the built-in pool unless `workedVerbMode`
-	 * is "replace".
-	 */
-	workedVerbs?: string[];
-	/** "append" (default) merges with the built-in verbs; "replace" uses only yours. */
-	workedVerbMode?: WorkedVerbMode;
-}
-
-let _settingsCache: { value: SettingsFile; timestamp: number } | null = null;
-const SETTINGS_CACHE_TTL_MS = 5_000;
-
-function readSettings(): SettingsFile {
-	const now = Date.now();
-	if (_settingsCache && now - _settingsCache.timestamp < SETTINGS_CACHE_TTL_MS) {
-		return _settingsCache.value;
-	}
-	const paths = [`${process.cwd()}/.pi/settings.json`, `${process.env.HOME ?? ""}/.pi/settings.json`];
-	for (const path of paths) {
-		try {
-			if (!path || !existsSync(path)) continue;
-			const raw = JSON.parse(readFileSync(path, "utf8"));
-			if (raw && typeof raw === "object") {
-				const result = raw as SettingsFile;
-				_settingsCache = { value: result, timestamp: now };
-				return result;
-			}
-		} catch {
-			// ignore invalid settings files
-		}
-	}
-	const empty: SettingsFile = {};
-	_settingsCache = { value: empty, timestamp: now };
-	return empty;
-}
-
 // Cross-extension bust signal for spinner.ts — it watches this counter on
 // globalThis and invalidates its settings cache when it changes. Lets
 // /cc-spinner edits take effect on the next 250ms spinner tick instead of
@@ -238,30 +132,8 @@ function bustSpinnerSettingsCache(): void {
 	(globalThis as any)[SPINNER_BUST_KEY] = current + 1;
 }
 
-let _mergedSettingsCache: { value: SettingsFile; timestamp: number } | null = null;
-
-function readMergedSettings(): SettingsFile {
-	const now = Date.now();
-	if (_mergedSettingsCache && now - _mergedSettingsCache.timestamp < SETTINGS_CACHE_TTL_MS) {
-		return _mergedSettingsCache.value;
-	}
-	const paths = [`${process.cwd()}/.pi/settings.json`, `${process.env.HOME ?? ""}/.pi/settings.json`];
-	const merged: SettingsFile = {};
-	for (const path of paths) {
-		try {
-			if (!path || !existsSync(path)) continue;
-			const raw = JSON.parse(readFileSync(path, "utf8"));
-			if (raw && typeof raw === "object") Object.assign(merged, raw as SettingsFile);
-		} catch {
-			// ignore invalid settings files
-		}
-	}
-	_mergedSettingsCache = { value: merged, timestamp: now };
-	return merged;
-}
-
 function getMessageChromeSettings(): MessageChromeSettings {
-	return resolveMessageChromeSettings(readMergedSettings());
+	return resolveMessageChromeSettings(readSettings().values);
 }
 
 function applyHiddenThinkingLabel(ctx: any): void {
@@ -306,16 +178,28 @@ function getSpinnerVerbMode(settings: SettingsFile): SpinnerVerbMode {
 }
 
 function writeSettingsKey(key: string, value: unknown): void {
-	_settingsCache = null; // invalidate cache on write
-	_mergedSettingsCache = null;
+	clearSettingsCache();
 	const home = process.env.HOME ?? "";
 	if (!home) return;
 	const dir = `${home}/.pi`;
 	const path = `${dir}/settings.json`;
 	let settings: Record<string, unknown> = {};
+	let unparseable = false;
 	try {
 		if (existsSync(path)) settings = JSON.parse(readFileSync(path, "utf8")) ?? {};
-	} catch { /* start fresh */ }
+	} catch {
+		unparseable = true;
+	}
+	if (unparseable) {
+		// The rewrite below would replace the user's whole settings file with
+		// this single key. Keep the broken original recoverable; if even the
+		// backup fails, refuse to write.
+		try {
+			copyFileSync(path, `${path}.bak`);
+		} catch {
+			return;
+		}
+	}
 	if (value === undefined) {
 		delete settings[key];
 	} else {
@@ -334,10 +218,8 @@ function syncToolBackgroundMode(): void {
 		toolBackgroundMode = toolBackgroundOverride;
 		return;
 	}
-	const settings = readSettings();
-	// Backward compat: "border" was renamed to "outlines"
-	const raw = settings.toolBackground === "border" ? "outlines" : settings.toolBackground;
-	toolBackgroundMode = raw ?? "transparent";
+	const settings = readSettings().values;
+	toolBackgroundMode = settings.toolBackground ?? "transparent";
 }
 
 function setThemeBg(theme: unknown, key: string, value: string): void {
@@ -404,15 +286,15 @@ function isBashToolExecution(value: unknown): boolean {
 }
 
 function shouldStackConsecutiveBash(): boolean {
-	return readSettings().bashStackConsecutive !== false;
+	return readSettings().values.bashStackConsecutive !== false;
 }
 
 function readOnlyToolGroupingEnabled(): boolean {
-	return readSettings().readOnlyToolGrouping !== false;
+	return readSettings().values.readOnlyToolGrouping !== false;
 }
 
 function readOnlyToolGroupLimit(): number {
-	const value = readSettings().readOnlyToolGroupLimit;
+	const value = readSettings().values.readOnlyToolGroupLimit;
 	return typeof value === "number" && Number.isFinite(value) && value > 0
 		? Math.max(1, Math.min(20, Math.floor(value)))
 		: 5;
@@ -873,7 +755,7 @@ let currentAgentWorkStartMs: number | undefined;
 let currentAssistantMessageStartMs: number | undefined;
 
 function workedVerbs(): readonly string[] {
-	const settings = readSettings();
+	const settings = readSettings().values;
 	const mode: WorkedVerbMode = settings.workedVerbMode === "replace" ? "replace" : "append";
 	return resolveWorkedVerbs(settings.workedVerbs, mode);
 }
@@ -1762,26 +1644,26 @@ function makeText(last: unknown, text: string): Text {
 }
 
 function previewLimit(): number {
-	const value = readSettings().previewLines;
+	const value = readSettings().values.previewLines;
 	return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : 8;
 }
 
 function expandedPreviewLimit(): number {
-	const value = readSettings().expandedPreviewMaxLines;
+	const value = readSettings().values.expandedPreviewMaxLines;
 	return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : 4000;
 }
 
 function bashCollapsedLimit(): number {
-	const value = readSettings().bashCollapsedLines;
+	const value = readSettings().values.bashCollapsedLines;
 	return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.floor(value) : 10;
 }
 
 function bashOutputMode(): "opencode" | "summary" | "preview" {
-	return getMode(readSettings().bashOutputMode, ["opencode", "summary", "preview"] as const, "opencode");
+	return getMode(readSettings().values.bashOutputMode, ["opencode", "summary", "preview"] as const, "opencode");
 }
 
 function bashSemanticDisplayEnabled(): boolean {
-	return readSettings().bashSemanticDisplay !== false;
+	return readSettings().values.bashSemanticDisplay !== false;
 }
 
 export interface BashDisplayInfo {
@@ -1966,7 +1848,7 @@ export function classifyBashCommandForDisplay(command: string): BashDisplayInfo 
 }
 
 function diffCollapsedLimit(): number {
-	const value = readSettings().diffCollapsedLines;
+	const value = readSettings().values.diffCollapsedLines;
 	return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : 24;
 }
 
@@ -2070,7 +1952,7 @@ const DIFF_PRESETS: Record<string, DiffPreset> = {
 };
 
 function loadDiffConfig(): DiffUserConfig {
-	const settings = readSettings();
+	const settings = readSettings().values;
 	return { diffTheme: settings.diffTheme, diffColors: settings.diffColors };
 }
 
@@ -2175,7 +2057,7 @@ function themeBgRgb(theme: any, key: string): Rgb | null {
 let _themePaletteCacheTheme: unknown = null;
 
 function themeAdaptiveEnabled(): boolean {
-	const settings = readSettings();
+	const settings = readSettings().values;
 	return settings.themeAdaptive !== false;
 }
 
@@ -2185,7 +2067,7 @@ function themeAdaptiveEnabled(): boolean {
  * to get the theme-derived tints back.
  */
 function claudeDiffPaletteEnabled(): boolean {
-	return readSettings().diffPalette !== "theme";
+	return readSettings().values.diffPalette !== "theme";
 }
 
 /**
@@ -2194,7 +2076,7 @@ function claudeDiffPaletteEnabled(): boolean {
  * paths. Set `toolChrome: "theme"` to keep the themed/accent-tinted rows.
  */
 function claudeChromeEnabled(): boolean {
-	return readSettings().toolChrome !== "theme";
+	return readSettings().values.toolChrome !== "theme";
 }
 
 // Claude Code highlights diff content with a Monokai palette (fg 248,248,242,
@@ -4307,7 +4189,7 @@ function renderMcpToolResult(result: any, expanded: boolean, isPartial: boolean,
 	clearBlinkTimer(ctx);
 	setToolStatus(ctx, ctx.isError ? "error" : "success");
 
-	const mode = getMode(readSettings().mcpOutputMode, ["hidden", "summary", "preview"] as const, "preview");
+	const mode = getMode(readSettings().values.mcpOutputMode, ["hidden", "summary", "preview"] as const, "preview");
 	if (mode === "hidden") return makeText(ctx.lastComponent, "");
 
 	const raw = getTextContent(result).trim();
@@ -4670,8 +4552,8 @@ export default function (pi: ExtensionAPI) {
 				const themeName = theme?.name ?? "unknown";
 				const state = current ? "on" : "off";
 				if (raw === "status" && current) {
-					const settings = readMergedSettings();
-					const spinnerKey = settings.spinnerColor || settings.spinnerVerbColor || "borderAccent";
+					const settings = readSettings().values;
+					const spinnerKey = settings.spinnerColor || "borderAccent";
 					const statusKey = settings.spinnerStatusColor || "muted";
 					const spinnerAnsi = safeFgAnsi(theme, spinnerKey) ?? safeFgAnsi(theme, "accent");
 					const statusAnsi = safeFgAnsi(theme, statusKey) ?? safeFgAnsi(theme, "muted");
@@ -4788,8 +4670,8 @@ export default function (pi: ExtensionAPI) {
 			const parts = rawArgs.split(/\s+/).filter((p: string) => p.length > 0);
 			const sub = (parts[0] ?? "").toLowerCase();
 			const theme = ctx.hasUI ? (ctx.ui.theme as any) : null;
-			const settings = readMergedSettings();
-			const currentSpinner = settings.spinnerColor || settings.spinnerVerbColor || "borderAccent";
+			const settings = readSettings().values;
+			const currentSpinner = settings.spinnerColor || "borderAccent";
 			const currentStatus = settings.spinnerStatusColor || "muted";
 			const customVerbs = sanitizeSpinnerVerbs(settings.spinnerVerbs);
 			const customVerbMode = getSpinnerVerbMode(settings);
@@ -4980,7 +4862,7 @@ export default function (pi: ExtensionAPI) {
 				}
 				if (parts[1] === "remove") {
 					const verbPrefix = (parts.slice(2).join(" ") ?? "").toLowerCase();
-					return sanitizeWorkedVerbs(readSettings().workedVerbs)
+					return sanitizeWorkedVerbs(readSettings().values.workedVerbs)
 						.filter((v) => v.toLowerCase().startsWith(verbPrefix))
 						.map((v) => ({ value: `verbs remove ${v}`, label: v, description: "Remove this custom verb" }));
 				}
@@ -5007,8 +4889,8 @@ export default function (pi: ExtensionAPI) {
 			const current = getMessageChromeSettings();
 			const notifyStatus = () => {
 				if (!ctx.hasUI) return;
-				const customVerbs = sanitizeWorkedVerbs(readSettings().workedVerbs);
-				const verbMode: WorkedVerbMode = readSettings().workedVerbMode === "replace" ? "replace" : "append";
+				const customVerbs = sanitizeWorkedVerbs(readSettings().values.workedVerbs);
+				const verbMode: WorkedVerbMode = readSettings().values.workedVerbMode === "replace" ? "replace" : "append";
 				ctx.ui.notify([
 					`Message style: ${current.messageStyle}`,
 					`Assistant prefix: ${current.assistantPrefix}`,
@@ -5036,8 +4918,8 @@ export default function (pi: ExtensionAPI) {
 
 			if (sub === "verbs") {
 				const action = (parts[1] ?? "list").toLowerCase();
-				const custom = sanitizeWorkedVerbs(readSettings().workedVerbs);
-				const mode: WorkedVerbMode = readSettings().workedVerbMode === "replace" ? "replace" : "append";
+				const custom = sanitizeWorkedVerbs(readSettings().values.workedVerbs);
+				const mode: WorkedVerbMode = readSettings().values.workedVerbMode === "replace" ? "replace" : "append";
 
 				if (action === "list") {
 					if (!ctx.hasUI) return;

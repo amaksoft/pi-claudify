@@ -1,7 +1,7 @@
-import { existsSync, readFileSync } from "node:fs";
-
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Loader } from "@earendil-works/pi-tui";
+
+import { readSettings } from "./settings.ts";
 
 // ---------------------------------------------------------------------------
 // Patch built-in Loader with Claude/OpenBrawd-style glyphs.
@@ -89,28 +89,17 @@ function readSpinnerSettings(): SpinnerSettings {
 	if (_spinnerSettingsCache && _spinnerSettingsCache.expires > now) {
 		return _spinnerSettingsCache.value;
 	}
-	let adaptive = true;
-	// Spinner glyph and verb share one theme color so they read as a single
-	// working indicator. `spinnerVerbColor` is still accepted for older config.
-	let verbColor = "borderAccent";
-	let statusColor = "muted";
-	let customVerbs: string[] | null = null;
-	let verbMode: SpinnerVerbMode = "append";
-	const paths = [`${process.cwd()}/.pi/settings.json`, `${process.env.HOME ?? ""}/.pi/settings.json`];
-	for (const p of paths) {
-		try {
-			if (!p || !existsSync(p)) continue;
-			const raw = JSON.parse(readFileSync(p, "utf8"));
-			if (raw && typeof raw === "object") {
-				if (raw.themeAdaptive === false) adaptive = false;
-				if (typeof raw.spinnerVerbColor === "string" && raw.spinnerVerbColor.length > 0) verbColor = raw.spinnerVerbColor;
-				if (typeof raw.spinnerColor === "string" && raw.spinnerColor.length > 0) verbColor = raw.spinnerColor;
-				if (typeof raw.spinnerStatusColor === "string" && raw.spinnerStatusColor.length > 0) statusColor = raw.spinnerStatusColor;
-				if (raw.spinnerVerbMode === "append" || raw.spinnerVerbMode === "replace") verbMode = raw.spinnerVerbMode;
-				if (Array.isArray(raw.spinnerVerbs)) customVerbs = sanitizeSpinnerVerbs(raw.spinnerVerbs);
-			}
-		} catch { /* ignore */ }
-	}
+	const raw = readSettings().values;
+	const adaptive = raw.themeAdaptive !== false;
+	// Spinner glyph and verb share one theme color so they read as a single working indicator.
+	const verbColor = typeof raw.spinnerColor === "string" && raw.spinnerColor.length > 0
+		? raw.spinnerColor
+		: "borderAccent";
+	const statusColor = typeof raw.spinnerStatusColor === "string" && raw.spinnerStatusColor.length > 0
+		? raw.spinnerStatusColor
+		: "muted";
+	const customVerbs = Array.isArray(raw.spinnerVerbs) ? sanitizeSpinnerVerbs(raw.spinnerVerbs) : null;
+	const verbMode: SpinnerVerbMode = raw.spinnerVerbMode === "replace" ? "replace" : "append";
 	const value: SpinnerSettings = {
 		adaptive,
 		verbColor,
