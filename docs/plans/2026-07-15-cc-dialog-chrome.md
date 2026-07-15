@@ -7,9 +7,9 @@ Method: live `claude` session in `/tmp/clfy1-probe.EP7M3J`, driven through cmux 
 
 ## Shared capture conditions
 
-The wide capture used a roughly 200-column Claude surface. The narrow capture split that cmux workspace vertically, leaving the Claude pane roughly half-width. cmux exposes `resize-pane`; an attempted further shrink with `resize-pane --pane pane:7 -L --amount 30` returned `invalid_state: Pane has no adjacent border in direction left`, but the vertical split itself produced the narrow capture described below.
+The wide capture used a roughly 200-column Claude surface. Narrow captures split that cmux workspace vertically. cmux exposes `resize-pane`: targeting the left pane's nonexistent left border returned `invalid_state: Pane has no adjacent border in direction left`; targeting the new right pane with `-L` succeeded and shrank the Claude pane further. `/config` was recorded at the initial half-width and `/mcp` at both full width and the narrower resized width.
 
-The probe ran outside this repository. No project files or settings were exposed to the probe session. The only `/config` mutation was toggling `Show tips` from `true` to `false` and immediately back to `true` in the same dialog.
+The probe ran outside this repository. No project files or settings were exposed to the probe session. The `/config` mutations were toggling `Show tips` from `true` to `false` and immediately back to `true`, plus an accidental `Auto-compact` toggle from `true` to `false` during the first `/mcp` launch; the capture confirmed `Auto-compact` was restored to `true` before `/mcp` capture continued.
 
 ## `/config`
 
@@ -100,3 +100,103 @@ On a selected boolean row, `Enter` and `Space` change the value immediately and 
 At wide width the search box stretches almost the full overlay width while values remain in a compact column near the labels; the list does not distribute its columns across the available space.
 
 At the captured half-width, the tabs, search box, label column, value column, and footer all retain the same grammar. The search border shrinks to the pane. Long labels remain single-line in this capture, and the value column stays aligned; rows do not become cards or stack label above value. The overlay clips vertically to the pane and relies on its scrollable list rather than adding an outer border.
+
+## `/mcp`
+
+### An unboxed, fixed-width management panel
+
+`/mcp` opens below a thin lavender horizontal rule over the transcript. There is no outer border, search field, or tab strip. The panel has a lavender/purple bold title followed by a dim count:
+
+```text
+   Manage MCP servers
+   10 servers
+```
+
+The content stays in a compact fixed-width column at wide terminal widths rather than stretching across the pane.
+
+### Section and row grammar
+
+Servers are grouped under bold light-gray section headers. Qualifiers and paths in parentheses are dim:
+
+```text
+     User MCPs (/Users/berto/.claude.json)
+   ❯ codegraph · ✔ connected · 1 tool
+     forgejo · ✔ connected · 114 tools
+
+     claude.ai
+     claude.ai Context7 · ✔ connected · 2 tools
+
+     Built-in MCPs (always available)
+     claude-in-chrome · ✔ connected · 22 tools
+     computer-use · ◯ disabled
+```
+
+Rows are unboxed and single-line. The selected row uses a lavender `❯`; its server name is brighter than unselected names. Middle dots and tool counts are dim. Connected servers use a green `✔`; `connected` remains normal/dim gray rather than green. Disabled servers use a hollow gray `◯`, and the status text is dim. A disabled row remains navigable and selectable; it is not skipped.
+
+The help URL appears one blank line below the final group in dim gray:
+
+```text
+https://code.claude.com/docs/en/mcp for help
+```
+
+### Server detail grammar
+
+`Enter` on a server replaces the list with a second-level detail surface. The title is the capitalized server name plus `MCP Server`. Metadata is a label/value table with labels aligned to one width:
+
+```text
+   Forgejo MCP Server
+
+   Status:           ✔ connected
+   Command:          /Users/berto/go/bin/forgejo-mcp
+   Args:             --transport stdio --url https://forgejo.owlburtoe.dev
+   Config location:  /Users/berto/.claude.json
+   Capabilities: tools
+   Tools: 114 tools
+
+   ❯ 1. View tools
+     2. Reconnect
+     3. Disable
+```
+
+The detail action list is numbered, unboxed, and uses the same lavender `❯` selection marker. Connected servers expose `View tools`, `Reconnect`, and `Disable` in this capture.
+
+Entering the disabled `computer-use` row does not enable it. It opens a detail view with disabled status and one explicit action:
+
+```text
+   Computer-use MCP Server
+
+   Status:           ◯ disabled
+   Command:          /Users/berto/.local/share/claude/versions/2.1.210
+   Args:             --computer-use-mcp
+   Config location:  Dynamically configured
+
+   ❯ 1. Enable
+```
+
+No server action was invoked during capture.
+
+### Footer wording
+
+Server list, verbatim:
+
+```text
+↑/↓ to navigate · Enter to confirm · Esc to cancel
+```
+
+Server detail, verbatim:
+
+```text
+↑/↓ to navigate · Enter to select · Esc to back
+```
+
+Both footers are dim and sit directly below the panel content. The main view's help URL is a separate line above its key hints.
+
+### Key semantics
+
+`Up` and `Down` move the `❯` among every server row, including disabled rows. `Enter` on a server opens its detail view; it does not run the initially selected detail action. `Escape` in a detail view returns to the server list. The returned list reset selection to the first server in each captured return rather than preserving the server that had been opened. `Escape` on the server list closes `/mcp` without changing server state.
+
+In a detail view, `Up` and `Down` move among numbered actions and `Enter` selects the highlighted action, as stated by the captured footer. Capture deliberately did not press `Enter` on `Reconnect`, `Disable`, or `Enable`.
+
+### Wide and narrow behavior
+
+At wide width the management panel keeps its compact content width and leaves unused space to the right. At the narrower resized width, the title, count, section headers, rows, help URL, and footer retain the same indentation and remain single-line in the captured server set. The panel does not acquire a border, stack status beneath names, or switch to cards. Only the transcript and welcome chrome behind it reflowed and truncated as the pane narrowed.
