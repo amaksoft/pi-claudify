@@ -91,6 +91,34 @@ extension(pi as any);
 const command = pi.commands.get("claudify");
 assert.ok(command, "/claudify is registered");
 
+let tuiCustomCalls = 0;
+let receivedOverlayOptions: any;
+await command.handler("", {
+	mode: "tui",
+	hasUI: true,
+	ui: {
+		notify(): void {},
+		custom(factory: any, options: any): Promise<void> {
+			tuiCustomCalls += 1;
+			receivedOverlayOptions = options;
+			return new Promise((resolve) => {
+				const component = factory(
+					{ requestRender(): void {} },
+					theme,
+					keybindings,
+					resolve,
+				);
+				component.handleInput("escape");
+			});
+		},
+	},
+});
+assert.equal(tuiCustomCalls, 1, "TUI mode opens one custom overlay");
+assert.deepEqual(receivedOverlayOptions, {
+	overlay: true,
+	overlayOptions: { width: "100%", maxHeight: "100%", anchor: "top-left" },
+}, "the command opens a full-width overlay anchored over the transcript");
+
 for (const mode of ["rpc", "json", "print"] as const) {
 	const notices: Array<[string, string]> = [];
 	let customCalls = 0;
