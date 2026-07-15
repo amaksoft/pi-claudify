@@ -1,3 +1,5 @@
 # One settings reader: per-key merge, project overrides user
 
+> **Superseded by [ADR 0004](0004-user-scope-only-settings.md)** (2026-07-15): project scope was removed entirely — the extension reads only `~/.pi/settings.json`. The single-reader design, alias handling, and cache below survive; the per-key merge, precedence flip, and "(project)" badge do not.
+
 The package had three precedence behaviors at once (first-file-wins shadowing in `readSettings`, user-wins-per-key in `readMergedSettings` and the spinner reader). In 2.0.0 all readers collapse into one per-key merge where the project `.pi/settings.json` overrides `~/.pi/settings.json`, matching git/npm/Claude Code convention; user-wins was rejected because it inverts every tool users already know. The Claudify screen always writes the user file and shows a "(project)" badge on rows whose effective value comes from a project override, so edits that would be shadowed are visible instead of silently ignored. Note this flips the effective winner for message-chrome and spinner keys where both files set the same key.
