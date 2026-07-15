@@ -28,7 +28,7 @@ function plural(count: number, singular: string, pluralForm = `${singular}s`): s
  */
 // Captured: "Searching for 1 pattern, reading 1 file, listing 1 directory, calling
 // probe, running 1 shell command…" — MCP sits after the file tools, before bash.
-const CLAUSE_ORDER: InspectionKind[] = ["grep", "find", "ls", "read", "mcp", "bash"];
+const CLAUSE_ORDER: InspectionKind[] = ["grep", "find", "read", "ls", "mcp", "bash"];
 
 const CLAUSES: Record<InspectionKind, ClauseForms> = {
 	grep: {

@@ -25,6 +25,10 @@ assert.equal(
 	describeInspectionsActive(["bash", "read", "grep"]),
 	describeInspectionsActive(["grep", "read", "bash"]),
 );
+assert.equal(
+	describeInspectionsActive(["ls", "read"]),
+	"Reading 1 file, listing 1 directory…",
+);
 
 // "directories", not "directorys".
 assert.equal(describeInspectionsActive(["ls", "ls"]), "Listing 2 directories…");
