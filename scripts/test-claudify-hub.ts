@@ -42,6 +42,8 @@ const keybindings = {
 			|| (action === "tui.select.cancel" && data === "escape")
 			|| (action === "tui.editor.cursorLeft" && data === "left")
 			|| (action === "tui.editor.cursorRight" && data === "right")
+			|| (action === "tui.editor.deleteCharBackward" && data === "backspace")
+			|| (action === "tui.editor.deleteCharForward" && data === "delete")
 		);
 	},
 };
@@ -264,6 +266,115 @@ spinnerScreen.handleInput("up");
 spinnerScreen.handleInput("enter");
 assert.equal(readWrittenSettings().spinnerStatusColor, "warning", "the status color Picker commits from the same candidate list");
 
+const verbChanges: Array<[string, unknown]> = [];
+const verbScreen = new ClaudifyScreen(
+	{ requestRender(): void {} } as any,
+	theme,
+	keybindings as any,
+	() => {},
+	(key, value) => { verbChanges.push([key, value]); },
+	undefined,
+	pickerCandidates,
+);
+verbScreen.handleInput("down");
+verbScreen.handleInput("down");
+verbScreen.handleInput("enter");
+const spinnerVerbRows = render(verbScreen);
+assert.ok(spinnerVerbRows.includes("While working"), "Spinner renders the Spinner verbs editor under While working");
+assert.ok(spinnerVerbRows.includes("After finishing"), "Spinner renders the Worked verbs editor under After finishing");
+assert.match(spinnerVerbRows, /While working\s+0 custom · append/, "Spinner verbs summarize their custom count and effective mode");
+assert.match(spinnerVerbRows, /After finishing\s+0 custom · append/, "Worked verbs summarize their custom count and effective mode");
+
+verbScreen.handleInput("down");
+verbScreen.handleInput("down");
+verbScreen.handleInput("enter");
+assert.ok(render(verbScreen).includes("No custom verbs — using built-ins"), "an empty Spinner verb list visibly falls back to built-ins");
+assert.match(render(verbScreen), /^\s*❯ Mode\s+append/m, "the Spinner verb editor opens on its mode row");
+verbScreen.handleInput("enter");
+assert.equal(readWrittenSettings().spinnerVerbMode, "replace", "Spinner verb mode toggles to replace");
+verbScreen.handleInput("enter");
+assert.equal(readWrittenSettings().spinnerVerbMode, "append", "Spinner verb mode toggles back to append");
+verbScreen.handleInput("enter");
+assert.equal(readWrittenSettings().spinnerVerbMode, "replace", "Spinner verb mode can persist replace again");
+
+verbScreen.handleInput("down");
+verbScreen.handleInput("enter");
+assert.ok(render(verbScreen).includes("Type a verb or phrase · Enter to add · Esc to cancel"), "Add opens the inline phrase input");
+verbScreen.handleInput("  Reticulating splines  ");
+verbScreen.handleInput("enter");
+assert.deepEqual(readWrittenSettings().spinnerVerbs, ["Reticulating splines"], "Spinner Add sanitizes and persists a multi-word phrase");
+verbScreen.handleInput("down");
+verbScreen.handleInput("enter");
+verbScreen.handleInput("reticulating SPLINES");
+verbScreen.handleInput("enter");
+assert.deepEqual(readWrittenSettings().spinnerVerbs, ["Reticulating splines"], "Spinner Add rejects a case-insensitive duplicate");
+verbScreen.handleInput("enter");
+verbScreen.handleInput("   ");
+verbScreen.handleInput("enter");
+assert.deepEqual(readWrittenSettings().spinnerVerbs, ["Reticulating splines"], "Spinner Add rejects whitespace-only input");
+verbScreen.handleInput("enter");
+verbScreen.handleInput("Balancing gyros");
+verbScreen.handleInput("enter");
+assert.deepEqual(readWrittenSettings().spinnerVerbs, ["Reticulating splines", "Balancing gyros"], "Spinner Add preserves earlier custom entries");
+verbScreen.handleInput("backspace");
+assert.deepEqual(readWrittenSettings().spinnerVerbs, ["Reticulating splines"], "Backspace removes the highlighted Spinner verb only");
+verbScreen.handleInput("up");
+verbScreen.handleInput("delete");
+assert.ok(!Object.hasOwn(readWrittenSettings(), "spinnerVerbs"), "removing the last Spinner verb deletes the settings key instead of writing an empty list");
+verbScreen.handleInput("enter");
+verbScreen.handleInput("Spinning plates");
+verbScreen.handleInput("enter");
+assert.deepEqual(readWrittenSettings().spinnerVerbs, ["Spinning plates"], "Spinner verbs can be added again after falling back to built-ins");
+verbScreen.handleInput("escape");
+
+const spinnerSettingsBeforeWorkedEdit = {
+	verbs: readWrittenSettings().spinnerVerbs,
+	mode: readWrittenSettings().spinnerVerbMode,
+};
+verbScreen.handleInput("down");
+verbScreen.handleInput("enter");
+assert.ok(render(verbScreen).includes("No custom verbs — using built-ins"), "an empty Worked verb list visibly falls back to built-ins");
+assert.match(render(verbScreen), /^\s*❯ Mode\s+append/m, "the Worked verb editor opens on its mode row");
+verbScreen.handleInput("enter");
+assert.equal(readWrittenSettings().workedVerbMode, "replace", "Worked verb mode toggles to replace");
+verbScreen.handleInput("enter");
+assert.equal(readWrittenSettings().workedVerbMode, "append", "Worked verb mode toggles back to append");
+verbScreen.handleInput("enter");
+assert.equal(readWrittenSettings().workedVerbMode, "replace", "Worked verb mode can persist replace again");
+
+verbScreen.handleInput("down");
+verbScreen.handleInput("enter");
+verbScreen.handleInput("  Polished the brass  ");
+verbScreen.handleInput("enter");
+assert.deepEqual(readWrittenSettings().workedVerbs, ["Polished the brass"], "Worked Add sanitizes and persists a multi-word phrase");
+verbScreen.handleInput("down");
+verbScreen.handleInput("enter");
+verbScreen.handleInput("polished THE BRASS");
+verbScreen.handleInput("enter");
+assert.deepEqual(readWrittenSettings().workedVerbs, ["Polished the brass"], "Worked Add rejects a case-insensitive duplicate");
+verbScreen.handleInput("enter");
+verbScreen.handleInput("   ");
+verbScreen.handleInput("enter");
+assert.deepEqual(readWrittenSettings().workedVerbs, ["Polished the brass"], "Worked Add rejects whitespace-only input");
+verbScreen.handleInput("enter");
+verbScreen.handleInput("Wrapped up");
+verbScreen.handleInput("enter");
+assert.deepEqual(readWrittenSettings().workedVerbs, ["Polished the brass", "Wrapped up"], "Worked Add preserves earlier custom entries");
+verbScreen.handleInput("backspace");
+assert.deepEqual(readWrittenSettings().workedVerbs, ["Polished the brass"], "Backspace removes the highlighted Worked verb only");
+verbScreen.handleInput("up");
+verbScreen.handleInput("delete");
+assert.ok(!Object.hasOwn(readWrittenSettings(), "workedVerbs"), "removing the last Worked verb deletes the settings key instead of writing an empty list");
+assert.deepEqual(
+	{ verbs: readWrittenSettings().spinnerVerbs, mode: readWrittenSettings().spinnerVerbMode },
+	spinnerSettingsBeforeWorkedEdit,
+	"editing Worked verbs leaves the Spinner verb pool untouched",
+);
+assert.ok(verbChanges.some(([key]) => key === "spinnerVerbs"), "Spinner verb list commits notify the host");
+assert.ok(verbChanges.some(([key]) => key === "spinnerVerbMode"), "Spinner verb mode commits notify the host");
+assert.ok(verbChanges.some(([key]) => key === "workedVerbs"), "Worked verb list commits notify the host");
+assert.ok(verbChanges.some(([key]) => key === "workedVerbMode"), "Worked verb mode commits notify the host");
+
 assert.ok(changedKeys.includes("toolBackground"), "commits notify the host for live side effects");
 assert.ok(changedKeys.includes("assistantPrefix"), "message commits notify the host for live side effects");
 assert.ok(renderRequests >= 20, "navigation and commits request TUI repaints");
@@ -330,6 +441,24 @@ await command.handler("", {
 				assert.equal(readFileSync(settingsPath, "utf8"), beforeHostPreview, "the command-level preview path does not write settings");
 				component.handleInput("escape");
 				assert.equal((globalThis as any)[spinnerPreviewKey], undefined, "the registered command clears its preview override on cancel");
+
+				component.handleInput("down");
+				component.handleInput("down");
+				component.handleInput("enter");
+				const spinnerBustKey = Symbol.for("pi-claudify:spinner-settings-bust");
+				const beforeModeBust = ((globalThis as any)[spinnerBustKey] as number | undefined) ?? 0;
+				component.handleInput("enter");
+				assert.equal(readWrittenSettings().spinnerVerbMode, "append", "the registered command persists Spinner verb mode changes");
+				assert.ok((globalThis as any)[spinnerBustKey] > beforeModeBust, "Spinner verb mode changes bust the running Spinner settings cache");
+				component.handleInput("down");
+				component.handleInput("down");
+				component.handleInput("enter");
+				component.handleInput("Juggling planets");
+				const beforeVerbBust = (globalThis as any)[spinnerBustKey] as number;
+				component.handleInput("enter");
+				assert.deepEqual(readWrittenSettings().spinnerVerbs, ["Spinning plates", "Juggling planets"], "the registered command persists Spinner verb additions");
+				assert.ok((globalThis as any)[spinnerBustKey] > beforeVerbBust, "Spinner verb list changes bust the running Spinner settings cache");
+				component.handleInput("escape");
 				component.handleInput("escape");
 				component.handleInput("escape");
 			});
@@ -373,7 +502,7 @@ const partialTheme = new Proxy(theme, {
 		if (prop === "fg") {
 			return (color: string, text: string): string => {
 				if (color === missingKey) throw new Error(`Unknown theme color: ${color}`);
-				return target.fg(color, text);
+				return target.fg(color as never, text);
 			};
 		}
 		return Reflect.get(target, prop, receiver);

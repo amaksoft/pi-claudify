@@ -10,8 +10,9 @@ import {
 	type TUI,
 } from "@earendil-works/pi-tui";
 
-import { resolveMessageChromeSettings } from "./message-chrome.ts";
+import { resolveMessageChromeSettings, sanitizeWorkedVerbs } from "./message-chrome.ts";
 import { readSettings, writeSettingsKey, type SettingsFile } from "./settings.ts";
+import { sanitizeSpinnerVerbs } from "./spinner.ts";
 
 export interface ClaudifySection {
 	readonly id: "theme" | "diffs" | "spinner" | "messages" | "tool-output";
@@ -29,6 +30,9 @@ export const CLAUDIFY_SECTIONS: readonly ClaudifySection[] = [
 
 type MessageTextSettingsKey = "assistantPrefix" | "thinkingPrefix" | "hiddenThinkingLabel";
 type PickerSettingsKey = "diffTheme" | "spinnerColor" | "spinnerStatusColor";
+type VerbListSettingsKey = "spinnerVerbs" | "workedVerbs";
+type VerbModeSettingsKey = "spinnerVerbMode" | "workedVerbMode";
+type VerbMode = "append" | "replace";
 
 type EditableSettingsKey =
 	| "themeAdaptive"
@@ -38,6 +42,10 @@ type EditableSettingsKey =
 	| "diffCollapsedLines"
 	| "spinnerColor"
 	| "spinnerStatusColor"
+	| "spinnerVerbs"
+	| "spinnerVerbMode"
+	| "workedVerbs"
+	| "workedVerbMode"
 	| "toolBackground"
 	| "mcpOutputMode"
 	| "bashOutputMode"
@@ -96,12 +104,28 @@ interface PickerSettingRow extends SettingRowBase {
 	readonly candidates: readonly PickerCandidate[];
 }
 
-type SettingRow = EnumSettingRow | BooleanSettingRow | NumberSettingRow | TextSettingRow | PickerSettingRow;
+interface VerbEditorSettingRow {
+	readonly kind: "verbs";
+	readonly key: VerbListSettingsKey;
+	readonly modeKey: VerbModeSettingsKey;
+	readonly label: string;
+	readonly value: readonly string[];
+	readonly mode: VerbMode;
+	readonly sanitize: (value: unknown) => string[];
+}
+
+type SettingRow = EnumSettingRow | BooleanSettingRow | NumberSettingRow | TextSettingRow | PickerSettingRow | VerbEditorSettingRow;
 
 interface PickerState {
 	readonly rowIndex: number;
 	readonly highlightedIndex: number;
 	readonly committedValue: string | undefined;
+}
+
+interface VerbEditorState {
+	readonly rowIndex: number;
+	readonly selectedIndex: number;
+	readonly adding: boolean;
 }
 
 type ClaudifyScreenState =
@@ -113,6 +137,7 @@ type ClaudifyScreenState =
 		readonly selectedIndex: number;
 		readonly editing: boolean;
 		readonly picker: PickerState | null;
+		readonly verbEditor: VerbEditorState | null;
 	};
 
 export interface ClaudifyPickerCandidates {
@@ -268,6 +293,24 @@ function sectionRows(section: ClaudifySection, candidates: ClaudifyPickerCandida
 		return [
 			{ kind: "picker", key: "spinnerColor", label: "Spinner color", value: spinnerColor, candidates: colorCandidates },
 			{ kind: "picker", key: "spinnerStatusColor", label: "Status color", value: statusColor, candidates: colorCandidates },
+			{
+				kind: "verbs",
+				key: "spinnerVerbs",
+				modeKey: "spinnerVerbMode",
+				label: "While working",
+				value: sanitizeSpinnerVerbs(settings.spinnerVerbs),
+				mode: settings.spinnerVerbMode === "replace" ? "replace" : "append",
+				sanitize: sanitizeSpinnerVerbs,
+			},
+			{
+				kind: "verbs",
+				key: "workedVerbs",
+				modeKey: "workedVerbMode",
+				label: "After finishing",
+				value: sanitizeWorkedVerbs(settings.workedVerbs),
+				mode: settings.workedVerbMode === "replace" ? "replace" : "append",
+				sanitize: sanitizeWorkedVerbs,
+			},
 		];
 	}
 	return [];
@@ -318,6 +361,10 @@ export class ClaudifyScreen extends Container implements Focusable {
 	}
 
 	handleInput(data: string): void {
+		if (this.state.kind === "section" && this.state.verbEditor) {
+			this.handleVerbEditorInput(data);
+			return;
+		}
 		if (this.state.kind === "section" && this.state.editing) {
 			this.handleTextInput(data);
 			return;
@@ -357,6 +404,7 @@ export class ClaudifyScreen extends Container implements Focusable {
 				selectedIndex: 0,
 				editing: false,
 				picker: null,
+				verbEditor: null,
 			};
 			this.renderState();
 		}
@@ -401,7 +449,65 @@ export class ClaudifyScreen extends Container implements Focusable {
 		}
 		if (row.kind === "picker" && this.keybindings.matches(data, "tui.select.confirm")) {
 			this.beginPicker(row);
+			return;
 		}
+		if (row.kind === "verbs" && this.keybindings.matches(data, "tui.select.confirm")) {
+			this.beginVerbEditor();
+		}
+	}
+
+	private handleVerbEditorInput(data: string): void {
+		if (this.state.kind !== "section" || !this.state.verbEditor) return;
+		const rows = sectionRows(this.state.section, this.pickerCandidates);
+		const row = rows[this.state.verbEditor.rowIndex];
+		if (!row || row.kind !== "verbs") return;
+
+		if (this.state.verbEditor.adding) {
+			this.handleVerbTextInput(data, row);
+			return;
+		}
+		if (this.keybindings.matches(data, "tui.select.cancel")) {
+			this.finishVerbEditor();
+			return;
+		}
+
+		const lastIndex = row.value.length + 1;
+		let selectedIndex = this.state.verbEditor.selectedIndex;
+		if (this.keybindings.matches(data, "tui.select.up")) selectedIndex = Math.max(0, selectedIndex - 1);
+		else if (this.keybindings.matches(data, "tui.select.down")) selectedIndex = Math.min(lastIndex, selectedIndex + 1);
+		else if (this.isRemove(data)) {
+			this.removeSelectedVerb(row);
+			return;
+		} else {
+			const confirms = this.keybindings.matches(data, "tui.select.confirm") || matchesKey(data, Key.space);
+			if (!confirms) return;
+			if (selectedIndex === 0) {
+				this.commitSetting(row.modeKey, row.mode === "append" ? "replace" : "append");
+				return;
+			}
+			if (selectedIndex === lastIndex) this.beginVerbTextInput();
+			return;
+		}
+		if (selectedIndex === this.state.verbEditor.selectedIndex) return;
+		this.state = { ...this.state, verbEditor: { ...this.state.verbEditor, selectedIndex } };
+		this.renderState();
+	}
+
+	private handleVerbTextInput(data: string, row: VerbEditorSettingRow): void {
+		if (this.state.kind !== "section" || !this.state.verbEditor?.adding || !this.input) return;
+		if (this.keybindings.matches(data, "tui.select.cancel")) {
+			this.finishVerbTextInput();
+			return;
+		}
+		if (this.keybindings.matches(data, "tui.select.confirm")) {
+			const next = row.sanitize([...row.value, this.input.getValue()]);
+			this.finishVerbTextInput(false);
+			if (next.length > row.value.length) this.commitSetting(row.key, next);
+			else this.renderState();
+			return;
+		}
+		this.input.handleInput(data);
+		this.tui.requestRender();
 	}
 
 	private handlePickerInput(data: string): void {
@@ -451,6 +557,13 @@ export class ClaudifyScreen extends Container implements Focusable {
 
 	private isRight(data: string): boolean {
 		return this.keybindings.matches(data, "tui.editor.cursorRight") || matchesKey(data, Key.right);
+	}
+
+	private isRemove(data: string): boolean {
+		return this.keybindings.matches(data, "tui.editor.deleteCharBackward")
+			|| this.keybindings.matches(data, "tui.editor.deleteCharForward")
+			|| matchesKey(data, Key.backspace)
+			|| matchesKey(data, Key.delete);
 	}
 
 	private handleEscape(): void {
@@ -505,6 +618,47 @@ export class ClaudifyScreen extends Container implements Focusable {
 			},
 		};
 		this.renderState();
+	}
+
+	private beginVerbEditor(): void {
+		if (this.state.kind !== "section") return;
+		this.state = {
+			...this.state,
+			verbEditor: { rowIndex: this.state.selectedIndex, selectedIndex: 0, adding: false },
+		};
+		this.renderState();
+	}
+
+	private finishVerbEditor(): void {
+		if (this.state.kind !== "section" || !this.state.verbEditor) return;
+		this.state = { ...this.state, verbEditor: null };
+		this.renderState();
+	}
+
+	private beginVerbTextInput(): void {
+		if (this.state.kind !== "section" || !this.state.verbEditor) return;
+		this.state = { ...this.state, verbEditor: { ...this.state.verbEditor, adding: true } };
+		this.renderState();
+		this.input?.setValue("");
+		this.tui.requestRender();
+	}
+
+	private finishVerbTextInput(render = true): void {
+		if (this.state.kind !== "section" || !this.state.verbEditor) return;
+		this.state = { ...this.state, verbEditor: { ...this.state.verbEditor, adding: false } };
+		this.input = null;
+		if (render) this.renderState();
+	}
+
+	private removeSelectedVerb(row: VerbEditorSettingRow): void {
+		if (this.state.kind !== "section" || !this.state.verbEditor) return;
+		const verb = row.value[this.state.verbEditor.selectedIndex - 1];
+		if (!verb) return;
+		const removeKey = verb.toLocaleLowerCase();
+		const next = row.value.filter((item) => item.toLocaleLowerCase() !== removeKey);
+		const selectedIndex = Math.min(this.state.verbEditor.selectedIndex, next.length + 1);
+		this.state = { ...this.state, verbEditor: { ...this.state.verbEditor, selectedIndex } };
+		this.commitSetting(row.key, next.length > 0 ? next : undefined);
 	}
 
 	private finishPicker(render = true): void {
@@ -574,6 +728,13 @@ export class ClaudifyScreen extends Container implements Focusable {
 				return;
 			}
 		}
+		if (state.verbEditor) {
+			const row = rows[state.verbEditor.rowIndex];
+			if (row?.kind === "verbs") {
+				this.renderVerbEditor(state.section, row, state.verbEditor);
+				return;
+			}
+		}
 
 		this.content.addChild(new Text(themedText(this.theme, "accent", this.theme.bold(state.section.label)), 3, 0));
 		this.content.addChild(new Spacer(1));
@@ -589,7 +750,9 @@ export class ClaudifyScreen extends Container implements Focusable {
 			const selected = index === state.selectedIndex;
 			const marker = selected ? themedText(this.theme, "accent", "❯") : " ";
 			const label = themedText(this.theme, "text", row.label.padEnd(labelWidth));
-			const displayValue = row.kind === "picker" && row.value === undefined ? "none" : String(row.value);
+			const displayValue = row.kind === "verbs"
+				? `${row.value.length} custom · ${row.mode}`
+				: row.kind === "picker" && row.value === undefined ? "none" : String(row.value);
 			const value = row.kind === "picker" && row.key !== "diffTheme"
 				? themedByKey(this.theme, String(row.value), displayValue)
 				: themedText(this.theme, "text", displayValue);
@@ -607,6 +770,44 @@ export class ClaudifyScreen extends Container implements Focusable {
 
 		this.content.addChild(new Spacer(1));
 		this.content.addChild(new Text(themedText(this.theme, "dim", this.sectionFooter(rows[state.selectedIndex], state.editing)), 3, 0));
+	}
+
+	private renderVerbEditor(section: ClaudifySection, row: VerbEditorSettingRow, editor: VerbEditorState): void {
+		this.content.addChild(new Text(themedText(this.theme, "accent", this.theme.bold(section.label)), 3, 0));
+		this.content.addChild(new Spacer(1));
+		this.content.addChild(new Text(themedText(this.theme, "text", this.theme.bold(row.label)), 3, 0));
+		this.content.addChild(new Spacer(1));
+
+		const modeSelected = editor.selectedIndex === 0;
+		const modeMarker = modeSelected ? themedText(this.theme, "accent", "❯") : " ";
+		this.content.addChild(new Text(`${modeMarker} ${themedText(this.theme, "text", "Mode")}   ${themedText(this.theme, "text", row.mode)}`, 3, 0));
+		for (const [index, verb] of row.value.entries()) {
+			const selected = editor.selectedIndex === index + 1;
+			const marker = selected ? themedText(this.theme, "accent", "❯") : " ";
+			const number = themedText(this.theme, "dim", `${index + 1}.`);
+			this.content.addChild(new Text(`${marker} ${number} ${themedText(this.theme, "text", verb)}`, 3, 0));
+		}
+		if (row.value.length === 0) {
+			this.content.addChild(new Text(themedText(this.theme, "dim", "   No custom verbs — using built-ins"), 3, 0));
+		}
+		const addSelected = editor.selectedIndex === row.value.length + 1;
+		const addMarker = addSelected ? themedText(this.theme, "accent", "❯") : " ";
+		this.content.addChild(new Text(`${addMarker} ${themedText(this.theme, "text", "Add…")}`, 3, 0));
+
+		if (editor.adding) {
+			this.content.addChild(new Spacer(1));
+			this.content.addChild(new Text(themedText(this.theme, "dim", `New verb for ${row.label.toLowerCase()}`), 3, 0));
+			this.input = new IndentedInput();
+			this.input.focused = this.focused;
+			this.content.addChild(this.input);
+		}
+
+		this.content.addChild(new Spacer(1));
+		let footer = "↑/↓ to move · Enter to add · Esc to back";
+		if (editor.adding) footer = "Type a verb or phrase · Enter to add · Esc to cancel";
+		else if (editor.selectedIndex === 0) footer = "↑/↓ to move · Enter/Space to change · Esc to back";
+		else if (editor.selectedIndex <= row.value.length) footer = "↑/↓ to move · Backspace/Delete to remove · Esc to back";
+		this.content.addChild(new Text(themedText(this.theme, "dim", footer), 3, 0));
 	}
 
 	private renderPicker(section: ClaudifySection, row: PickerSettingRow, picker: PickerState): void {
@@ -634,6 +835,7 @@ export class ClaudifyScreen extends Container implements Focusable {
 		if (row?.kind === "number") return "↑/↓ to move · ←/→ to change · Esc to back";
 		if (row?.kind === "text") return "↑/↓ to move · Enter to edit · Esc to back";
 		if (row?.kind === "picker") return "↑/↓ to move · Enter to choose · Esc to back";
+		if (row?.kind === "verbs") return "↑/↓ to move · Enter to edit · Esc to back";
 		return "↑/↓ to move · Enter/Space to change · Esc to back";
 	}
 }
