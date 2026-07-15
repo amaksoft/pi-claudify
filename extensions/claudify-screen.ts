@@ -28,8 +28,16 @@ export const CLAUDIFY_SECTIONS: readonly ClaudifySection[] = [
 ];
 
 type MessageTextSettingsKey = "assistantPrefix" | "thinkingPrefix" | "hiddenThinkingLabel";
+type PickerSettingsKey = "diffTheme" | "spinnerColor" | "spinnerStatusColor";
 
 type EditableSettingsKey =
+	| "themeAdaptive"
+	| "diffPalette"
+	| "diffTheme"
+	| "toolChrome"
+	| "diffCollapsedLines"
+	| "spinnerColor"
+	| "spinnerStatusColor"
 	| "toolBackground"
 	| "mcpOutputMode"
 	| "bashOutputMode"
@@ -49,7 +57,7 @@ type EditableSettingsKey =
 interface SettingRowBase {
 	readonly key: EditableSettingsKey;
 	readonly label: string;
-	readonly value: string | number | boolean;
+	readonly value: string | number | boolean | undefined;
 }
 
 interface EnumSettingRow extends SettingRowBase {
@@ -76,7 +84,25 @@ interface TextSettingRow extends SettingRowBase {
 	readonly value: string;
 }
 
-type SettingRow = EnumSettingRow | BooleanSettingRow | NumberSettingRow | TextSettingRow;
+interface PickerCandidate {
+	readonly label: string;
+	readonly value: string | undefined;
+}
+
+interface PickerSettingRow extends SettingRowBase {
+	readonly kind: "picker";
+	readonly key: PickerSettingsKey;
+	readonly value: string | undefined;
+	readonly candidates: readonly PickerCandidate[];
+}
+
+type SettingRow = EnumSettingRow | BooleanSettingRow | NumberSettingRow | TextSettingRow | PickerSettingRow;
+
+interface PickerState {
+	readonly rowIndex: number;
+	readonly highlightedIndex: number;
+	readonly committedValue: string | undefined;
+}
 
 type ClaudifyScreenState =
 	| { readonly kind: "hub"; readonly selectedIndex: number }
@@ -86,11 +112,20 @@ type ClaudifyScreenState =
 		readonly hubSelectedIndex: number;
 		readonly selectedIndex: number;
 		readonly editing: boolean;
+		readonly picker: PickerState | null;
 	};
+
+export interface ClaudifyPickerCandidates {
+	readonly diffThemes: readonly string[];
+	readonly colorKeys: readonly string[];
+}
+
+export type SettingPreviewValue = string | null | undefined;
 
 type RenderRequester = Pick<TUI, "requestRender">;
 type ScreenKeybindings = Pick<KeybindingsManager, "matches">;
 type SettingChangeHandler = (key: EditableSettingsKey, value: unknown) => void;
+type SettingPreviewHandler = (key: PickerSettingsKey, value: SettingPreviewValue) => void;
 
 interface EnumRowDefinition {
 	readonly kind: "enum";
@@ -116,9 +151,19 @@ interface NumberRowDefinition {
 	readonly max?: number;
 }
 
-type ToolOutputRowDefinition = EnumRowDefinition | BooleanRowDefinition | NumberRowDefinition;
+type ImmediateRowDefinition = EnumRowDefinition | BooleanRowDefinition | NumberRowDefinition;
 
-const TOOL_OUTPUT_ROWS: readonly ToolOutputRowDefinition[] = [
+const THEME_ROWS: readonly ImmediateRowDefinition[] = [
+	{ kind: "boolean", key: "themeAdaptive", label: "Adaptive colors", defaultValue: true },
+	{ kind: "enum", key: "diffPalette", label: "Diff palette", values: ["claude", "theme"], defaultValue: "claude" },
+	{ kind: "enum", key: "toolChrome", label: "Tool chrome", values: ["claude", "theme"], defaultValue: "claude" },
+];
+
+const DIFF_ROWS: readonly ImmediateRowDefinition[] = [
+	{ kind: "number", key: "diffCollapsedLines", label: "Collapsed diff lines", defaultValue: 10, min: 0 },
+];
+
+const TOOL_OUTPUT_ROWS: readonly ImmediateRowDefinition[] = [
 	{ kind: "enum", key: "toolBackground", label: "Tool background", values: ["default", "transparent", "outlines"], defaultValue: "transparent" },
 	// readOutputMode / searchOutputMode intentionally omitted: no renderer reads
 	// them yet, so exposing them as immediate-commit rows would be controls that
@@ -145,6 +190,19 @@ function themedText(theme: Theme, color: "accent" | "dim" | "text", text: string
 	return theme.fg(color, text);
 }
 
+// Color a string by an arbitrary theme color KEY (e.g. a spinner color like
+// "borderAccent"). theme.fg() THROWS on a key the active theme doesn't define,
+// so a custom/minimal theme missing a COMMON_COLOR_KEYS entry would crash the
+// picker render; fall back to plain text color instead of taking the overlay
+// down. Mirrors the safeFgAnsi discipline used for the same reason in index.ts.
+function themedByKey(theme: Theme, colorKey: string, text: string): string {
+	try {
+		return theme.fg(colorKey as never, text);
+	} catch {
+		return themedText(theme, "text", text);
+	}
+}
+
 function effectiveEnumValue(settings: SettingsFile, definition: EnumRowDefinition): string {
 	const value = settings[definition.key];
 	return typeof value === "string" && definition.values.includes(value) ? value : definition.defaultValue;
@@ -156,14 +214,10 @@ function effectiveNumberValue(settings: SettingsFile, definition: NumberRowDefin
 	return Math.min(definition.max ?? Number.MAX_SAFE_INTEGER, Math.floor(value));
 }
 
-function toolOutputRows(settings: SettingsFile): SettingRow[] {
-	return TOOL_OUTPUT_ROWS.map((definition): SettingRow => {
-		if (definition.kind === "enum") {
-			return { ...definition, value: effectiveEnumValue(settings, definition) };
-		}
-		if (definition.kind === "number") {
-			return { ...definition, value: effectiveNumberValue(settings, definition) };
-		}
+function immediateRows(settings: SettingsFile, definitions: readonly ImmediateRowDefinition[]): SettingRow[] {
+	return definitions.map((definition): SettingRow => {
+		if (definition.kind === "enum") return { ...definition, value: effectiveEnumValue(settings, definition) };
+		if (definition.kind === "number") return { ...definition, value: effectiveNumberValue(settings, definition) };
 		const value = settings[definition.key];
 		return { ...definition, value: typeof value === "boolean" ? value : definition.defaultValue };
 	});
@@ -180,10 +234,42 @@ function messageRows(settings: SettingsFile): SettingRow[] {
 	];
 }
 
-function sectionRows(section: ClaudifySection): SettingRow[] {
+function sectionRows(section: ClaudifySection, candidates: ClaudifyPickerCandidates): SettingRow[] {
 	const settings = readSettings().values;
-	if (section.id === "tool-output") return toolOutputRows(settings);
+	if (section.id === "tool-output") return immediateRows(settings, TOOL_OUTPUT_ROWS);
 	if (section.id === "messages") return messageRows(settings);
+	if (section.id === "diffs") return immediateRows(settings, DIFF_ROWS);
+	if (section.id === "theme") {
+		const diffTheme = typeof settings.diffTheme === "string" && candidates.diffThemes.includes(settings.diffTheme)
+			? settings.diffTheme
+			: undefined;
+		return [
+			...immediateRows(settings, THEME_ROWS),
+			{
+				kind: "picker",
+				key: "diffTheme",
+				label: "Diff theme",
+				value: diffTheme,
+				candidates: [
+					{ label: "None (automatic)", value: undefined },
+					...candidates.diffThemes.map((value) => ({ label: value, value })),
+				],
+			},
+		];
+	}
+	if (section.id === "spinner") {
+		const colorCandidates = candidates.colorKeys.map((value) => ({ label: value, value }));
+		const spinnerColor = typeof settings.spinnerColor === "string" && candidates.colorKeys.includes(settings.spinnerColor)
+			? settings.spinnerColor
+			: "borderAccent";
+		const statusColor = typeof settings.spinnerStatusColor === "string" && candidates.colorKeys.includes(settings.spinnerStatusColor)
+			? settings.spinnerStatusColor
+			: "muted";
+		return [
+			{ kind: "picker", key: "spinnerColor", label: "Spinner color", value: spinnerColor, candidates: colorCandidates },
+			{ kind: "picker", key: "spinnerStatusColor", label: "Status color", value: statusColor, candidates: colorCandidates },
+		];
+	}
 	return [];
 }
 
@@ -194,8 +280,11 @@ export class ClaudifyScreen extends Container implements Focusable {
 	private readonly keybindings: ScreenKeybindings;
 	private readonly onClose: () => void;
 	private readonly onSettingChange?: SettingChangeHandler;
+	private readonly onSettingPreview?: SettingPreviewHandler;
+	private readonly pickerCandidates: ClaudifyPickerCandidates;
 	private state: ClaudifyScreenState = { kind: "hub", selectedIndex: 0 };
 	private input: IndentedInput | null = null;
+	private activePreviewKey: PickerSettingsKey | null = null;
 	private _focused = false;
 
 	get focused(): boolean {
@@ -213,6 +302,8 @@ export class ClaudifyScreen extends Container implements Focusable {
 		keybindings: ScreenKeybindings,
 		onClose: () => void,
 		onSettingChange?: SettingChangeHandler,
+		onSettingPreview?: SettingPreviewHandler,
+		pickerCandidates: ClaudifyPickerCandidates = { diffThemes: [], colorKeys: [] },
 	) {
 		super();
 		this.tui = tui;
@@ -220,6 +311,8 @@ export class ClaudifyScreen extends Container implements Focusable {
 		this.keybindings = keybindings;
 		this.onClose = onClose;
 		this.onSettingChange = onSettingChange;
+		this.onSettingPreview = onSettingPreview;
+		this.pickerCandidates = pickerCandidates;
 		this.addChild(this.content);
 		this.renderState();
 	}
@@ -229,17 +322,18 @@ export class ClaudifyScreen extends Container implements Focusable {
 			this.handleTextInput(data);
 			return;
 		}
-
+		if (this.state.kind === "section" && this.state.picker) {
+			this.handlePickerInput(data);
+			return;
+		}
 		if (this.keybindings.matches(data, "tui.select.cancel")) {
 			this.handleEscape();
 			return;
 		}
-
 		if (this.state.kind === "hub") {
 			this.handleHubInput(data);
 			return;
 		}
-
 		this.handleSectionInput(data);
 	}
 
@@ -262,6 +356,7 @@ export class ClaudifyScreen extends Container implements Focusable {
 				hubSelectedIndex: this.state.selectedIndex,
 				selectedIndex: 0,
 				editing: false,
+				picker: null,
 			};
 			this.renderState();
 		}
@@ -269,9 +364,8 @@ export class ClaudifyScreen extends Container implements Focusable {
 
 	private handleSectionInput(data: string): void {
 		if (this.state.kind !== "section") return;
-		const rows = sectionRows(this.state.section);
+		const rows = sectionRows(this.state.section, this.pickerCandidates);
 		if (rows.length === 0) return;
-
 		if (this.keybindings.matches(data, "tui.select.up")) {
 			this.updateSectionSelection(Math.max(0, this.state.selectedIndex - 1));
 			return;
@@ -303,7 +397,38 @@ export class ClaudifyScreen extends Container implements Focusable {
 		}
 		if (row.kind === "text" && this.keybindings.matches(data, "tui.select.confirm")) {
 			this.beginTextInput();
+			return;
 		}
+		if (row.kind === "picker" && this.keybindings.matches(data, "tui.select.confirm")) {
+			this.beginPicker(row);
+		}
+	}
+
+	private handlePickerInput(data: string): void {
+		if (this.state.kind !== "section" || !this.state.picker) return;
+		const rows = sectionRows(this.state.section, this.pickerCandidates);
+		const row = rows[this.state.picker.rowIndex];
+		if (!row || row.kind !== "picker") return;
+		if (this.keybindings.matches(data, "tui.select.cancel")) {
+			this.finishPicker();
+			return;
+		}
+		if (this.keybindings.matches(data, "tui.select.confirm")) {
+			const candidate = row.candidates[this.state.picker.highlightedIndex];
+			if (!candidate) return;
+			this.finishPicker(false);
+			this.commitSetting(row.key, candidate.value);
+			return;
+		}
+		let highlightedIndex = this.state.picker.highlightedIndex;
+		if (this.keybindings.matches(data, "tui.select.up")) highlightedIndex = Math.max(0, highlightedIndex - 1);
+		else if (this.keybindings.matches(data, "tui.select.down")) highlightedIndex = Math.min(row.candidates.length - 1, highlightedIndex + 1);
+		else return;
+		if (highlightedIndex === this.state.picker.highlightedIndex) return;
+		this.state = { ...this.state, picker: { ...this.state.picker, highlightedIndex } };
+		const value = row.candidates[highlightedIndex]?.value;
+		this.previewSetting(row.key, value === undefined ? null : value);
+		this.renderState();
 	}
 
 	private handleTextInput(data: string): void {
@@ -330,9 +455,11 @@ export class ClaudifyScreen extends Container implements Focusable {
 
 	private handleEscape(): void {
 		if (this.state.kind === "hub") {
+			this.clearActivePreview();
 			this.onClose();
 			return;
 		}
+		this.clearActivePreview();
 		this.state = { kind: "hub", selectedIndex: this.state.hubSelectedIndex };
 		this.renderState();
 	}
@@ -355,6 +482,38 @@ export class ClaudifyScreen extends Container implements Focusable {
 		this.renderState();
 	}
 
+	private previewSetting(key: PickerSettingsKey, value: SettingPreviewValue): void {
+		this.activePreviewKey = key;
+		this.onSettingPreview?.(key, value);
+	}
+
+	private clearActivePreview(): void {
+		if (!this.activePreviewKey) return;
+		this.onSettingPreview?.(this.activePreviewKey, undefined);
+		this.activePreviewKey = null;
+	}
+
+	private beginPicker(row: PickerSettingRow): void {
+		if (this.state.kind !== "section" || row.candidates.length === 0) return;
+		const committedIndex = row.candidates.findIndex((candidate) => candidate.value === row.value);
+		this.state = {
+			...this.state,
+			picker: {
+				rowIndex: this.state.selectedIndex,
+				highlightedIndex: committedIndex >= 0 ? committedIndex : 0,
+				committedValue: row.value,
+			},
+		};
+		this.renderState();
+	}
+
+	private finishPicker(render = true): void {
+		if (this.state.kind !== "section" || !this.state.picker) return;
+		this.clearActivePreview();
+		this.state = { ...this.state, picker: null };
+		if (render) this.renderState();
+	}
+
 	private beginTextInput(): void {
 		if (this.state.kind !== "section") return;
 		this.state = { ...this.state, editing: true };
@@ -365,7 +524,7 @@ export class ClaudifyScreen extends Container implements Focusable {
 
 	private submitTextInput(rawValue: string): void {
 		if (this.state.kind !== "section") return;
-		const row = sectionRows(this.state.section)[this.state.selectedIndex];
+		const row = sectionRows(this.state.section, this.pickerCandidates)[this.state.selectedIndex];
 		if (!row || row.kind !== "text") return;
 		// An empty/whitespace-only submit cancels rather than resetting to the
 		// built-in default: opening a text row (Enter) then a reflexive second
@@ -390,11 +549,8 @@ export class ClaudifyScreen extends Container implements Focusable {
 	private renderState(): void {
 		this.content.clear();
 		this.input = null;
-		if (this.state.kind === "hub") {
-			this.renderHub(this.state.selectedIndex);
-		} else {
-			this.renderSection(this.state);
-		}
+		if (this.state.kind === "hub") this.renderHub(this.state.selectedIndex);
+		else this.renderSection(this.state);
 		this.tui.requestRender();
 	}
 
@@ -410,12 +566,19 @@ export class ClaudifyScreen extends Container implements Focusable {
 	}
 
 	private renderSection(state: Extract<ClaudifyScreenState, { kind: "section" }>): void {
-		const { section } = state;
-		this.content.addChild(new Text(themedText(this.theme, "accent", this.theme.bold(section.label)), 3, 0));
+		const rows = sectionRows(state.section, this.pickerCandidates);
+		if (state.picker) {
+			const row = rows[state.picker.rowIndex];
+			if (row?.kind === "picker") {
+				this.renderPicker(state.section, row, state.picker);
+				return;
+			}
+		}
+
+		this.content.addChild(new Text(themedText(this.theme, "accent", this.theme.bold(state.section.label)), 3, 0));
 		this.content.addChild(new Spacer(1));
-		const rows = sectionRows(section);
 		if (rows.length === 0) {
-			this.content.addChild(new Text(themedText(this.theme, "dim", section.placeholder), 3, 0));
+			this.content.addChild(new Text(themedText(this.theme, "dim", state.section.placeholder), 3, 0));
 			this.content.addChild(new Spacer(1));
 			this.content.addChild(new Text(themedText(this.theme, "dim", "Esc to go back"), 3, 0));
 			return;
@@ -426,7 +589,10 @@ export class ClaudifyScreen extends Container implements Focusable {
 			const selected = index === state.selectedIndex;
 			const marker = selected ? themedText(this.theme, "accent", "❯") : " ";
 			const label = themedText(this.theme, "text", row.label.padEnd(labelWidth));
-			const value = themedText(this.theme, "text", String(row.value));
+			const displayValue = row.kind === "picker" && row.value === undefined ? "none" : String(row.value);
+			const value = row.kind === "picker" && row.key !== "diffTheme"
+				? themedByKey(this.theme, String(row.value), displayValue)
+				: themedText(this.theme, "text", displayValue);
 			this.content.addChild(new Text(`${marker} ${label}${value}`, 3, 0));
 		}
 
@@ -443,10 +609,31 @@ export class ClaudifyScreen extends Container implements Focusable {
 		this.content.addChild(new Text(themedText(this.theme, "dim", this.sectionFooter(rows[state.selectedIndex], state.editing)), 3, 0));
 	}
 
+	private renderPicker(section: ClaudifySection, row: PickerSettingRow, picker: PickerState): void {
+		this.content.addChild(new Text(themedText(this.theme, "accent", this.theme.bold(section.label)), 3, 0));
+		this.content.addChild(new Spacer(1));
+		this.content.addChild(new Text(themedText(this.theme, "text", `Choose ${row.label.toLowerCase()}`), 3, 0));
+		this.content.addChild(new Spacer(1));
+		for (const [index, candidate] of row.candidates.entries()) {
+			const highlighted = index === picker.highlightedIndex;
+			const committed = candidate.value === picker.committedValue;
+			const marker = highlighted ? themedText(this.theme, "accent", "❯") : " ";
+			const number = themedText(this.theme, "dim", `${index + 1}.`);
+			const label = row.key === "diffTheme"
+				? themedText(this.theme, "text", candidate.label)
+				: themedByKey(this.theme, String(candidate.value ?? ""), candidate.label);
+			const check = committed ? ` ${this.theme.fg("success", "✔")}` : "";
+			this.content.addChild(new Text(`${marker} ${number} ${label}${check}`, 3, 0));
+		}
+		this.content.addChild(new Spacer(1));
+		this.content.addChild(new Text(themedText(this.theme, "dim", "Enter to select · Esc to cancel"), 3, 0));
+	}
+
 	private sectionFooter(row: SettingRow | undefined, editing: boolean): string {
 		if (editing) return "Type a value · Enter to save · Esc to cancel";
 		if (row?.kind === "number") return "↑/↓ to move · ←/→ to change · Esc to back";
 		if (row?.kind === "text") return "↑/↓ to move · Enter to edit · Esc to back";
+		if (row?.kind === "picker") return "↑/↓ to move · Enter to choose · Esc to back";
 		return "↑/↓ to move · Enter/Space to change · Esc to back";
 	}
 }

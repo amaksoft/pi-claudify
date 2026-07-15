@@ -16,7 +16,8 @@ process.env.HOME = home;
 process.chdir(cwd);
 
 const { ClaudifyScreen } = await import("../extensions/claudify-screen.ts");
-const { default: extension } = await import("../extensions/index.ts");
+const { default: extension, COMMON_COLOR_KEYS, DIFF_PRESET_KEYS } = await import("../extensions/index.ts");
+const pickerCandidates = { diffThemes: DIFF_PRESET_KEYS, colorKeys: COMMON_COLOR_KEYS };
 
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
 
@@ -55,6 +56,8 @@ const screen = new ClaudifyScreen(
 	keybindings as any,
 	() => { closeCount += 1; },
 	(key) => { changedKeys.push(key); },
+	undefined,
+	pickerCandidates,
 );
 
 const hub = render(screen);
@@ -76,8 +79,9 @@ assert.match(movedHub, /^\s*❯ Spinner/m, "arrow navigation moves the Hub highl
 
 screen.handleInput("enter");
 const section = render(screen);
-assert.ok(section.includes("Spinner settings — coming soon"), "Enter drills into the highlighted placeholder Section");
-assert.ok(section.includes("Esc to go back"), "a placeholder Section renders its own footer");
+assert.ok(section.includes("Spinner color"), "Enter drills into the highlighted Spinner Section");
+assert.ok(section.includes("Status color"), "Spinner renders both color Picker rows");
+assert.ok(section.includes("Enter to choose · Esc to back"), "a Picker row renders its Section footer");
 assert.ok(!section.includes("Esc to close"), "a Section does not render the Hub footer");
 
 screen.handleInput("escape");
@@ -91,6 +95,8 @@ const settingsScreen = new ClaudifyScreen(
 	keybindings as any,
 	() => {},
 	(key) => { changedKeys.push(key); },
+	undefined,
+	pickerCandidates,
 );
 for (let index = 0; index < 4; index++) settingsScreen.handleInput("down");
 settingsScreen.handleInput("enter");
@@ -161,16 +167,102 @@ settingsScreen.handleInput("enter");
 assert.match(render(settingsScreen), /^\s*❯ Assistant prefix\s+◆/m, "submitting text updates the assembled render");
 assert.equal(readWrittenSettings().assistantPrefix, "◆", "sanitized text persists immediately");
 
-for (const [sectionIndex, placeholder] of [
-	[0, "Theme settings — coming soon"],
-	[1, "Diff settings — coming soon"],
-	[2, "Spinner settings — coming soon"],
-] as const) {
-	const placeholderScreen = new ClaudifyScreen({ requestRender(): void {} } as any, theme, keybindings as any, () => {});
-	for (let index = 0; index < sectionIndex; index++) placeholderScreen.handleInput("down");
-	placeholderScreen.handleInput("enter");
-	assert.ok(render(placeholderScreen).includes(placeholder), `${placeholder} remains untouched`);
+assert.deepEqual(DIFF_PRESET_KEYS, ["default", "midnight", "neon"], "the Picker consumes the renderer's exact diff preset keys");
+assert.ok(COMMON_COLOR_KEYS.includes("borderAccent") && COMMON_COLOR_KEYS.includes("muted"), "the Spinner Picker consumes the renderer's common color keys");
+
+const pickerChanges: Array<[string, unknown]> = [];
+const pickerPreviews: Array<[string, unknown]> = [];
+const pickerScreen = new ClaudifyScreen(
+	{ requestRender: () => { renderRequests += 1; } } as any,
+	theme,
+	keybindings as any,
+	() => {},
+	(key, value) => { pickerChanges.push([key, value]); },
+	(key, value) => { pickerPreviews.push([key, value]); },
+	pickerCandidates,
+);
+pickerScreen.handleInput("enter");
+let themeSection = render(pickerScreen);
+for (const label of ["Adaptive colors", "Diff palette", "Tool chrome", "Diff theme"]) {
+	assert.ok(themeSection.includes(label), `Theme renders ${label}`);
 }
+assert.doesNotMatch(themeSection, /coming soon/, "Theme no longer renders its placeholder");
+pickerScreen.handleInput("enter");
+assert.equal(readWrittenSettings().themeAdaptive, false, "Theme adaptive commits immediately");
+pickerScreen.handleInput("down");
+pickerScreen.handleInput("enter");
+assert.equal(readWrittenSettings().diffPalette, "theme", "Diff palette commits immediately");
+pickerScreen.handleInput("down");
+pickerScreen.handleInput("enter");
+assert.equal(readWrittenSettings().toolChrome, "theme", "Tool chrome commits immediately");
+pickerScreen.handleInput("down");
+pickerScreen.handleInput("enter");
+assert.ok(render(pickerScreen).includes("Enter to select · Esc to cancel"), "opening a Picker renders the captured footer");
+assert.match(render(pickerScreen), /None \(automatic\) ✔/, "the persisted unset diff theme keeps its marker");
+const beforeDiffPreview = readFileSync(settingsPath, "utf8");
+pickerScreen.handleInput("down");
+assert.deepEqual(pickerPreviews.at(-1), ["diffTheme", "default"], "moving the Picker highlight emits a live preview");
+assert.equal(readFileSync(settingsPath, "utf8"), beforeDiffPreview, "previewing a diff theme does not write settings");
+assert.match(render(pickerScreen), /^\s*❯ 2\. default/m, "the preview marker moves independently of the persisted marker");
+pickerScreen.handleInput("escape");
+assert.deepEqual(pickerPreviews.at(-1), ["diffTheme", undefined], "Esc clears the diff theme preview");
+assert.equal(readFileSync(settingsPath, "utf8"), beforeDiffPreview, "cancelling a diff theme Picker writes nothing");
+pickerScreen.handleInput("enter");
+pickerScreen.handleInput("down");
+pickerScreen.handleInput("down");
+pickerScreen.handleInput("enter");
+assert.equal(readWrittenSettings().diffTheme, "midnight", "Enter persists the highlighted diff theme");
+assert.deepEqual(pickerChanges.at(-1), ["diffTheme", "midnight"], "Picker commit notifies the host after clearing preview");
+
+const diffScreen = new ClaudifyScreen(
+	{ requestRender(): void {} } as any,
+	theme,
+	keybindings as any,
+	() => {},
+	(key) => { changedKeys.push(key); },
+	undefined,
+	pickerCandidates,
+);
+diffScreen.handleInput("down");
+diffScreen.handleInput("enter");
+assert.match(render(diffScreen), /^\s*❯ Collapsed diff lines\s+10/m, "Diffs renders its immediate-commit number row and default");
+assert.doesNotMatch(render(diffScreen), /coming soon/, "Diffs no longer renders its placeholder");
+diffScreen.handleInput("right");
+assert.equal(readWrittenSettings().diffCollapsedLines, 11, "collapsed diff lines commits immediately");
+for (let index = 0; index < 12; index++) diffScreen.handleInput("left");
+assert.equal(readWrittenSettings().diffCollapsedLines, 0, "collapsed diff lines accepts zero and clamps at its minimum");
+
+const spinnerScreen = new ClaudifyScreen(
+	{ requestRender(): void {} } as any,
+	theme,
+	keybindings as any,
+	() => {},
+	(key, value) => { pickerChanges.push([key, value]); },
+	(key, value) => { pickerPreviews.push([key, value]); },
+	pickerCandidates,
+);
+spinnerScreen.handleInput("down");
+spinnerScreen.handleInput("down");
+spinnerScreen.handleInput("enter");
+assert.match(render(spinnerScreen), /^\s*❯ Spinner color\s+borderAccent/m, "Spinner uses borderAccent as its effective default");
+assert.doesNotMatch(render(spinnerScreen), /coming soon/, "Spinner no longer renders its placeholder");
+spinnerScreen.handleInput("enter");
+const beforeSpinnerPreview = readFileSync(settingsPath, "utf8");
+spinnerScreen.handleInput("down");
+assert.deepEqual(pickerPreviews.at(-1), ["spinnerColor", "success"], "spinner highlight movement emits the selected color key");
+assert.equal(readFileSync(settingsPath, "utf8"), beforeSpinnerPreview, "spinner preview does not persist");
+spinnerScreen.handleInput("escape");
+assert.deepEqual(pickerPreviews.at(-1), ["spinnerColor", undefined], "Esc clears the spinner preview override");
+assert.equal(readFileSync(settingsPath, "utf8"), beforeSpinnerPreview, "cancelling the spinner Picker writes nothing");
+spinnerScreen.handleInput("enter");
+spinnerScreen.handleInput("down");
+spinnerScreen.handleInput("enter");
+assert.equal(readWrittenSettings().spinnerColor, "success", "Enter commits the spinner color");
+spinnerScreen.handleInput("down");
+spinnerScreen.handleInput("enter");
+spinnerScreen.handleInput("up");
+spinnerScreen.handleInput("enter");
+assert.equal(readWrittenSettings().spinnerStatusColor, "warning", "the status color Picker commits from the same candidate list");
 
 assert.ok(changedKeys.includes("toolBackground"), "commits notify the host for live side effects");
 assert.ok(changedKeys.includes("assistantPrefix"), "message commits notify the host for live side effects");
@@ -208,6 +300,7 @@ const command = pi.commands.get("claudify");
 assert.ok(command, "/claudify is registered");
 
 let tuiCustomCalls = 0;
+let hostRenderRequests = 0;
 let receivedOverlayOptions: any;
 await command.handler("", {
 	mode: "tui",
@@ -221,17 +314,30 @@ await command.handler("", {
 			receivedOverlayOptions = options;
 			return new Promise((resolve) => {
 				const component = factory(
-					{ requestRender(): void {} },
+					{ requestRender(): void { hostRenderRequests += 1; } },
 					theme,
 					keybindings,
 					resolve,
 				);
+				component.handleInput("down");
+				component.handleInput("down");
+				component.handleInput("enter");
+				component.handleInput("enter");
+				const beforeHostPreview = readFileSync(settingsPath, "utf8");
+				component.handleInput("down");
+				const spinnerPreviewKey = Symbol.for("pi-claudify:spinner-color-preview");
+				assert.equal((globalThis as any)[spinnerPreviewKey], "error", "the registered command installs the real spinner preview override");
+				assert.equal(readFileSync(settingsPath, "utf8"), beforeHostPreview, "the command-level preview path does not write settings");
+				component.handleInput("escape");
+				assert.equal((globalThis as any)[spinnerPreviewKey], undefined, "the registered command clears its preview override on cancel");
+				component.handleInput("escape");
 				component.handleInput("escape");
 			});
 		},
 	},
 });
 assert.equal(tuiCustomCalls, 1, "TUI mode opens one custom overlay");
+assert.ok(hostRenderRequests >= 8, "the real preview callback requests host repaints while the Picker is active");
 assert.deepEqual(receivedOverlayOptions, {
 	overlay: true,
 	overlayOptions: { width: "100%", maxHeight: "100%", anchor: "top-left" },
@@ -256,5 +362,38 @@ for (const mode of ["rpc", "json", "print"] as const) {
 	assert.equal(customCalls, 0, `${mode} mode does not open the overlay`);
 	assert.deepEqual(notices, [["/claudify needs the interactive TUI", "info"]], `${mode} mode emits the TUI notice`);
 }
+
+// A theme missing one of COMMON_COLOR_KEYS must not crash the Picker render.
+// theme.fg() throws on an unknown key, so a custom/minimal theme (or a key
+// dropped across an upgrade) would otherwise take the whole /claudify overlay
+// down the moment the Spinner Section or a color Picker paints.
+const missingKey = COMMON_COLOR_KEYS[COMMON_COLOR_KEYS.length - 1];
+const partialTheme = new Proxy(theme, {
+	get(target, prop, receiver) {
+		if (prop === "fg") {
+			return (color: string, text: string): string => {
+				if (color === missingKey) throw new Error(`Unknown theme color: ${color}`);
+				return target.fg(color, text);
+			};
+		}
+		return Reflect.get(target, prop, receiver);
+	},
+});
+const resilientScreen = new ClaudifyScreen(
+	{ requestRender: () => {} } as any,
+	partialTheme as any,
+	keybindings as any,
+	() => {},
+	() => {},
+	() => {},
+	pickerCandidates,
+);
+resilientScreen.handleInput("down");
+resilientScreen.handleInput("down");
+resilientScreen.handleInput("enter");
+assert.doesNotThrow(() => render(resilientScreen), "the Spinner Section paints even when the theme lacks a color key");
+resilientScreen.handleInput("enter");
+assert.doesNotThrow(() => render(resilientScreen), "a color Picker candidate list paints past a theme key it cannot resolve");
+assert.match(render(resilientScreen), new RegExp(missingKey), "the unresolved key still renders as plain text rather than crashing");
 
 console.log("claudify Hub and immediate-commit Section tests passed");

@@ -128,6 +128,16 @@ function linkedPath(cwd: string, displayPath: string, absolutePath?: string): st
 // /cc-spinner edits take effect on the next 250ms spinner tick instead of
 // waiting for the file-stat TTL.
 const SPINNER_BUST_KEY = Symbol.for("pi-claudify:spinner-settings-bust");
+const SPINNER_COLOR_PREVIEW_KEY = Symbol.for("pi-claudify:spinner-color-preview");
+const SPINNER_STATUS_COLOR_PREVIEW_KEY = Symbol.for("pi-claudify:spinner-status-color-preview");
+export const COMMON_COLOR_KEYS: readonly string[] = [
+	"accent", "borderAccent", "success", "error", "warning",
+	"muted", "dim", "text", "thinkingText",
+	"toolTitle", "mdHeading", "mdCode", "mdLink", "mdListBullet",
+	"bashMode",
+	"thinkingLow", "thinkingMedium", "thinkingHigh", "thinkingXhigh",
+	"syntaxKeyword", "syntaxFunction", "syntaxString", "syntaxType",
+];
 function bustSpinnerSettingsCache(): void {
 	const current = ((globalThis as any)[SPINNER_BUST_KEY] as number | undefined) ?? 0;
 	(globalThis as any)[SPINNER_BUST_KEY] = current + 1;
@@ -1816,7 +1826,7 @@ export function classifyBashCommandForDisplay(command: string): BashDisplayInfo 
 
 function diffCollapsedLimit(): number {
 	const value = readSettings().values.diffCollapsedLines;
-	return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : 24;
+	return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.floor(value) : 10;
 }
 
 function collapsedPreviewCount(expanded: boolean, fallback: number): number {
@@ -1918,9 +1928,16 @@ const DIFF_PRESETS: Record<string, DiffPreset> = {
 	},
 };
 
+export const DIFF_PRESET_KEYS: readonly string[] = Object.keys(DIFF_PRESETS);
+
+let diffThemePreview: string | null | undefined;
+
 function loadDiffConfig(): DiffUserConfig {
 	const settings = readSettings().values;
-	return { diffTheme: settings.diffTheme, diffColors: settings.diffColors };
+	return {
+		diffTheme: diffThemePreview === undefined ? settings.diffTheme : (diffThemePreview ?? undefined),
+		diffColors: settings.diffColors,
+	};
 }
 
 // 6x6x6 color cube channel values used by pi's 256color fallback.
@@ -2256,12 +2273,30 @@ function applyThemePaletteIfNeeded(theme: any): void {
 }
 
 function applyDiffPalette(): void {
+	BG_ADD = CC_BG_ADD;
+	BG_DEL = CC_BG_DEL;
+	BG_ADD_W = CC_BG_ADD_WORD;
+	BG_DEL_W = CC_BG_DEL_WORD;
+	BG_GUTTER_ADD = CC_BG_ADD;
+	BG_GUTTER_DEL = CC_BG_DEL;
+	BG_EMPTY = TRANSPARENT_BG;
+	BG_BASE = TRANSPARENT_BG;
+	FG_ADD = CC_FG_ADD;
+	FG_DEL = CC_FG_DEL;
+	FG_DIM = "\x1b[38;2;80;80;80m";
+	FG_LNUM = "\x1b[38;2;100;100;100m";
+	FG_RULE = "\x1b[38;2;50;50;50m";
+	FG_STRIPE = "\x1b[38;2;40;40;40m";
+	FG_SAFE_MUTED = "\x1b[38;2;139;148;158m";
+	DIFF_THEME = (process.env.DIFF_THEME as BundledTheme | undefined) ?? "monokai";
+	hasExplicitBgConfig = false;
+	_explicitFgFields.clear();
+
 	const config = loadDiffConfig();
 	const preset = config.diffTheme ? DIFF_PRESETS[config.diffTheme] : null;
 	if (preset) hasExplicitBgConfig = true;
 	const overrides = config.diffColors ?? {};
 	if (Object.keys(overrides).length > 0) hasExplicitBgConfig = true;
-	_explicitFgFields.clear();
 
 	const applyBg = (key: string, presetValue: string | undefined, set: (value: string) => void) => {
 		const hex = overrides[key] ?? presetValue;
@@ -4465,19 +4500,47 @@ export default function (pi: ExtensionAPI): void {
 			}
 
 			await ctx.ui.custom<void>(
-				(tui, theme, keybindings, done) => new ClaudifyScreen(
-					tui,
-					theme,
-					keybindings,
-					() => done(undefined),
-					(key) => {
-						if (key === "toolBackground") {
-							toolBackgroundOverride = null;
-							applyToolBackgroundMode(ctx.ui.theme);
-						}
-						if (key === "hiddenThinkingLabel") applyHiddenThinkingLabel(ctx);
-					},
-				),
+				(tui, theme, keybindings, done) => {
+					const refreshDiffPalette = (): void => {
+						applyDiffPalette();
+						_themePaletteCacheTheme = null;
+						autoDerivePending = !hasExplicitBgConfig;
+						applyThemePaletteIfNeeded(ctx.ui.theme);
+						clearHighlightCache();
+						tui.requestRender();
+					};
+					return new ClaudifyScreen(
+						tui,
+						theme,
+						keybindings,
+						() => done(undefined),
+						(key) => {
+							if (key === "toolBackground") {
+								toolBackgroundOverride = null;
+								applyToolBackgroundMode(ctx.ui.theme);
+							}
+							if (key === "hiddenThinkingLabel") applyHiddenThinkingLabel(ctx);
+							if (key === "spinnerColor" || key === "spinnerStatusColor" || key === "themeAdaptive") {
+								bustSpinnerSettingsCache();
+							}
+							if (key === "diffTheme" || key === "diffPalette" || key === "themeAdaptive") refreshDiffPalette();
+							tui.requestRender();
+						},
+						(key, value) => {
+							if (key === "diffTheme") {
+								diffThemePreview = value === null ? null : typeof value === "string" ? value : undefined;
+								refreshDiffPalette();
+								return;
+							}
+							const previewKey = key === "spinnerColor" ? SPINNER_COLOR_PREVIEW_KEY : SPINNER_STATUS_COLOR_PREVIEW_KEY;
+							if (typeof value === "string") (globalThis as any)[previewKey] = value;
+							else delete (globalThis as any)[previewKey];
+							bustSpinnerSettingsCache();
+							tui.requestRender();
+						},
+						{ diffThemes: DIFF_PRESET_KEYS, colorKeys: COMMON_COLOR_KEYS },
+					);
+				},
 				{
 					overlay: true,
 					overlayOptions: { width: "100%", maxHeight: "100%", anchor: "top-left" },
@@ -4600,14 +4663,6 @@ export default function (pi: ExtensionAPI): void {
 
 	// /cc-spinner command — pick which theme color keys drive the spinner glyph,
 	// verb text, and status suffix.
-	const COMMON_COLOR_KEYS: readonly string[] = [
-		"accent", "borderAccent", "success", "error", "warning",
-		"muted", "dim", "text", "thinkingText",
-		"toolTitle", "mdHeading", "mdCode", "mdLink", "mdListBullet",
-		"bashMode",
-		"thinkingLow", "thinkingMedium", "thinkingHigh", "thinkingXhigh",
-		"syntaxKeyword", "syntaxFunction", "syntaxString", "syntaxType",
-	];
 	pi.registerCommand("cc-spinner", {
 		description: "Set spinner colors or manage custom spinner verbs",
 		getArgumentCompletions(prefix: string) {
