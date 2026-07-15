@@ -171,19 +171,9 @@ function applyThemeColors(theme: any): void {
 	if (status) STATUS_DIM = status;
 }
 
-// Match OpenBrawd's spinner glyph set, with the final Ghostty frame restored
-// to ✽ because the user's font-codepoint-map now centers it correctly.
-function getDefaultSpinnerCharacters(): string[] {
-	if (process.env.TERM === "xterm-ghostty") {
-		return ["·", "✢", "✳", "✶", "✻", "✽"];
-	}
-	return process.platform === "darwin"
-		? ["·", "✢", "✳", "✶", "✻", "✽"]
-		: ["·", "✢", "*", "✶", "✻", "✽"];
-}
-
-const SPINNER_CHARS = getDefaultSpinnerCharacters();
-const OB_FRAMES = [...SPINNER_CHARS, ...[...SPINNER_CHARS].reverse()];
+// Claude Code's live indicator is a static middle dot. The ✻ glyph belongs to
+// settled worked/thinking lines and must never surface through the live Loader.
+const LIVE_SPINNER_FRAMES = ["·"];
 const LOADER_INTERVAL_MS = 250;
 const LOADER_LAST_TEXT = Symbol.for("pi-claudify:loader-last-text");
 const LOADER_ACTIVE = Symbol.for("pi-claudify:loader-active");
@@ -200,7 +190,7 @@ function unrefTimer(timer: ReturnType<typeof setTimeout> | null | undefined): vo
 
 (Loader.prototype as any).updateDisplay = function patchedUpdateDisplay() {
 	applyThemeColors(this.ui?.theme);
-	const frame = OB_FRAMES[this.currentFrame % OB_FRAMES.length];
+	const frame = LIVE_SPINNER_FRAMES[this.currentFrame % LIVE_SPINNER_FRAMES.length];
 	const message = typeof this.message === "string" && RAW_ANSI_RE.test(this.message)
 		? this.message
 		: this.messageColorFn(this.message);
@@ -227,7 +217,7 @@ Loader.prototype.start = function patchedStart() {
 		const timer = setTimeout(() => {
 			(this as any).intervalId = null;
 			if ((this as any)[LOADER_ACTIVE] !== true || (this as any)[LOADER_GENERATION] !== generation) return;
-			(this as any).currentFrame = ((this as any).currentFrame + 1) % OB_FRAMES.length;
+			(this as any).currentFrame = ((this as any).currentFrame + 1) % LIVE_SPINNER_FRAMES.length;
 			(this as any).updateDisplay();
 			scheduleNext();
 		}, intervalMs);
