@@ -442,6 +442,9 @@ assert.match(
 );
 const command = pi.commands.get("claudify");
 assert.ok(command, "/claudify is registered");
+for (const removedCommand of ["cc-tools", "cc-theme", "cc-spinner", "cc-message"]) {
+	assert.equal(pi.commands.has(removedCommand), false, `/${removedCommand} is not registered`);
+}
 
 let tuiCustomCalls = 0;
 let hostRenderRequests = 0;
