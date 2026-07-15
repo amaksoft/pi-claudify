@@ -26,19 +26,19 @@ function useSandbox(
 	return readSettings();
 }
 
-const merged = useSandbox(
+const userOnly = useSandbox(
 	{
-		spinnerColor: "user-color",
 		spinnerStatusColor: "user-status",
 	},
 	{
 		spinnerColor: "project-color",
 	},
 );
-assert.equal(merged.values.spinnerColor, "project-color", "project values override user values per key");
-assert.equal(merged.sources.spinnerColor, "project");
-assert.equal(merged.values.spinnerStatusColor, "user-status", "user values survive when the project omits the key");
-assert.equal(merged.sources.spinnerStatusColor, "user");
+assert.equal(userOnly.values.spinnerColor, undefined, "project settings have no effect");
+assert.equal(userOnly.values.spinnerStatusColor, "user-status");
+assert.deepEqual(Object.keys(userOnly).sort(), ["file", "values"], "the snapshot describes only the user file");
+assert.equal(userOnly.file.status, "ok");
+assert.ok(userOnly.file.path.endsWith("/home/.pi/settings.json"));
 
 const legacy = useSandbox(
 	{
@@ -48,29 +48,16 @@ const legacy = useSandbox(
 	{},
 );
 assert.equal(legacy.values.spinnerColor, "legacy-color", "spinnerVerbColor remains an alias for spinnerColor");
-assert.equal(legacy.sources.spinnerColor, "user");
 assert.equal(legacy.values.toolBackground, "outlines", 'toolBackground: "border" remains an alias for "outlines"');
-assert.equal(legacy.sources.toolBackground, "user");
-
-const projectLegacy = useSandbox(
-	{ spinnerColor: "user-canonical" },
-	{ spinnerVerbColor: "project-legacy" },
-);
-assert.equal(projectLegacy.values.spinnerColor, "project-legacy", "a project legacy alias overrides a user canonical value");
-assert.equal(projectLegacy.sources.spinnerColor, "project");
 
 const canonical = useSandbox(
 	{
 		spinnerColor: "user-canonical",
 		spinnerVerbColor: "user-legacy",
 	},
-	{
-		spinnerColor: "project-canonical",
-		spinnerVerbColor: "project-legacy",
-	},
+	{},
 );
-assert.equal(canonical.values.spinnerColor, "project-canonical", "canonical keys win over aliases in the winning file");
-assert.equal(canonical.sources.spinnerColor, "project");
+assert.equal(canonical.values.spinnerColor, "user-canonical", "canonical keys win over aliases in the user file");
 
 const isolated = useSandbox(
 	{
@@ -79,35 +66,26 @@ const isolated = useSandbox(
 	{},
 );
 isolated.values.diffColors!.added = "changed";
-isolated.sources.diffColors = "project";
 const reread = readSettings();
 assert.equal(reread.values.diffColors!.added, "green", "callers cannot mutate cached settings values");
-assert.equal(reread.sources.diffColors, "user", "callers cannot mutate cached provenance");
 
-const statuses = useSandbox({ spinnerColor: "user-color" }, {});
-assert.equal(statuses.files.user.status, "ok");
-assert.equal(statuses.files.project.status, "ok");
-assert.ok(statuses.files.user.path.endsWith("/.pi/settings.json"));
+const brokenUser = useSandbox("{ not json", { spinnerColor: "project-color" });
+assert.equal(brokenUser.file.status, "invalid", "a malformed user file is reported, not treated as missing");
+assert.deepEqual(brokenUser.values, {}, "a malformed user file contributes no values");
 
-const brokenProject = useSandbox({ spinnerColor: "user-color" }, "{ not json");
-assert.equal(brokenProject.files.project.status, "invalid", "a malformed project file is reported, not treated as missing");
-assert.equal(brokenProject.files.user.status, "ok");
-assert.equal(brokenProject.values.spinnerColor, "user-color", "user values survive a malformed project file");
-assert.equal(brokenProject.sources.spinnerColor, "user");
+const arrayUser = useSandbox('["spinnerColor", "red"]', {});
+assert.equal(arrayUser.file.status, "invalid", "non-object top-level JSON is invalid, not silently empty");
 
-const arrayProject = useSandbox({}, '["spinnerColor", "red"]');
-assert.equal(arrayProject.files.project.status, "invalid", "non-object top-level JSON is invalid, not silently empty");
-
-const missingProject = useSandbox({ spinnerColor: "user-color" }, null);
-assert.equal(missingProject.files.project.status, "missing");
-assert.equal(missingProject.values.spinnerColor, "user-color");
+const missingUser = useSandbox(null, { spinnerColor: "project-color" });
+assert.equal(missingUser.file.status, "missing");
+assert.deepEqual(missingUser.values, {}, "project settings do not fill in for a missing user file");
 
 const refreshSandbox = mkdtempSync(join(tmpdir(), "cc-settings-refresh-"));
 const refreshHome = join(refreshSandbox, "home");
 const refreshCwd = join(refreshSandbox, "project");
 mkdirSync(join(refreshHome, ".pi"), { recursive: true });
 mkdirSync(join(refreshCwd, ".pi"), { recursive: true });
-const refreshPath = join(refreshCwd, ".pi", "settings.json");
+const refreshPath = join(refreshHome, ".pi", "settings.json");
 writeFileSync(refreshPath, JSON.stringify({ spinnerColor: "before" }));
 process.env.HOME = refreshHome;
 process.chdir(refreshCwd);

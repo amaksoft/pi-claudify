@@ -3,7 +3,6 @@ import { join } from "node:path";
 
 import type { MessageSpacing, MessageStyle, WorkedVerbMode } from "./message-chrome.ts";
 
-export type SettingsSource = "user" | "project";
 export type SettingsFileStatus = "ok" | "missing" | "invalid";
 export type SpinnerVerbMode = "append" | "replace";
 
@@ -48,14 +47,7 @@ export interface SettingsFileInfo {
 
 export interface SettingsSnapshot {
 	values: SettingsFile;
-	sources: Record<string, SettingsSource>;
-	/**
-	 * Read status per settings file. An "invalid" file contributes no values,
-	 * which is indistinguishable from "missing" in `values`/`sources` alone —
-	 * consumers that surface provenance must check this to avoid claiming a
-	 * clean merge over a file that actually failed to parse.
-	 */
-	files: Record<SettingsSource, SettingsFileInfo>;
+	file: SettingsFileInfo;
 }
 
 interface CachedSettings extends SettingsSnapshot {
@@ -91,11 +83,7 @@ function normalizeAliases(settings: Record<string, unknown>): SettingsFile {
 function cloneSnapshot(snapshot: SettingsSnapshot): SettingsSnapshot {
 	return {
 		values: structuredClone(snapshot.values),
-		sources: { ...snapshot.sources },
-		files: {
-			user: { ...snapshot.files.user },
-			project: { ...snapshot.files.project },
-		},
+		file: { ...snapshot.file },
 	};
 }
 
@@ -106,31 +94,19 @@ export function clearSettingsCache(): void {
 export function readSettings(): SettingsSnapshot {
 	const home = process.env.HOME ?? "";
 	const userPath = home ? join(home, ".pi", "settings.json") : "";
-	const projectPath = join(process.cwd(), ".pi", "settings.json");
-	const cacheKey = `${userPath}\0${projectPath}`;
 	const now = Date.now();
 	if (settingsCache
-		&& settingsCache.cacheKey === cacheKey
+		&& settingsCache.cacheKey === userPath
 		&& now - settingsCache.timestamp < SETTINGS_CACHE_TTL_MS) {
 		return cloneSnapshot(settingsCache);
 	}
 
-	const values: SettingsFile = {};
-	const sources: Record<string, SettingsSource> = {};
-	const files: Record<SettingsSource, SettingsFileInfo> = {
-		user: { path: userPath, status: "missing" },
-		project: { path: projectPath, status: "missing" },
+	const { data, status } = readSettingsFile(userPath);
+	settingsCache = {
+		values: normalizeAliases(data),
+		file: { path: userPath, status },
+		cacheKey: userPath,
+		timestamp: now,
 	};
-	for (const [source, path] of [["user", userPath], ["project", projectPath]] as const) {
-		const { data, status } = readSettingsFile(path);
-		files[source] = { path, status };
-		const settings = normalizeAliases(data);
-		for (const [key, value] of Object.entries(settings)) {
-			values[key] = value;
-			sources[key] = source;
-		}
-	}
-
-	settingsCache = { values, sources, files, cacheKey, timestamp: now };
 	return cloneSnapshot(settingsCache);
 }
