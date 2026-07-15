@@ -300,6 +300,7 @@ const command = pi.commands.get("claudify");
 assert.ok(command, "/claudify is registered");
 
 let tuiCustomCalls = 0;
+let hostRenderRequests = 0;
 let receivedOverlayOptions: any;
 await command.handler("", {
 	mode: "tui",
@@ -313,17 +314,30 @@ await command.handler("", {
 			receivedOverlayOptions = options;
 			return new Promise((resolve) => {
 				const component = factory(
-					{ requestRender(): void {} },
+					{ requestRender(): void { hostRenderRequests += 1; } },
 					theme,
 					keybindings,
 					resolve,
 				);
+				component.handleInput("down");
+				component.handleInput("down");
+				component.handleInput("enter");
+				component.handleInput("enter");
+				const beforeHostPreview = readFileSync(settingsPath, "utf8");
+				component.handleInput("down");
+				const spinnerPreviewKey = Symbol.for("pi-claudify:spinner-color-preview");
+				assert.equal((globalThis as any)[spinnerPreviewKey], "error", "the registered command installs the real spinner preview override");
+				assert.equal(readFileSync(settingsPath, "utf8"), beforeHostPreview, "the command-level preview path does not write settings");
+				component.handleInput("escape");
+				assert.equal((globalThis as any)[spinnerPreviewKey], undefined, "the registered command clears its preview override on cancel");
+				component.handleInput("escape");
 				component.handleInput("escape");
 			});
 		},
 	},
 });
 assert.equal(tuiCustomCalls, 1, "TUI mode opens one custom overlay");
+assert.ok(hostRenderRequests >= 8, "the real preview callback requests host repaints while the Picker is active");
 assert.deepEqual(receivedOverlayOptions, {
 	overlay: true,
 	overlayOptions: { width: "100%", maxHeight: "100%", anchor: "top-left" },
