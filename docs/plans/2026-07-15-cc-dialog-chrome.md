@@ -1,6 +1,6 @@
 # Claude Code Dialog Chrome Grammar (`/config`, `/mcp`, `/theme`)
 
-Status: ground truth capture in progress
+Status: ground truth
 Date: 2026-07-15
 Claude Code: `2.1.210 (Claude Code)`
 Method: live `claude` session in `/tmp/clfy1-probe.EP7M3J`, driven through cmux and sampled with `cmux read-screen` at approximately 0.6 seconds through command entry, opening, navigation, mutation, restoration, and exit. Visual color observations came from the same live cmux surface under Claude Code's Dark mode. Nothing here is reconstructed from memory.
@@ -9,7 +9,7 @@ Method: live `claude` session in `/tmp/clfy1-probe.EP7M3J`, driven through cmux 
 
 The wide capture used a roughly 200-column Claude surface. Narrow captures split that cmux workspace vertically. cmux exposes `resize-pane`: targeting the left pane's nonexistent left border returned `invalid_state: Pane has no adjacent border in direction left`; targeting the new right pane with `-L` succeeded and shrank the Claude pane further. `/config` was recorded at the initial half-width and `/mcp` at both full width and the narrower resized width.
 
-The probe ran outside this repository. No project files or settings were exposed to the probe session. The `/config` mutations were toggling `Show tips` from `true` to `false` and immediately back to `true`, plus an accidental `Auto-compact` toggle from `true` to `false` during the first `/mcp` launch; the capture confirmed `Auto-compact` was restored to `true` before `/mcp` capture continued.
+The probe ran outside this repository. No project files or settings were exposed to the probe session. The `/config` mutations were toggling `Show tips` from `true` to `false` and immediately back to `true`, plus an accidental `Auto-compact` toggle from `true` to `false` during the first `/mcp` launch; the capture confirmed `Auto-compact` was restored to `true` before `/mcp` capture continued. `/theme` was temporarily committed to Light mode to confirm Enter semantics, then committed back to the original Dark mode before capture ended.
 
 ## `/config`
 
@@ -200,3 +200,88 @@ In a detail view, `Up` and `Down` move among numbered actions and `Enter` select
 ### Wide and narrow behavior
 
 At wide width the management panel keeps its compact content width and leaves unused space to the right. At the narrower resized width, the title, count, section headers, rows, help URL, and footer retain the same indentation and remain single-line in the captured server set. The panel does not acquire a border, stack status beneath names, or switch to cards. Only the transcript and welcome chrome behind it reflowed and truncated as the pane narrowed.
+
+## `/theme`
+
+### Unboxed option list plus a full-width preview
+
+`/theme` opens below the same thin lavender horizontal rule used by `/mcp`. There is no outer border. The lavender/purple title is followed by a bold light-gray instruction:
+
+```text
+   Theme
+
+   Choose the text style that looks best with your terminal
+```
+
+The option list is numbered and unboxed:
+
+```text
+     1. Auto (match terminal)
+   ❯ 2. Dark mode ✔
+     3. Light mode
+     4. Dark mode (colorblind-friendly)
+     5. Light mode (colorblind-friendly)
+     6. Dark mode (ANSI colors only)
+     7. Light mode (ANSI colors only)
+     8. New custom theme…
+```
+
+The lavender `❯` marks the highlighted preview. The persisted theme is separately marked with a green label and green `✔`. Those states can diverge: while Light mode was highlighted for preview, `Dark mode ✔` remained green until Enter committed Light mode.
+
+Rows have no disabled state in the captured option set. Parenthetical qualifiers are normal light gray, and unselected rows are light gray with dimmer numbers.
+
+### Preview grammar
+
+One blank line separates the options from a syntax/diff preview bounded by full-width dim `╌` rules:
+
+```text
+   ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+   function greet() {
+     console.log("Hello, World!");
+     console.log("Hello, Claude!");
+   }
+   ╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+    Syntax theme: Monokai Extended (ctrl+t to disable)
+```
+
+The actual preview is syntax-colored. Under Dark mode, `function` is cyan, `greet` is yellow-green, and the two changed lines use dark red and dark green full-row backgrounds. Under the Light mode preview, the token palette changes and those rows use pale pink and pale green backgrounds. The `Syntax theme` line is dim gray and one column farther left than the option rows.
+
+`ctrl+t to disable` is part of the syntax-theme status line, not the key-hint footer. The capture did not toggle syntax highlighting.
+
+### Footer wording
+
+Verbatim in every captured highlight state:
+
+```text
+Enter to select · Esc to cancel
+```
+
+The footer is dim and italic, with one blank line above it.
+
+### Live preview, commit, and cancel semantics
+
+`Up` and `Down` move the `❯` and apply the highlighted theme immediately to the entire Claude Code surface. Moving from persisted Dark mode to highlighted Light mode changed the option colors, syntax tokens, diff backgrounds, transcript selection treatment, and other Claude chrome before Enter was pressed. It also changed the preview's syntax-theme label from `Monokai Extended` to `GitHub`.
+
+The preview changes Claude's color tokens, not the terminal emulator's background. In the captured cmux terminal, highlighting Light mode left the underlying dark terminal background in place while repainting text, selection, diff, and syntax colors for the light palette.
+
+The persisted theme's green `✔` does not move during preview. `Escape` closes `/theme`, restores the persisted theme and syntax theme, and emits no transcript result. The captured Light mode preview returned to Dark mode colors and `Monokai Extended` after Escape.
+
+`Enter` commits the highlighted option and closes the surface. Claude then appends a result under the `/theme` command:
+
+```text
+❯ /theme
+  ⎿  Theme set to light
+```
+
+Reopening `/theme` after that commit showed `Light mode ✔` selected. The capture moved to Dark mode and pressed Enter to restore the original setting, producing:
+
+```text
+❯ /theme
+  ⎿  Theme set to dark
+```
+
+### Wide and narrow behavior
+
+At wide width the option list stays compact at the left while the two `╌` preview rules and colored diff-row backgrounds stretch across nearly the full available overlay width. The footer stays left-aligned rather than following the stretched preview edge.
+
+At the captured narrow width, all eight option rows remain single-line and keep the same numbering, indentation, selection marker, and checkmark grammar. The preview rules and colored row backgrounds shrink to the pane. The syntax-theme line and footer remain intact; the surface does not add a border, stack option metadata, or hide the preview.
