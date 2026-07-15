@@ -20,8 +20,8 @@ _Avoid_: tab, category, submenu
 A row on a Section that chooses from a list of visual candidates (spinner color, diff theme). Moving the highlight previews the candidate live; enter commits it, esc restores what was set before. All other rows (booleans, enums, numbers) commit and persist the moment they change.
 _Avoid_: selector, dropdown
 
-**Project override**:
-A settings key set in the project's `.pi/settings.json`, which beats the user's `~/.pi/settings.json` value per key. The Claudify screen writes only user settings and badges rows whose effective value is a Project override.
+**Project override** _(retired by ADR 0004)_:
+2.0.0 ignores the project `.pi/settings.json` entirely; every setting of this extension is user-scoped in `~/.pi/settings.json`, so no override, badge, or provenance exists. The term survives only for reading ADR 0003's history.
 _Avoid_: local settings, workspace settings
 
 **Spinner verbs**:
