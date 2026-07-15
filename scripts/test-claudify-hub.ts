@@ -363,4 +363,37 @@ for (const mode of ["rpc", "json", "print"] as const) {
 	assert.deepEqual(notices, [["/claudify needs the interactive TUI", "info"]], `${mode} mode emits the TUI notice`);
 }
 
+// A theme missing one of COMMON_COLOR_KEYS must not crash the Picker render.
+// theme.fg() throws on an unknown key, so a custom/minimal theme (or a key
+// dropped across an upgrade) would otherwise take the whole /claudify overlay
+// down the moment the Spinner Section or a color Picker paints.
+const missingKey = COMMON_COLOR_KEYS[COMMON_COLOR_KEYS.length - 1];
+const partialTheme = new Proxy(theme, {
+	get(target, prop, receiver) {
+		if (prop === "fg") {
+			return (color: string, text: string): string => {
+				if (color === missingKey) throw new Error(`Unknown theme color: ${color}`);
+				return target.fg(color, text);
+			};
+		}
+		return Reflect.get(target, prop, receiver);
+	},
+});
+const resilientScreen = new ClaudifyScreen(
+	{ requestRender: () => {} } as any,
+	partialTheme as any,
+	keybindings as any,
+	() => {},
+	() => {},
+	() => {},
+	pickerCandidates,
+);
+resilientScreen.handleInput("down");
+resilientScreen.handleInput("down");
+resilientScreen.handleInput("enter");
+assert.doesNotThrow(() => render(resilientScreen), "the Spinner Section paints even when the theme lacks a color key");
+resilientScreen.handleInput("enter");
+assert.doesNotThrow(() => render(resilientScreen), "a color Picker candidate list paints past a theme key it cannot resolve");
+assert.match(render(resilientScreen), new RegExp(missingKey), "the unresolved key still renders as plain text rather than crashing");
+
 console.log("claudify Hub and immediate-commit Section tests passed");

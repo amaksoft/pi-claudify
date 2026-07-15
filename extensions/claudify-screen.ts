@@ -190,6 +190,19 @@ function themedText(theme: Theme, color: "accent" | "dim" | "text", text: string
 	return theme.fg(color, text);
 }
 
+// Color a string by an arbitrary theme color KEY (e.g. a spinner color like
+// "borderAccent"). theme.fg() THROWS on a key the active theme doesn't define,
+// so a custom/minimal theme missing a COMMON_COLOR_KEYS entry would crash the
+// picker render; fall back to plain text color instead of taking the overlay
+// down. Mirrors the safeFgAnsi discipline used for the same reason in index.ts.
+function themedByKey(theme: Theme, colorKey: string, text: string): string {
+	try {
+		return theme.fg(colorKey as never, text);
+	} catch {
+		return themedText(theme, "text", text);
+	}
+}
+
 function effectiveEnumValue(settings: SettingsFile, definition: EnumRowDefinition): string {
 	const value = settings[definition.key];
 	return typeof value === "string" && definition.values.includes(value) ? value : definition.defaultValue;
@@ -578,7 +591,7 @@ export class ClaudifyScreen extends Container implements Focusable {
 			const label = themedText(this.theme, "text", row.label.padEnd(labelWidth));
 			const displayValue = row.kind === "picker" && row.value === undefined ? "none" : String(row.value);
 			const value = row.kind === "picker" && row.key !== "diffTheme"
-				? this.theme.fg(row.value as any, displayValue)
+				? themedByKey(this.theme, String(row.value), displayValue)
 				: themedText(this.theme, "text", displayValue);
 			this.content.addChild(new Text(`${marker} ${label}${value}`, 3, 0));
 		}
@@ -608,7 +621,7 @@ export class ClaudifyScreen extends Container implements Focusable {
 			const number = themedText(this.theme, "dim", `${index + 1}.`);
 			const label = row.key === "diffTheme"
 				? themedText(this.theme, "text", candidate.label)
-				: this.theme.fg(candidate.value as any, candidate.label);
+				: themedByKey(this.theme, String(candidate.value ?? ""), candidate.label);
 			const check = committed ? ` ${this.theme.fg("success", "✔")}` : "";
 			this.content.addChild(new Text(`${marker} ${number} ${label}${check}`, 3, 0));
 		}
