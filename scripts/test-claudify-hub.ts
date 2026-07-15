@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { AssistantMessageComponent } from "@earendil-works/pi-coding-agent";
 import { initTheme, theme } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 
 const sandbox = mkdtempSync(join(tmpdir(), "claudify-sections-"));
@@ -17,7 +18,20 @@ process.chdir(cwd);
 
 const { ClaudifyScreen } = await import("../extensions/claudify-screen.ts");
 const { default: extension, COMMON_COLOR_KEYS, DIFF_PRESET_KEYS } = await import("../extensions/index.ts");
+const { MAX_CUSTOM_SPINNER_VERBS, sanitizeSpinnerVerbs } = await import("../extensions/spinner.ts");
+const { MAX_CUSTOM_WORKED_VERBS, sanitizeWorkedVerbs } = await import("../extensions/message-chrome.ts");
 const pickerCandidates = { diffThemes: DIFF_PRESET_KEYS, colorKeys: COMMON_COLOR_KEYS };
+
+assert.equal(
+	sanitizeSpinnerVerbs(Array.from({ length: MAX_CUSTOM_SPINNER_VERBS + 1 }, (_, index) => `Spinner ${index}`)).length,
+	MAX_CUSTOM_SPINNER_VERBS,
+	"the Spinner sanitizer caps custom verbs at its exported limit",
+);
+assert.equal(
+	sanitizeWorkedVerbs(Array.from({ length: MAX_CUSTOM_WORKED_VERBS + 1 }, (_, index) => `Worked ${index}`)).length,
+	MAX_CUSTOM_WORKED_VERBS,
+	"the Worked sanitizer caps custom verbs at its exported limit",
+);
 
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
 
@@ -300,6 +314,11 @@ assert.equal(readWrittenSettings().spinnerVerbMode, "replace", "Spinner verb mod
 verbScreen.handleInput("down");
 verbScreen.handleInput("enter");
 assert.ok(render(verbScreen).includes("Type a verb or phrase · Enter to add · Esc to cancel"), "Add opens the inline phrase input");
+verbScreen.handleInput("Discard this draft");
+verbScreen.handleInput("escape");
+assert.ok(!Object.hasOwn(readWrittenSettings(), "spinnerVerbs"), "Esc cancels a partially entered verb without writing settings");
+assert.match(render(verbScreen), /^\s*❯ Add…/m, "cancelling Add returns navigation to the same pool editor");
+verbScreen.handleInput("enter");
 verbScreen.handleInput("  Reticulating splines  ");
 verbScreen.handleInput("enter");
 assert.deepEqual(readWrittenSettings().spinnerVerbs, ["Reticulating splines"], "Spinner Add sanitizes and persists a multi-word phrase");
@@ -365,6 +384,10 @@ assert.deepEqual(readWrittenSettings().workedVerbs, ["Polished the brass"], "Bac
 verbScreen.handleInput("up");
 verbScreen.handleInput("delete");
 assert.ok(!Object.hasOwn(readWrittenSettings(), "workedVerbs"), "removing the last Worked verb deletes the settings key instead of writing an empty list");
+verbScreen.handleInput("enter");
+verbScreen.handleInput("Filed the result");
+verbScreen.handleInput("enter");
+assert.deepEqual(readWrittenSettings().workedVerbs, ["Filed the result"], "Worked verbs can be added again after falling back to built-ins");
 assert.deepEqual(
 	{ verbs: readWrittenSettings().spinnerVerbs, mode: readWrittenSettings().spinnerVerbMode },
 	spinnerSettingsBeforeWorkedEdit,
@@ -407,6 +430,16 @@ class FakePi {
 
 const pi = new FakePi();
 extension(pi as any);
+const finishedAssistant = new AssistantMessageComponent({
+	role: "assistant",
+	content: [{ type: "text", text: "Finished." }],
+	stopReason: "stop",
+} as any, false);
+assert.match(
+	stripAnsi(finishedAssistant.render(100).join("\n")),
+	/✻ Filed the result for \d+s/,
+	"a finished assistant render immediately consumes the edited Worked verb pool",
+);
 const command = pi.commands.get("claudify");
 assert.ok(command, "/claudify is registered");
 
