@@ -4721,7 +4721,7 @@ export default function (pi: ExtensionAPI): void {
 				if (action === "list") {
 					if (!ctx.hasUI) return;
 					const listed = customVerbs.length > 0 ? customVerbs.map((v) => `- ${v}`).join("\n") : "No custom spinner verbs configured.";
-					ctx.ui.notify(`Custom spinner verbs (${customVerbMode}, ${customVerbs.length})\n${listed}\n\nCommands write user settings in ~/.pi/settings.json; project settings can be set manually in .pi/settings.json.`, "info");
+					ctx.ui.notify(`Custom spinner verbs (${customVerbMode}, ${customVerbs.length})\n${listed}\n\nCommands write user settings in ~/.pi/settings.json.`, "info");
 					return;
 				}
 
