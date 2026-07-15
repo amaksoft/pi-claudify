@@ -4771,7 +4771,7 @@ export default function (pi: ExtensionAPI): void {
 					writeSettingsKey("spinnerVerbs", undefined);
 					writeSettingsKey("spinnerVerbMode", undefined);
 					bustSpinnerSettingsCache();
-					if (ctx.hasUI) ctx.ui.notify("User custom spinner verbs reset. Project .pi/settings.json custom verbs may still apply.", "info");
+					if (ctx.hasUI) ctx.ui.notify("Custom spinner verbs reset.", "info");
 					return;
 				}
 
