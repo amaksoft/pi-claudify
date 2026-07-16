@@ -103,7 +103,7 @@ CLAUDE CODE                        PI (current)
 | 3 | `1 lines loaded` — ungrammatical; the individual-row path does not use the existing `plural()` helper. | missing-file turn |
 | 4 | Grep's `⎿` target is `"needle"`, not `"needle" in src`. | grep turn |
 | 5 | Result rows for read-only tools (`4 matches`, `3 files`, `4 entries`, `Done (1 lines)`, `Exit 3`) do not exist in Claude Code at all — the aggregate supplies the summary. | all read-only turns |
-| 6 | Live spinner glyph is `·` in Claude Code, `✻` in pi. (`✻` is Claude's *worked/thinking* glyph, which pi already matches.) | every turn |
+| 6 | ~~Live spinner glyph is `·` in Claude Code~~ **Corrected (CLFY-8):** the live glyph is *not* static. Claude Code rotates through the glyph set (`· ✢ ✳ ✶ ✻ ✽`) at **2 Hz** — one frame every 500 ms. The `·`-only reading was a polling artifact: frames sampled at 0.6s (see Method) aliased a moving spinner onto its `·` frame. `✻` appears both mid-rotation and as the settled *worked* glyph. pi already animated the same set, but at the inherited 250 ms (4 Hz); the fix corrects the cadence to 2 Hz. Verified live by the maintainer. | every turn |
 | 7 | Clause order: Claude renders `reading` before `listing`; this package's `CLAUSE_ORDER` puts `ls` before `read`. | earlier MCP capture |
 
 ## Expanding the collapsed line
