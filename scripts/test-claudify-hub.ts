@@ -255,6 +255,9 @@ pickerScreen.handleInput("enter");
 assert.equal(readWrittenSettings().themeAdaptive, false, "Theme adaptive commits immediately");
 pickerScreen.handleInput("down");
 pickerScreen.handleInput("enter");
+assert.equal(readWrittenSettings().accentColor, "theme", "Accent commits immediately");
+pickerScreen.handleInput("down");
+pickerScreen.handleInput("enter");
 assert.equal(readWrittenSettings().diffPalette, "theme", "Diff palette commits immediately");
 pickerScreen.handleInput("down");
 pickerScreen.handleInput("enter");
@@ -755,5 +758,41 @@ assert.doesNotThrow(() => render(resilientScreen), "the Spinner Section paints e
 resilientScreen.handleInput("enter");
 assert.doesNotThrow(() => render(resilientScreen), "a color Picker candidate list paints past a theme key it cannot resolve");
 assert.match(render(resilientScreen), new RegExp(missingKey), "the unresolved key still renders as plain text rather than crashing");
+
+// --- Claude accent override (docs/plans/2026-07-16-cc-accent-color.md) -------
+
+const { applyAccentOverride } = await import("../extensions/index.ts");
+const { clearSettingsCache } = await import("../extensions/settings.ts");
+
+writeFileSync(settingsPath, "{}");
+clearSettingsCache();
+const darkFake = { fgColors: { accent: "#8abeb7", text: "#d4d4d4" } };
+applyAccentOverride(darkFake);
+assert.equal(darkFake.fgColors.accent, "#B1B9F9", "default: pi's teal accent becomes CC's dark lavender");
+applyAccentOverride(darkFake);
+assert.equal(darkFake.fgColors.accent, "#B1B9F9", "re-applying is idempotent");
+
+writeFileSync(settingsPath, JSON.stringify({ accentColor: "theme" }));
+clearSettingsCache();
+applyAccentOverride(darkFake);
+assert.equal(darkFake.fgColors.accent, "#8abeb7", "accentColor=theme restores the theme's own accent exactly");
+
+writeFileSync(settingsPath, "{}");
+clearSettingsCache();
+const lightFake = { fgColors: new Map<string, string>([["accent", "#178f7f"], ["text", "#333333"]]) };
+applyAccentOverride(lightFake);
+assert.equal(lightFake.fgColors.get("accent"), "#5769F7", "light themes (dark text) get CC's darker blue-purple, via Map storage");
+
+const accentScreen = new ClaudifyScreen(
+	{ requestRender: () => {} } as any,
+	theme,
+	keybindings,
+	() => {},
+	undefined,
+	undefined,
+	pickerCandidates,
+);
+accentScreen.handleInput("enter");
+assert.match(render(accentScreen), /Accent\s+claude/, "the Theme Section exposes the Accent row defaulting to claude");
 
 console.log("claudify Hub and immediate-commit Section tests passed");

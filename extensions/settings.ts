@@ -43,6 +43,7 @@ export interface SettingsFile {
 	footerColor?: string;
 	footerUsageBar?: boolean;
 	editorBorder?: "gray" | "thinking";
+	accentColor?: "claude" | "theme";
 }
 
 export interface SettingsFileInfo {
