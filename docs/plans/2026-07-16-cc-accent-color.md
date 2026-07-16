@@ -59,3 +59,14 @@ overflow, crashing the session. Fix: store escapes precomputed for both color mo
 dark/light by parsing the ANSI text color. Lesson recorded in CLAUDE.md: assembled-render
 tests validate claudify's OWN output, not the format contracts of pi structures we
 mutate — a live pi smoke test gates every release now.
+
+## Alias-key addendum (live smoke finding)
+
+pi's dark theme resolves `mdCode` and `mdListBullet` from the same `accent` var, so after
+the override the transcript's inline code and bullets stayed teal (observed live: a file
+listing rendered `38;2;138;190;183`). The override now carries **every fgColors key whose
+loaded value aliased the accent** — recorded per theme instance alongside the original,
+restored exactly in `theme` mode. Caveat: Claude Code's exact inline-code color is
+UNCAPTURED (scratch CC sessions kept stalling); treating accent-aliased surfaces as
+accent-colored is the theme's own declared intent and visually matches CC's blue-family
+inline code, but a future capture may refine `mdCode` to its own CC value.
