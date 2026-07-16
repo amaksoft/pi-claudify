@@ -11,6 +11,7 @@ import {
 	type TUI,
 } from "@earendil-works/pi-tui";
 
+import { DEFAULT_FOOTER_COLOR, normalizeHexColor } from "./footer.ts";
 import {
 	MAX_CUSTOM_WORKED_VERBS,
 	MAX_WORKED_VERB_LENGTH,
@@ -25,8 +26,8 @@ import {
 } from "./spinner.ts";
 
 export interface ClaudifySection {
-	readonly id: "theme" | "diffs" | "spinner" | "messages" | "tool-output";
-	readonly label: "Theme" | "Diffs" | "Spinner" | "Messages" | "Tool output";
+	readonly id: "theme" | "diffs" | "spinner" | "messages" | "tool-output" | "footer";
+	readonly label: "Theme" | "Diffs" | "Spinner" | "Messages" | "Tool output" | "Footer";
 	readonly placeholder: string;
 }
 
@@ -36,9 +37,11 @@ export const CLAUDIFY_SECTIONS: readonly ClaudifySection[] = [
 	{ id: "spinner", label: "Spinner", placeholder: "Spinner settings — coming soon" },
 	{ id: "messages", label: "Messages", placeholder: "Message settings — coming soon" },
 	{ id: "tool-output", label: "Tool output", placeholder: "Tool output settings — coming soon" },
+	{ id: "footer", label: "Footer", placeholder: "Footer settings — coming soon" },
 ];
 
 type MessageTextSettingsKey = "assistantPrefix" | "thinkingPrefix" | "hiddenThinkingLabel";
+type TextRowSettingsKey = MessageTextSettingsKey | "footerColor";
 type PickerSettingsKey = "diffTheme" | "spinnerColor" | "spinnerStatusColor";
 type VerbListSettingsKey = "spinnerVerbs" | "workedVerbs";
 type VerbModeSettingsKey = "spinnerVerbMode" | "workedVerbMode";
@@ -70,7 +73,12 @@ type EditableSettingsKey =
 	| "assistantPrefix"
 	| "thinkingPrefix"
 	| "messageSpacing"
-	| "hiddenThinkingLabel";
+	| "hiddenThinkingLabel"
+	| "footerStyle"
+	| "footerColorMode"
+	| "footerColor"
+	| "footerContextBar"
+	| "editorBorder";
 
 const CLAUDE_AUTHENTIC: Partial<Record<EditableSettingsKey, string>> = {
 	// docs/plans/2026-07-13-mcp-grammar.md:13-17 — no per-call MCP result row or preview.
@@ -104,7 +112,7 @@ interface NumberSettingRow extends SettingRowBase {
 
 interface TextSettingRow extends SettingRowBase {
 	readonly kind: "text";
-	readonly key: MessageTextSettingsKey;
+	readonly key: TextRowSettingsKey;
 	readonly value: string;
 }
 
@@ -244,6 +252,16 @@ const TOOL_OUTPUT_ROWS: readonly ImmediateRowDefinition[] = [
 	{ kind: "number", key: "expandedPreviewMaxLines", label: "Expanded preview max lines", defaultValue: 4000, min: 1 },
 ];
 
+// docs/plans/2026-07-16-cc-input-box-footer.md — the Claude Code statusline port
+// and the pinned-gray input border. footerColor is a text row, added separately
+// in sectionRows so it can sit next to "Color mode".
+const FOOTER_ROWS: readonly ImmediateRowDefinition[] = [
+	{ kind: "enum", key: "footerStyle", label: "Footer style", values: ["claude", "pi"], defaultValue: "claude" },
+	{ kind: "enum", key: "footerColorMode", label: "Color mode", values: ["colored", "single", "monochrome"], defaultValue: "colored" },
+	{ kind: "boolean", key: "footerContextBar", label: "Context bar", defaultValue: true },
+	{ kind: "enum", key: "editorBorder", label: "Input border", values: ["gray", "thinking"], defaultValue: "gray" },
+];
+
 class IndentedInput extends Input {
 	override render(width: number): string[] {
 		return super.render(Math.max(1, width - 3)).map((line) => `   ${line}`);
@@ -324,6 +342,14 @@ function sectionRows(section: ClaudifySection, candidates: ClaudifyPickerCandida
 	if (section.id === "tool-output") return immediateRows(settings, TOOL_OUTPUT_ROWS);
 	if (section.id === "messages") return messageRows(settings);
 	if (section.id === "diffs") return immediateRows(settings, DIFF_ROWS);
+	if (section.id === "footer") {
+		const rows = immediateRows(settings, FOOTER_ROWS);
+		const color = typeof settings.footerColor === "string"
+			? normalizeHexColor(settings.footerColor) ?? DEFAULT_FOOTER_COLOR
+			: DEFAULT_FOOTER_COLOR;
+		const colorRow: SettingRow = { kind: "text", key: "footerColor", label: "Color", value: color };
+		return [...rows.slice(0, 2), colorRow, ...rows.slice(2)];
+	}
 	if (section.id === "theme") {
 		const diffTheme = typeof settings.diffTheme === "string" && candidates.diffThemes.includes(settings.diffTheme)
 			? settings.diffTheme
@@ -809,6 +835,17 @@ export class ClaudifyScreen extends Container implements Focusable {
 		// Enter must not silently wipe the user's customized prefix/label.
 		if (rawValue.trim().length === 0) {
 			this.finishTextInput();
+			return;
+		}
+		if (row.key === "footerColor") {
+			const normalized = normalizeHexColor(rawValue);
+			this.finishTextInput(false);
+			if (!normalized) {
+				this.showNotice("Enter a hex color like #FF9200.", "warning");
+				this.renderState();
+				return;
+			}
+			this.commitSetting(row.key, normalized);
 			return;
 		}
 		const settings = readSettings().values;

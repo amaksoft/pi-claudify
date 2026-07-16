@@ -38,6 +38,11 @@ export interface SettingsFile {
 	hiddenThinkingLabel?: string;
 	workedVerbs?: string[];
 	workedVerbMode?: WorkedVerbMode;
+	footerStyle?: "claude" | "pi";
+	footerColorMode?: "colored" | "single" | "monochrome";
+	footerColor?: string;
+	footerContextBar?: boolean;
+	editorBorder?: "gray" | "thinking";
 }
 
 export interface SettingsFileInfo {
