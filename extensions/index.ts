@@ -3508,6 +3508,7 @@ function isOpenAiToolCandidate(tool: unknown): boolean {
 }
 
 function humanizeToolName(name: string): string {
+	if (name === "webfetch") return "Fetch";
 	return name
 		.replace(/([a-z0-9])([A-Z])/g, "$1 $2")
 		.replace(/[_-]+/g, " ")
@@ -4172,7 +4173,7 @@ function summarizeOpenAiToolCall(name: string, args: any, theme: Theme, sp: (pat
 			return getStringArg(args, "responseId", "response_id") || theme.fg("muted", "load cached content");
 		case "web_search": {
 			const query = getStringArg(args, "query");
-			if (query) return summarizeText(query, 72);
+			if (query) return `"${summarizeText(query, 72)}"`;
 			const queries = getStringArrayArg(args, "queries");
 			if (queries.length === 0) return theme.fg("muted", "search web");
 			if (queries.length === 1) return summarizeText(queries[0], 72);
@@ -4366,6 +4367,19 @@ function renderReadImageResult(result: any, expanded: boolean, theme: Theme, ctx
 	return makeText(ctx.lastComponent, withBranch(lines.join("\n"), theme));
 }
 
+function formatCapturedOpenAiResult(name: string, result: any, theme: Theme, ctx: any): string | undefined {
+	if (ctx.isError) return undefined;
+	if (name === "webfetch") {
+		return theme.fg("muted", `Received ${Buffer.byteLength(getTextContent(result), "utf8")} bytes`);
+	}
+	if (name === "web_search") {
+		const queryCount = getStringArg(ctx.args, "query") ? 1 : getStringArrayArg(ctx.args, "queries").length;
+		return queryCount > 0 ? theme.fg("muted", `Did ${queryCount} search${queryCount === 1 ? "" : "es"}`) : theme.fg("success", "Done");
+	}
+	if (name === "Agent") return theme.fg("success", "Done");
+	return undefined;
+}
+
 function renderOpenAiToolResult(name: string, result: any, expanded: boolean, isPartial: boolean, theme: Theme, ctx: any): Text {
 	if (isPartial) {
 		setupBlinkTimer(ctx);
@@ -4377,6 +4391,10 @@ function renderOpenAiToolResult(name: string, result: any, expanded: boolean, is
 	const raw = getTextContent(result).trim();
 	const lines = raw ? raw.split("\n") : [];
 	const patchFiles = Array.isArray(ctx.state?._openAiPatchFiles) ? ctx.state._openAiPatchFiles : [];
+	const capturedResult = formatCapturedOpenAiResult(name, result, theme, ctx);
+	if (capturedResult !== undefined) {
+		return makeText(ctx.lastComponent, withBranch(capturedResult, theme));
+	}
 
 	if (lines.length === 0) {
 		if (patchFiles.length > 0) {
@@ -4394,7 +4412,7 @@ function renderOpenAiToolResult(name: string, result: any, expanded: boolean, is
 		? theme.fg("error", lines[0])
 		: theme.fg("muted", `${lines.length} line${lines.length === 1 ? "" : "s"} returned`);
 	if (!expanded) {
-		return makeText(ctx.lastComponent, withBranch(`${statusText}${theme.fg("muted", " (ctrl+o to expand)")}`, theme));
+		return makeText(ctx.lastComponent, withBranch(statusText, theme));
 	}
 
 	if (!ctx.isError && lines.length === 1) {
