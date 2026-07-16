@@ -44,20 +44,26 @@ const legacy = useSandbox(
 	{
 		spinnerVerbColor: "legacy-color",
 		toolBackground: "border",
+		footerContextBar: false,
 	},
 	{},
 );
 assert.equal(legacy.values.spinnerColor, "legacy-color", "spinnerVerbColor remains an alias for spinnerColor");
 assert.equal(legacy.values.toolBackground, "outlines", 'toolBackground: "border" remains an alias for "outlines"');
+assert.equal(legacy.values.footerUsageBar, false, "the branch's footerContextBar key migrates to footerUsageBar");
+assert.equal(legacy.values.footerContextBar, undefined, "the retired footerContextBar key does not leak to consumers");
 
 const canonical = useSandbox(
 	{
 		spinnerColor: "user-canonical",
 		spinnerVerbColor: "user-legacy",
+		footerUsageBar: true,
+		footerContextBar: false,
 	},
 	{},
 );
 assert.equal(canonical.values.spinnerColor, "user-canonical", "canonical keys win over aliases in the user file");
+assert.equal(canonical.values.footerUsageBar, true, "footerUsageBar wins over its branch-local alias");
 
 const isolated = useSandbox(
 	{

@@ -4512,7 +4512,7 @@ export default function (pi: ExtensionAPI): void {
 							if (key === "diffTheme" || key === "diffPalette" || key === "themeAdaptive") refreshDiffPalette();
 							// footerStyle installs/uninstalls the footer; the other footer/border
 							// keys are read at render time, so the requestRender below suffices.
-							if (key === "footerStyle") installClaudeFooter(ctx, pi);
+							if (key === "footerStyle") installClaudeFooter(ctx);
 							tui.requestRender();
 						},
 						(key, value) => {
@@ -4544,7 +4544,7 @@ export default function (pi: ExtensionAPI): void {
 		applyToolBackgroundMode(ctx.ui.theme);
 		applyThemePaletteIfNeeded(ctx.ui.theme);
 		applyHiddenThinkingLabel(ctx);
-		installClaudeFooter(ctx, pi);
+		installClaudeFooter(ctx);
 	});
 
 	pi.on("turn_start", async (_event, ctx) => {

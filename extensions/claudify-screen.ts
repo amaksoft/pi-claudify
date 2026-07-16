@@ -77,7 +77,7 @@ type EditableSettingsKey =
 	| "footerStyle"
 	| "footerColorMode"
 	| "footerColor"
-	| "footerContextBar"
+	| "footerUsageBar"
 	| "editorBorder";
 
 const CLAUDE_AUTHENTIC: Partial<Record<EditableSettingsKey, string>> = {
@@ -258,7 +258,7 @@ const TOOL_OUTPUT_ROWS: readonly ImmediateRowDefinition[] = [
 const FOOTER_ROWS: readonly ImmediateRowDefinition[] = [
 	{ kind: "enum", key: "footerStyle", label: "Footer style", values: ["claude", "pi"], defaultValue: "claude" },
 	{ kind: "enum", key: "footerColorMode", label: "Color mode", values: ["colored", "single", "monochrome"], defaultValue: "colored" },
-	{ kind: "boolean", key: "footerContextBar", label: "Context bar", defaultValue: true },
+	{ kind: "boolean", key: "footerUsageBar", label: "Usage bar", defaultValue: true },
 	{ kind: "enum", key: "editorBorder", label: "Input border", values: ["gray", "thinking"], defaultValue: "gray" },
 ];
 
