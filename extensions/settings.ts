@@ -38,6 +38,11 @@ export interface SettingsFile {
 	hiddenThinkingLabel?: string;
 	workedVerbs?: string[];
 	workedVerbMode?: WorkedVerbMode;
+	footerStyle?: "claude" | "pi";
+	footerColorMode?: "colored" | "single" | "monochrome";
+	footerColor?: string;
+	footerUsageBar?: boolean;
+	editorBorder?: "gray" | "thinking";
 }
 
 export interface SettingsFileInfo {
@@ -82,6 +87,11 @@ function normalizeAliases(settings: Record<string, unknown>): SettingsFile {
 	}
 	delete normalized.spinnerVerbColor;
 	if (normalized.toolBackground === "border") normalized.toolBackground = "outlines";
+	if (!Object.prototype.hasOwnProperty.call(normalized, "footerUsageBar")
+		&& Object.prototype.hasOwnProperty.call(normalized, "footerContextBar")) {
+		normalized.footerUsageBar = normalized.footerContextBar;
+	}
+	delete normalized.footerContextBar;
 	return normalized as SettingsFile;
 }
 

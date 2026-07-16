@@ -43,6 +43,7 @@ import * as Diff from "diff";
 import type { BundledLanguage, BundledTheme } from "shiki";
 
 import { ClaudifyScreen } from "./claudify-screen.ts";
+import { installClaudeFooter, patchEditorBorderColor } from "./footer.ts";
 import {
 	describeInspectionsActive,
 	describeInspectionsDone,
@@ -4468,6 +4469,7 @@ export default function (pi: ExtensionAPI): void {
 	patchAssistantMessages();
 	patchToolRowIndent();
 	patchToolExecutionRenderers();
+	patchEditorBorderColor();
 	applyDiffPalette();
 	registerThinkingLabels(pi);
 
@@ -4508,6 +4510,9 @@ export default function (pi: ExtensionAPI): void {
 								bustSpinnerSettingsCache();
 							}
 							if (key === "diffTheme" || key === "diffPalette" || key === "themeAdaptive") refreshDiffPalette();
+							// footerStyle installs/uninstalls the footer; the other footer/border
+							// keys are read at render time, so the requestRender below suffices.
+							if (key === "footerStyle") installClaudeFooter(ctx);
 							tui.requestRender();
 						},
 						(key, value) => {
@@ -4539,6 +4544,7 @@ export default function (pi: ExtensionAPI): void {
 		applyToolBackgroundMode(ctx.ui.theme);
 		applyThemePaletteIfNeeded(ctx.ui.theme);
 		applyHiddenThinkingLabel(ctx);
+		installClaudeFooter(ctx);
 	});
 
 	pi.on("turn_start", async (_event, ctx) => {

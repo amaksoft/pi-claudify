@@ -13,7 +13,7 @@ The Claudify screen's top level: a list of Sections. Enter drills into a Section
 _Avoid_: main menu, root screen
 
 **Section**:
-One drill-in page of the Claudify screen owning a cohesive group of settings (Theme, Diffs, Spinner, Messages, Tool output). Esc returns to the Hub.
+One drill-in page of the Claudify screen owning a cohesive group of settings (Theme, Diffs, Spinner, Messages, Tool output, Footer). Esc returns to the Hub.
 _Avoid_: tab, category, submenu
 
 **Picker**:

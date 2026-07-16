@@ -77,7 +77,7 @@ const screen = new ClaudifyScreen(
 );
 
 const hub = render(screen);
-const sectionNames = ["Theme", "Diffs", "Spinner", "Messages", "Tool output"];
+const sectionNames = ["Theme", "Diffs", "Spinner", "Messages", "Tool output", "Footer"];
 let previousIndex = -1;
 for (const sectionName of sectionNames) {
 	const index = hub.indexOf(sectionName);
@@ -95,7 +95,7 @@ const hubLines = hub.split("\n");
 assert.match(hubLines[0], /^─{5,}$/, "the Hub opens with a full-width accent rule");
 assert.match(hubLines.at(-1) ?? "", /^─{5,}$/, "the Hub closes with a full-width accent rule");
 assert.match(hub, /^\s*Claudify[ \t]*$/m, "the framed panel renders its title");
-assert.match(hub, /^\s*5 sections[ \t]*$/m, "the Hub renders its section-count subtitle");
+assert.match(hub, /^\s*6 sections[ \t]*$/m, "the Hub renders its section-count subtitle");
 assert.ok(
 	hub.indexOf("Claudify") < hub.indexOf("❯ Theme"),
 	"the title sits above the body rows",
