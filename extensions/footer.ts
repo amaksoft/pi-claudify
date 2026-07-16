@@ -490,7 +490,15 @@ export interface FooterSources {
 }
 
 function sanitizeStatusText(text: string): string {
-	return text.replace(/[\r\n\t]/g, " ").replace(/ +/g, " ").trim();
+	// Also strip embedded SGR: extensions bake theme colors into status strings
+	// at startup (e.g. the MCP adapter's teal), which would override the dim
+	// wrapper below and survive any later theme change. Statuses render
+	// uniformly dim, Claude-style.
+	return text
+		.replace(/\x1b\[[0-9;]*m/g, "")
+		.replace(/[\r\n\t]/g, " ")
+		.replace(/ +/g, " ")
+		.trim();
 }
 
 export class ClaudeFooterComponent {
