@@ -252,10 +252,6 @@ function componentTextContent(value: unknown): string {
 	return getTextContent(toolComponentRecord(value).result);
 }
 
-function componentHasImageResult(value: unknown): boolean {
-	return !!getFirstImageBlock(toolComponentRecord(value).result);
-}
-
 function bashReadDisplayInfo(value: unknown): BashDisplayInfo | null {
 	const rec = toolComponentRecord(value);
 	if (rec.toolName !== "bash" || !bashSemanticDisplayEnabled()) return null;
@@ -265,7 +261,7 @@ function bashReadDisplayInfo(value: unknown): BashDisplayInfo | null {
 function isReadOnlyInspectionToolExecution(value: unknown): boolean {
 	if (!readOnlyToolGroupingEnabled() || !isToolExecutionLike(value)) return false;
 	const rec = toolComponentRecord(value);
-	if (rec.expanded === true || componentHasImageResult(value)) return false;
+	if (rec.expanded === true) return false;
 	if (rec.toolName === "read" || rec.toolName === "grep" || rec.toolName === "find" || rec.toolName === "ls") return true;
 	// Every MCP call aggregates, whatever it does. Claude Code renders a mutating
 	// or failing MCP tool exactly like a read-only one — there is no separate row.
@@ -4352,7 +4348,7 @@ function renderReadImageResult(result: any, expanded: boolean, theme: Theme, ctx
 	const mimeType = image?.mimeType ?? "image";
 	const summary = `${theme.fg("success", "Image loaded")} ${theme.fg("muted", `[${mimeType}]`)}`;
 	if (!expanded) {
-		return makeText(ctx.lastComponent, withBranch(`${summary}${theme.fg("muted", " (ctrl+o to show)")}`, theme));
+		return makeText(ctx.lastComponent, withBranch(summary, theme));
 	}
 
 	const noteLines = getTextContent(result)

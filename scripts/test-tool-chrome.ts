@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 
 import { ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
-import { visibleWidth } from "@earendil-works/pi-tui";
+import { Container, visibleWidth } from "@earendil-works/pi-tui";
 import { initTheme } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 
 import extension from "../extensions/index.ts";
@@ -53,7 +53,7 @@ function component(pi: FakePi, name: string, id: string, args: any): ToolExecuti
 	return c;
 }
 
-function plainRender(component: ToolExecutionComponent, width = 100): string {
+function plainRender(component: { render(width: number): string[] }, width = 100): string {
 	return component
 		.render(width)
 		.map((line) => line.replace(/\x1b\]8;;[^\x07]*\x07/g, "").replace(/\x1b\[[0-9;]*m/g, "").replace(/\s+$/, ""))
@@ -105,6 +105,17 @@ assert.equal(visibleWidth(linked), visibleWidth("src/a.ts"), "OSC 8 hyperlinks m
 
 const plain = readRaw.replace(/\x1b\[[0-9;]*m/g, "").replace(/\x1b\]8;;[^\x07]*\x07/g, "");
 assert.match(plain, /^⏺ Read\(src\/a\.ts\)/m, "row reads as ⏺ Read(src/a.ts) once escapes are stripped");
+
+const imageRead = component(pi, "read", "chrome-image-read", { path: "pixel.png" });
+imageRead.updateResult(
+	{ content: [{ type: "image", data: "AA==", mimeType: "image/png" }], details: {}, isError: false } as any,
+	false,
+);
+const imageContainer = new Container();
+imageContainer.addChild(imageRead);
+const imagePlain = plainRender(imageContainer);
+assert.match(imagePlain, /^ {2}Read 1 file$/m, "an image read collapses like an ordinary read");
+assert.doesNotMatch(imagePlain, /Image loaded|\[image\/|\(ctrl\+o to show\)/);
 
 // --- Result rows: counts and paths are bold; the ⎿ gutter is Claude's gray.
 const write = component(pi, "write", "chrome-write", { path: "src/c.ts", content: "one\ntwo\n" });
