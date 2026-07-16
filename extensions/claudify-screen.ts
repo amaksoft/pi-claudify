@@ -62,6 +62,11 @@ type EditableSettingsKey =
 	| "messageSpacing"
 	| "hiddenThinkingLabel";
 
+const CLAUDE_AUTHENTIC: Partial<Record<EditableSettingsKey, string>> = {
+	// docs/plans/2026-07-13-mcp-grammar.md:13-17 — no per-call MCP result row or preview.
+	mcpOutputMode: "hidden",
+};
+
 interface SettingRowBase {
 	readonly key: EditableSettingsKey;
 	readonly label: string;
@@ -72,6 +77,7 @@ interface EnumSettingRow extends SettingRowBase {
 	readonly kind: "enum";
 	readonly value: string;
 	readonly values: readonly string[];
+	readonly claudeValue?: string;
 }
 
 interface BooleanSettingRow extends SettingRowBase {
@@ -158,6 +164,7 @@ interface EnumRowDefinition {
 	readonly label: string;
 	readonly values: readonly string[];
 	readonly defaultValue: string;
+	readonly claudeValue?: string;
 }
 
 interface BooleanRowDefinition {
@@ -194,7 +201,14 @@ const TOOL_OUTPUT_ROWS: readonly ImmediateRowDefinition[] = [
 	// them yet, so exposing them as immediate-commit rows would be controls that
 	// persist but change nothing in the transcript. Re-add once the read/grep
 	// result handlers consume them (tracked as a CLFY-4 follow-up).
-	{ kind: "enum", key: "mcpOutputMode", label: "MCP output", values: ["hidden", "summary", "preview"], defaultValue: "preview" },
+	{
+		kind: "enum",
+		key: "mcpOutputMode",
+		label: "MCP output",
+		values: ["hidden", "summary", "preview"],
+		defaultValue: "preview",
+		claudeValue: CLAUDE_AUTHENTIC.mcpOutputMode,
+	},
 	{ kind: "enum", key: "bashOutputMode", label: "Bash output", values: ["opencode", "summary", "preview"], defaultValue: "opencode" },
 	{ kind: "number", key: "previewLines", label: "Preview lines", defaultValue: 8, min: 1 },
 	{ kind: "number", key: "bashCollapsedLines", label: "Collapsed Bash lines", defaultValue: 10, min: 0 },
@@ -211,8 +225,15 @@ class IndentedInput extends Input {
 	}
 }
 
-function themedText(theme: Theme, color: "accent" | "dim" | "text", text: string): string {
+function themedText(theme: Theme, color: "accent" | "dim" | "success" | "text", text: string): string {
 	return theme.fg(color, text);
+}
+
+function claudeAuthenticMarker(theme: Theme, row: SettingRow): string {
+	if (row.kind !== "enum" || row.claudeValue === undefined) return "";
+	return row.value === row.claudeValue
+		? themedText(theme, "success", "  ✓ Claude")
+		: themedText(theme, "dim", `  (Claude: ${row.claudeValue})`);
 }
 
 // Color a string by an arbitrary theme color KEY (e.g. a spinner color like
@@ -251,10 +272,24 @@ function immediateRows(settings: SettingsFile, definitions: readonly ImmediateRo
 function messageRows(settings: SettingsFile): SettingRow[] {
 	const resolved = resolveMessageChromeSettings(settings);
 	return [
-		{ kind: "enum", key: "messageStyle", label: "Message style", value: resolved.messageStyle, values: ["classic", "claude"] },
+		{
+			kind: "enum",
+			key: "messageStyle",
+			label: "Message style",
+			value: resolved.messageStyle,
+			values: ["classic", "claude"],
+			claudeValue: CLAUDE_AUTHENTIC.messageStyle,
+		},
 		{ kind: "text", key: "assistantPrefix", label: "Assistant prefix", value: resolved.assistantPrefix },
 		{ kind: "text", key: "thinkingPrefix", label: "Thinking prefix", value: resolved.thinkingPrefix },
-		{ kind: "enum", key: "messageSpacing", label: "Message spacing", value: resolved.messageSpacing, values: ["compact", "comfortable"] },
+		{
+			kind: "enum",
+			key: "messageSpacing",
+			label: "Message spacing",
+			value: resolved.messageSpacing,
+			values: ["compact", "comfortable"],
+			claudeValue: CLAUDE_AUTHENTIC.messageSpacing,
+		},
 		{ kind: "text", key: "hiddenThinkingLabel", label: "Hidden thinking label", value: resolved.hiddenThinkingLabel },
 	];
 }
@@ -756,7 +791,7 @@ export class ClaudifyScreen extends Container implements Focusable {
 			const value = row.kind === "picker" && row.key !== "diffTheme"
 				? themedByKey(this.theme, String(row.value), displayValue)
 				: themedText(this.theme, "text", displayValue);
-			this.content.addChild(new Text(`${marker} ${label}${value}`, 3, 0));
+			this.content.addChild(new Text(`${marker} ${label}${value}${claudeAuthenticMarker(this.theme, row)}`, 3, 0));
 		}
 
 		if (state.editing) {

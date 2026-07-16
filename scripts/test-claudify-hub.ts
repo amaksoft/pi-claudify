@@ -132,9 +132,14 @@ for (const label of [
 	assert.ok(toolOutput.includes(label), `Tool output renders ${label}`);
 }
 assert.match(toolOutput, /^\s*❯ Tool background\s+outlines/m, "Tool output selects its first row and shows the effective legacy value");
+assert.match(toolOutput, /^\s*MCP output\s+preview\s+\(Claude: hidden\)[ \t]*$/m, "a deviating fidelity enum names its Claude-authentic value");
 assert.doesNotMatch(toolOutput, /[╭╮╰╯│]/, "Tool output rows are unboxed");
 assert.ok(toolOutput.includes("Enter/Space to change · Esc to back"), "enum rows render the change footer");
 
+settingsScreen.handleInput("down");
+settingsScreen.handleInput("right");
+assert.match(render(settingsScreen), /^\s*❯ MCP output\s+hidden\s+✓ Claude[ \t]*$/m, "an authentic fidelity enum renders its Claude marker");
+settingsScreen.handleInput("up");
 settingsScreen.handleInput("left");
 settingsScreen.handleInput("right");
 assert.match(render(settingsScreen), /^\s*❯ Tool background\s+outlines/m, "cycling an enum updates the assembled render and keeps selection");
@@ -202,6 +207,7 @@ let themeSection = render(pickerScreen);
 for (const label of ["Adaptive colors", "Diff palette", "Tool chrome", "Diff theme"]) {
 	assert.ok(themeSection.includes(label), `Theme renders ${label}`);
 }
+assert.match(themeSection, /^\s*Diff palette\s+claude[ \t]*$/m, "a self-evident claude-valued enum renders no redundant marker");
 assert.doesNotMatch(themeSection, /coming soon/, "Theme no longer renders its placeholder");
 pickerScreen.handleInput("enter");
 assert.equal(readWrittenSettings().themeAdaptive, false, "Theme adaptive commits immediately");
@@ -241,7 +247,7 @@ const diffScreen = new ClaudifyScreen(
 );
 diffScreen.handleInput("down");
 diffScreen.handleInput("enter");
-assert.match(render(diffScreen), /^\s*❯ Collapsed diff lines\s+10/m, "Diffs renders its immediate-commit number row and default");
+assert.match(render(diffScreen), /^\s*❯ Collapsed diff lines\s+10[ \t]*$/m, "a preference row renders its default with no Claude marker");
 assert.doesNotMatch(render(diffScreen), /coming soon/, "Diffs no longer renders its placeholder");
 diffScreen.handleInput("right");
 assert.equal(readWrittenSettings().diffCollapsedLines, 11, "collapsed diff lines commits immediately");
