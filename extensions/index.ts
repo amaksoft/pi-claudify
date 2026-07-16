@@ -206,7 +206,22 @@ const CC_ACCENT_VALUES: readonly string[] = [
 	CC_ACCENT_ANSI.light.ansi256,
 ];
 
-const originalThemeAccent = new WeakMap<object, string>();
+interface AccentSnapshot {
+	readonly original: string;
+	/** fgColors keys (beyond "accent") whose value aliased the accent var at load —
+	 * mdCode/mdListBullet in pi's dark theme. The theme says these surfaces are
+	 * accent-colored, so the override carries them. */
+	readonly aliasKeys: readonly string[];
+}
+
+const originalThemeAccent = new WeakMap<object, AccentSnapshot>();
+
+function themeFgKeys(theme: unknown): string[] {
+	const fgColors = (theme as any)?.fgColors;
+	if (fgColors instanceof Map) return [...fgColors.keys()];
+	if (fgColors && typeof fgColors === "object") return Object.keys(fgColors);
+	return [];
+}
 
 function colorToRgb(value: string): { r: number; g: number; b: number } | null {
 	const hex = /^#([0-9a-fA-F]{6})$/.exec(value);
@@ -248,14 +263,20 @@ export function applyAccentOverride(theme: unknown): void {
 	// pi exposes the theme both as the instance and via a forwarding Proxy; never
 	// memorize an already-overridden value as the theme's own accent.
 	if (!originalThemeAccent.has(theme) && !CC_ACCENT_VALUES.includes(current)) {
-		originalThemeAccent.set(theme, current);
+		const aliasKeys = themeFgKeys(theme)
+			.filter((key) => key !== "accent" && getThemeFg(theme, key) === current);
+		originalThemeAccent.set(theme, { original: current, aliasKeys });
 	}
+	const snapshot = originalThemeAccent.get(theme);
 	const wantClaude = readSettings().values.accentColor !== "theme";
 	const colorMode = (theme as any).mode === "256color" ? "ansi256" : "truecolor";
 	const target = wantClaude
 		? CC_ACCENT_ANSI[isDarkTheme(theme) ? "dark" : "light"][colorMode]
-		: originalThemeAccent.get(theme) ?? current;
+		: snapshot?.original ?? current;
 	if (current !== target) setThemeFg(theme, "accent", target);
+	for (const key of snapshot?.aliasKeys ?? []) {
+		if (getThemeFg(theme, key) !== target) setThemeFg(theme, key, target);
+	}
 }
 
 // Claude Code's settled user-message box, captured under 256 colors (237/239/231).
