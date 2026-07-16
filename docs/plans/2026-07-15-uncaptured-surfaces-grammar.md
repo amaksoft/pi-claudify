@@ -190,13 +190,32 @@ A 1×1 PNG the API refused surfaced a distinct **error-notice** surface, worth r
   Double press esc to edit your message, or re-read the file if you still need it.
 ```
 
-### pi divergence
+### pi divergence — CONFIRMED by live capture (2026-07-15, CLFY-18)
 
-- Claude Code treats the image read as an ordinary aggregated read (`Reading 1 file…` →
-  `Read 1 file`). pi carries a **distinct image code path** — `patchReadImageExpansion`
-  and the `toolName === "read" && hasImage` branch (index.ts:1110) — so a single image
-  read may not collapse into the read aggregate the same way. Needs a live pi/Claude
-  side-by-side to confirm the exact pi row; flagged for investigation, not a blind fix.
+Live pi+claudify capture of `Read`-ing a 48×48 PNG (claudify loaded; confirmed via its
+`Cooked` worked-verb). claudify renders a **bespoke image row**, not a plain read:
+
+```
+⏺ Read(/abs/path/pixel.png)
+  ⎿  Image loaded [image/png] (ctrl+o to show)
+```
+
+That result line is claudify's own output, built in `renderCapturedOpenAiResult`/the image
+branch at **index.ts:4353–4355**: `theme.fg("success", "Image loaded")` +
+`theme.fg("muted", "[<mime>]")` + `theme.fg("muted", " (ctrl+o to show)")`. The
+`patchReadImageExpansion` hook (index.ts:1102–1116, `toolName === "read" && hasImage`)
+strips the expanded image child but leaves this summary row.
+
+**Divergences from the captured Claude Code target (all three real — CLFY-18 is NOT a no-op):**
+1. Claude Code shows an ordinary aggregated read (`Read 1 file`), no image-specific chrome;
+   claudify shows bespoke `Image loaded [<mime>]`.
+2. claudify appends `(ctrl+o to show)` — Claude Code never puts a `ctrl+o` affordance on a
+   tool row (same pi-ism as divergence #7).
+3. Header is `Read(<full abs path>)`; Claude Code uses the basename / aggregate form.
+
+Open design question for the fix: pi has no line-count for an image, so the exact
+replacement for Claude Code's `Read 1 file` must be decided (mirror the read aggregate, or
+a minimal `Read 1 file`-style line) rather than blindly copied.
 
 ---
 
@@ -272,12 +291,36 @@ A `·`-led (animated) status line plus a Unicode progress bar that counts up:
   `⎿  Referenced file <name>` — the files pulled back into the fresh context.
 - Context indicator resets to `Ctx: 0%`.
 
-### pi divergence
+### pi native rendering — CONFIRMED by live capture (2026-07-15, CLFY-19)
 
-- pi has no capture-backed compaction styling for this shape. Flagged to align pi's
-  compaction rendering to the `· Compacting conversation…` + progress-bar (in-flight) and
-  the `Compacted (ctrl+o to see full summary)` + re-hydration rows (settled). Needs a pi
-  compaction event to confirm what pi emits today before wiring.
+Live pi+claudify capture of `/compact` on an ~85k-token session. **claudify has zero
+compaction handling** (source grep for `compact` finds only the unrelated
+`messageSpacing` enum and a `compactList` string util) — so this is pi's *native*
+rendering passing straight through, unstyled:
+
+```
+ [compaction]
+
+ Compacted from 85,175 tokens (ctrl+o to expand)
+```
+
+- `[compaction]` marker: **bold**, RGB `149,117,205` (violet).
+- Settled line: RGB `212,212,212` text, with `ctrl+o` in dim RGB `102,102,102`.
+- **No progress bar** — polling at 0.3 s intervals caught no `██░░`/`%` frame; pi goes
+  straight from the working state to the settled line (Claude Code's animated
+  `· Compacting conversation…` bar has no pi counterpart).
+- **No re-hydration rows** — pi does not list the files pulled back into fresh context.
+- **No branch chrome** — plain ` [compaction]` marker, no `❯ /compact` echo, no `⎿`.
+- Context indicator resets to `—% / 372k`.
+- Bonus (failure path): too-small session → a plain notice
+  ` Error: Compaction failed: Nothing to compact (session too small)` (no `⏺` glyph).
+
+**Divergences from the captured Claude Code target (4 axes — CLFY-19 is from-scratch work):**
+1. In-flight: no `· Compacting conversation…` + progress bar.
+2. Settled wording: `Compacted from N tokens (ctrl+o to expand)` vs
+   `Compacted (ctrl+o to see full summary)`.
+3. No re-hydration `⎿ Read <path> (<N> lines)` rows.
+4. No `⎿`/`❯` branch chrome. claudify must patch pi's compaction component from zero.
 
 ---
 
@@ -326,8 +369,8 @@ part of gap #6 stands.
 | 6 | Agent in-flight | `⎿ Initializing…` → streamed child tool + `Running… / (ctrl+b to run in background)` | `⎿ Initializing…`; nested child unavailable upstream | index.ts:4383–4387 |
 | 7 | `(ctrl+o to expand)` suffix on OpenAI-style results | absent everywhere on tool rows | appended | index.ts:4397 |
 | 8 | Web Search query quoting | `Web Search("query")` | `Web Search(query)` | index.ts:4174 |
-| 9 | Compaction notice | `· Compacting…` + bar; `Compacted (ctrl+o to see full summary)` + re-hydration rows | unstyled / unknown | — |
-| 10 | Image read | plain aggregated read row | distinct image path | index.ts:1110 |
+| 9 | Compaction notice | `· Compacting…` + bar; `Compacted (ctrl+o to see full summary)` + re-hydration rows | pi-native `[compaction]` + `Compacted from N tokens (ctrl+o to expand)`, no bar/re-hydration/chrome; claudify unstyled | index.ts (none) |
+| 10 | Image read | plain aggregated read row (`Read 1 file`) | `⎿ Image loaded [mime] (ctrl+o to show)` (bespoke) | index.ts:4353–4355 |
 
 Not divergences: Agent header (`Agent` matches), Web Search header label (`Web Search`
 matches), Write truncation form (`… +N lines`, matches per 2026-07-14 audit), settled
