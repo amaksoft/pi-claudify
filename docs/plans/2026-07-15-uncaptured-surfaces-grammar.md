@@ -71,15 +71,42 @@ Status line during the agent turn (glyph animates):
 - Settled result: `⎿  Done (<N> tool use · <X>k tokens · <N>s)` — tool-use count, token
   total, elapsed. This summary is the whole result row; there is no per-child row left.
 
+### pi runtime payload investigation (CLFY-20)
+
+The installed runtime is `@earendil-works/pi-coding-agent@0.80.7` with
+`@tintinweb/pi-subagents@0.14.1`. pi does surface Agent progress updates: its interactive
+mode forwards each `tool_execution_update`'s `partialResult` into
+`ToolExecutionComponent.updateResult(..., true)` (`dist/modes/interactive/interactive-mode.js:2412–2416`),
+and the component gives the result renderer only `{ content, details }` plus
+`isPartial: true` (`dist/modes/interactive/components/tool-execution.js:130–134, 247–249`).
+
+The Agent extension emits those updates about every 80 ms. Its partial `details` contain
+aggregate fields — `toolUses`, `tokens`, `turnCount`, `maxTurns`, `durationMs`,
+`status: "running"`, a preformatted `activity` string, and `spinnerFrame` — while
+`content` is only `<N> tool uses...` (`pi-subagents/src/index.ts:1266–1289, 1316–1322`).
+There is **no nested child call payload**. The child session's tool events are reduced to
+`{ type, toolName }` before they leave the runner (`pi-subagents/src/agent-runner.ts:749–753`),
+then the activity tracker uses the name plus start/end state to maintain its active set
+(`pi-subagents/src/index.ts:94–105`). Arguments, tool-call IDs, child partial results, and
+output are discarded. Even `bash` becomes only the preformatted activity `running command…`
+(`pi-subagents/src/ui/agent-widget.ts:25–34, 197–210`).
+
+Therefore pi exposes aggregate progress, but not the structured nested progress required
+to reproduce `Bash(grep -c fox …)`. The capture-backed in-flight shape this package can
+render is the static `⎿  Initializing…` row only. It must not invent a child call from the
+lossy activity string, nor append Claude Code's nested-only `Running…` and
+`(ctrl+b to run in background)` lines without that call.
+
 ### pi divergence
 
 - **Header matches**: `humanizeToolName("Agent")` → `Agent` (index.ts:3510).
-- **In-flight differs**: `renderOpenAiToolResult` renders the partial as a blinking
-  `Agent...` (index.ts:4372). pi shows neither `⎿ Initializing…`, nor the streamed
-  nested child tool call, nor `Running… / (ctrl+b to run in background)`.
-- **Settled result differs**: pi emits `Done` (no output) or
-  `<N> lines returned (ctrl+o to expand)` (index.ts:4386, 4395–4397). Claude Code emits
-  `Done (<N> tool use · <X>k tokens · <N>s)` and never the `(ctrl+o to expand)` suffix.
+- **In-flight is partially aligned by CLFY-20**: `renderOpenAiToolResult` now renders
+  `⎿ Initializing…` for an Agent partial (index.ts:4383–4387). The streamed nested child
+  remains unavailable because the investigation above confirms that its data does not
+  reach this package's renderer.
+- **Settled result differs**: pi emits `Done` without stats (index.ts:4379). Claude Code
+  emits `Done (<N> tool use · <X>k tokens · <N>s)`. CLFY-16 intentionally owns that
+  settled path; CLFY-20 does not change it.
 
 ---
 
@@ -296,7 +323,7 @@ part of gap #6 stands.
 | 3 | Fetch result | `Received N bytes (200 OK)` | `N lines returned (ctrl+o to expand)` | index.ts:4395 |
 | 4 | Web Search result | `Did N search in Ns` | `N lines returned (ctrl+o to expand)` | index.ts:4395 |
 | 5 | Agent result | `Done (N tool use · Xk tokens · Ns)` | `Done` / `N lines returned …` | index.ts:4386,4395 |
-| 6 | Agent in-flight | `⎿ Initializing…` → streamed child tool + `Running… / (ctrl+b to run in background)` | blinking `Agent...` | index.ts:4372 |
+| 6 | Agent in-flight | `⎿ Initializing…` → streamed child tool + `Running… / (ctrl+b to run in background)` | `⎿ Initializing…`; nested child unavailable upstream | index.ts:4383–4387 |
 | 7 | `(ctrl+o to expand)` suffix on OpenAI-style results | absent everywhere on tool rows | appended | index.ts:4397 |
 | 8 | Web Search query quoting | `Web Search("query")` | `Web Search(query)` | index.ts:4174 |
 | 9 | Compaction notice | `· Compacting…` + bar; `Compacted (ctrl+o to see full summary)` + re-hydration rows | unstyled / unknown | — |

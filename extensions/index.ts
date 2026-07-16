@@ -4382,6 +4382,9 @@ function formatCapturedOpenAiResult(name: string, result: any, theme: Theme, ctx
 
 function renderOpenAiToolResult(name: string, result: any, expanded: boolean, isPartial: boolean, theme: Theme, ctx: any): Text {
 	if (isPartial) {
+		if (name === "Agent") {
+			return makeText(ctx.lastComponent, withBranch(theme.fg("dim", "Initializing…"), theme));
+		}
 		setupBlinkTimer(ctx);
 		return makeText(ctx.lastComponent, withBranch(theme.fg("dim", `${humanizeToolName(name)}...`), theme));
 	}
