@@ -86,9 +86,9 @@ aggregate fields — `toolUses`, `tokens`, `turnCount`, `maxTurns`, `durationMs`
 `content` is only `<N> tool uses...` (`pi-subagents/src/index.ts:1266–1289, 1316–1322`).
 There is **no nested child call payload**. The child session's tool events are reduced to
 `{ type, toolName }` before they leave the runner (`pi-subagents/src/agent-runner.ts:749–753`),
-then the activity tracker stores only that name (`pi-subagents/src/index.ts:94–105`).
-Arguments, tool-call IDs, child partial results, output, and status are discarded. Even
-`bash` becomes only the preformatted activity `running command…`
+then the activity tracker uses the name plus start/end state to maintain its active set
+(`pi-subagents/src/index.ts:94–105`). Arguments, tool-call IDs, child partial results, and
+output are discarded. Even `bash` becomes only the preformatted activity `running command…`
 (`pi-subagents/src/ui/agent-widget.ts:25–34, 197–210`).
 
 Therefore pi exposes aggregate progress, but not the structured nested progress required
