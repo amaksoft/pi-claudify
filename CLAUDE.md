@@ -11,7 +11,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
-bun run test                       # full suite (11 assembled-render/handler suites)
+bun run test                       # full suite (13 assembled-render/handler suites)
 bun scripts/test-claudify-hub.ts   # run one suite directly
 ```
 
@@ -46,3 +46,7 @@ The extension has two entry points declared in `package.json` `pi.extensions`: `
 - **Publishing.** `package.json` `files` must list **every** `extensions/*.ts` that `index.ts` imports (currently incl. `claudify-screen.ts` and `settings.ts`) — the package ships source, so a missing file silently breaks it on install. To publish: from a checkout at the target version, run bare `npm publish` (never `npm publish <name>@<version>` — that re-publishes an existing registry version and errors). Dry-run first with `npm publish --dry-run`.
 
 Architectural decisions are in `docs/adr/`; live-capture specs are in `docs/plans/`; session handoffs in `docs/handoff/`.
+
+### Plane issue auto-close (CI)
+
+`.forgejo/workflows/plane-sync.yml` (+ `.forgejo/scripts/close-plane-issues.mjs`) closes Plane work items on PR merge. Put the closing reference as **plain prose** in the PR **body** — `Closes CLFY-14` (also `Fixes`/`Resolves`); references in commit messages are not read, because Forgejo's merge commit doesn't carry the PR body. References inside code spans/backticks are **ignored** (so a PR documenting the syntax doesn't fire) — `scripts/test-plane-refs.ts` guards this. Needs a repo-level `PLANE_PROJECT_ID` secret; the other three Plane secrets are inherited from the owlburtoe user.
