@@ -100,10 +100,10 @@ lossy activity string, nor append Claude Code's nested-only `Running…` and
 ### pi divergence
 
 - **Header matches**: `humanizeToolName("Agent")` → `Agent` (index.ts:3510).
-- **In-flight differs**: `renderOpenAiToolResult` renders the partial as a blinking
-  `Agent...` (index.ts:4383–4387). pi shows neither `⎿ Initializing…` nor the streamed
-  nested child shape. The investigation above confirms that only the static initial row
-  can be fixed in this package; the nested child data does not reach its renderer.
+- **In-flight is partially aligned by CLFY-20**: `renderOpenAiToolResult` now renders
+  `⎿ Initializing…` for an Agent partial (index.ts:4383–4387). The streamed nested child
+  remains unavailable because the investigation above confirms that its data does not
+  reach this package's renderer.
 - **Settled result differs**: pi emits `Done` without stats (index.ts:4379). Claude Code
   emits `Done (<N> tool use · <X>k tokens · <N>s)`. CLFY-16 intentionally owns that
   settled path; CLFY-20 does not change it.
@@ -323,7 +323,7 @@ part of gap #6 stands.
 | 3 | Fetch result | `Received N bytes (200 OK)` | `N lines returned (ctrl+o to expand)` | index.ts:4395 |
 | 4 | Web Search result | `Did N search in Ns` | `N lines returned (ctrl+o to expand)` | index.ts:4395 |
 | 5 | Agent result | `Done (N tool use · Xk tokens · Ns)` | `Done` / `N lines returned …` | index.ts:4386,4395 |
-| 6 | Agent in-flight | `⎿ Initializing…` → streamed child tool + `Running… / (ctrl+b to run in background)` | blinking `Agent...` | index.ts:4372 |
+| 6 | Agent in-flight | `⎿ Initializing…` → streamed child tool + `Running… / (ctrl+b to run in background)` | `⎿ Initializing…`; nested child unavailable upstream | index.ts:4383–4387 |
 | 7 | `(ctrl+o to expand)` suffix on OpenAI-style results | absent everywhere on tool rows | appended | index.ts:4397 |
 | 8 | Web Search query quoting | `Web Search("query")` | `Web Search(query)` | index.ts:4174 |
 | 9 | Compaction notice | `· Compacting…` + bar; `Compacted (ctrl+o to see full summary)` + re-hydration rows | unstyled / unknown | — |

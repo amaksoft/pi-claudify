@@ -138,6 +138,31 @@ assert.match(webSearchPlain, /^⏺ Web Search\("Claude Code changelog 2026"\)$/m
 assert.match(webSearchPlain, /^ {2}⎿ {2}Did 1 search$/m);
 assert.doesNotMatch(webSearchPlain, /ctrl\+o to expand|lines returned/);
 
+const agentInFlight = component(pi, "Agent", "chrome-agent-in-flight", { description: "Count lines with 'fox'" });
+agentInFlight.updateResult(
+	{
+		content: [{ type: "text", text: "0 tool uses..." }],
+		details: {
+			displayName: "Explore",
+			description: "Count lines with 'fox'",
+			subagentType: "Explore",
+			toolUses: 0,
+			tokens: "",
+			turnCount: 1,
+			durationMs: 80,
+			status: "running",
+			activity: "running command…",
+			spinnerFrame: 1,
+		},
+		isError: false,
+	} as any,
+	true,
+);
+const agentInFlightPlain = plainRender(agentInFlight);
+assert.match(agentInFlightPlain, /^⏺ Agent\(Count lines with 'fox'\)$/m);
+assert.match(agentInFlightPlain, /^ {2}⎿ {2}Initializing…$/m);
+assert.doesNotMatch(agentInFlightPlain, /Agent\.\.\.|running command|Running…|ctrl\+b/);
+
 const agent = component(pi, "Agent", "chrome-agent", { description: "Count lines with 'fox'" });
 agent.updateResult(
 	{ content: [{ type: "text", text: "child result\nfinal response" }], details: {}, isError: false } as any,
