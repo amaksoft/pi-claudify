@@ -293,7 +293,7 @@ assert.equal(disposedFetches, 0, "disposing the footer prevents a pending creden
 // --- ClaudeFooterComponent: statuses survive the footer replacement ----------
 
 setSettings({ footerColorMode: "monochrome" });
-const statuses = new Map([["zeta", "z status"], ["alpha", "a\tstatus\nline"]]);
+const statuses = new Map([["zeta", "z status"], ["alpha", "a\tstatus\nline"], ["mcp", "\x1b[38;2;138;190;183mMCP: 0/8 servers\x1b[39m"]]);
 const fakeFooterData = { getGitBranch: () => "main", getExtensionStatuses: () => statuses };
 const component = new ClaudeFooterComponent(fakeFooterData, {
 	getDirectory: () => "project",
@@ -304,7 +304,7 @@ const component = new ClaudeFooterComponent(fakeFooterData, {
 });
 const rendered = component.render(200);
 assert.equal(rendered[0], "  project │ ⎇ main │ Fable 5 │ Ctx: 25% │ Week: 50% ▓▓▓▓▓░░░░░ → Reset: 08:00 PM");
-assert.deepEqual(rendered.slice(1), ["  a status line", "  z status"], "extension statuses render sorted and sanitized");
+assert.deepEqual(rendered.slice(1), ["  a status line", "  MCP: 0/8 servers", "  z status"], "extension statuses render sorted, sanitized, and stripped of baked colors");
 assert.ok(component.render(20)[0].replace(/\x1b\[[0-9;]*m/g, "").length <= 20, "lines truncate to the viewport");
 
 // --- installClaudeFooter ------------------------------------------------------
