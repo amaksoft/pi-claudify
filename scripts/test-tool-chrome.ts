@@ -53,8 +53,23 @@ function component(pi: FakePi, name: string, id: string, args: any): ToolExecuti
 	return c;
 }
 
+function plainRender(component: ToolExecutionComponent, width = 100): string {
+	return component
+		.render(width)
+		.map((line) => line.replace(/\x1b\]8;;[^\x07]*\x07/g, "").replace(/\x1b\[[0-9;]*m/g, "").replace(/\s+$/, ""))
+		.join("\n");
+}
+
 initTheme("dark", false);
 const pi = new FakePi();
+for (const name of ["webfetch", "web_search", "Agent", "code_search"]) {
+	pi.registerTool({
+		name,
+		label: name,
+		description: name,
+		execute: async () => ({ content: [], details: {} }),
+	});
+}
 extension(pi as any);
 
 // --- Bullet is the status signal: gray while running, green once it succeeded.
@@ -103,5 +118,44 @@ assert.ok(writeRaw.includes(CC_DOT_PENDING) || writeRaw.includes("\x1b[38;2;153;
 
 const writePlain = writeRaw.replace(/\x1b\[[0-9;]*m/g, "").replace(/\x1b\]8;;[^\x07]*\x07/g, "");
 assert.match(writePlain, /⎿ {2}Wrote 2 lines to src\/c\.ts/);
+
+// --- Never-captured OpenAI-style surfaces, captured from Claude Code v2.1.211:
+// docs/plans/2026-07-15-uncaptured-surfaces-grammar.md
+const fetch = component(pi, "webfetch", "chrome-fetch", { url: "https://example.com" });
+fetch.updateResult({ content: [{ type: "text", text: "hello" }], details: {}, isError: false } as any, false);
+const fetchPlain = plainRender(fetch);
+assert.match(fetchPlain, /^⏺ Fetch\(https:\/\/example\.com\)$/m);
+assert.match(fetchPlain, /^ {2}⎿ {2}Received 5 bytes$/m);
+assert.doesNotMatch(fetchPlain, /ctrl\+o to expand|lines returned/);
+
+const webSearch = component(pi, "web_search", "chrome-web-search", { query: "Claude Code changelog 2026" });
+webSearch.updateResult(
+	{ content: [{ type: "text", text: "result one\nresult two" }], details: {}, isError: false } as any,
+	false,
+);
+const webSearchPlain = plainRender(webSearch);
+assert.match(webSearchPlain, /^⏺ Web Search\("Claude Code changelog 2026"\)$/m);
+assert.match(webSearchPlain, /^ {2}⎿ {2}Did 1 search$/m);
+assert.doesNotMatch(webSearchPlain, /ctrl\+o to expand|lines returned/);
+
+const agent = component(pi, "Agent", "chrome-agent", { description: "Count lines with 'fox'" });
+agent.updateResult(
+	{ content: [{ type: "text", text: "child result\nfinal response" }], details: {}, isError: false } as any,
+	false,
+);
+const agentPlain = plainRender(agent);
+assert.match(agentPlain, /^⏺ Agent\(Count lines with 'fox'\)$/m);
+assert.match(agentPlain, /^ {2}⎿ {2}Done$/m);
+assert.doesNotMatch(agentPlain, /ctrl\+o to expand|lines returned|child result|final response/);
+
+// The shared collapsed OpenAI-style result path also drops the uncaptured hint.
+const codeSearch = component(pi, "code_search", "chrome-code-search", { query: "render tool row" });
+codeSearch.updateResult(
+	{ content: [{ type: "text", text: "match one\nmatch two" }], details: {}, isError: false } as any,
+	false,
+);
+const codeSearchPlain = plainRender(codeSearch);
+assert.match(codeSearchPlain, /^ {2}⎿ {2}2 lines returned$/m);
+assert.doesNotMatch(codeSearchPlain, /ctrl\+o to expand/);
 
 console.log("tool chrome tests passed");
