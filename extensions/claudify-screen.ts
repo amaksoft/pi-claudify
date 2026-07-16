@@ -683,12 +683,15 @@ export class ClaudifyScreen extends Container implements Focusable {
 
 	private saveSetting(key: EditableSettingsKey, value: unknown): boolean {
 		const result = writeSettingsKey(key, value);
+		if (!result.success) {
+			const message = result.backupCreated
+				? "Backed up to ~/.pi/settings.json.bak, but couldn't save to ~/.pi/settings.json"
+				: "Couldn't save to ~/.pi/settings.json";
+			this.showNotice(message, "error");
+			return false;
+		}
 		if (result.backupCreated) {
 			this.showNotice("Backed up invalid settings to ~/.pi/settings.json.bak", "warning");
-		}
-		if (!result.success) {
-			this.showNotice("Couldn't save to ~/.pi/settings.json", "error");
-			return false;
 		}
 		return true;
 	}

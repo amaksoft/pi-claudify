@@ -498,6 +498,15 @@ try {
 	assert.ok(render(recoveryScreen).includes("Backed up invalid settings to ~/.pi/settings.json.bak"), "recovering invalid settings reports the backup inline");
 	assert.deepEqual(recoveryNotices.at(-1), ["Backed up invalid settings to ~/.pi/settings.json.bak", "warning"], "settings recovery reaches the notification channel");
 	assert.equal(readFileSync(`${recoverySettingsPath}.bak`, "utf8"), "{ broken settings", "the recovery notice corresponds to a real backup");
+
+	writeFileSync(recoverySettingsPath, "{ backup then fail");
+	mkdirSync(`${recoverySettingsPath}.tmp`);
+	recoveryScreen.handleInput("enter");
+	const partialRecoveryNotice = "Backed up to ~/.pi/settings.json.bak, but couldn't save to ~/.pi/settings.json";
+	assert.ok(render(recoveryScreen).includes(partialRecoveryNotice), "a post-backup write failure keeps both outcomes in the inline footer");
+	assert.deepEqual(recoveryNotices.at(-1), [partialRecoveryNotice, "error"], "a post-backup write failure sends one complete notification");
+	assert.equal(readFileSync(`${recoverySettingsPath}.bak`, "utf8"), "{ backup then fail", "the partial-recovery notice corresponds to a real backup");
+	assert.equal(readFileSync(recoverySettingsPath, "utf8"), "{ backup then fail", "a post-backup write failure leaves the invalid source intact");
 } finally {
 	process.env.HOME = homeBeforeRecovery;
 }
