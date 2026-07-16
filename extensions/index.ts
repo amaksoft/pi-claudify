@@ -4496,6 +4496,7 @@ export default function (pi: ExtensionAPI): void {
 							tui.requestRender();
 						},
 						{ diffThemes: DIFF_PRESET_KEYS, colorKeys: COMMON_COLOR_KEYS },
+						(message, type) => ctx.ui.notify(message, type),
 					);
 				},
 				{

@@ -50,6 +50,11 @@ export interface SettingsSnapshot {
 	file: SettingsFileInfo;
 }
 
+export interface SettingsWriteResult {
+	readonly success: boolean;
+	readonly backupCreated: boolean;
+}
+
 interface CachedSettings extends SettingsSnapshot {
 	cacheKey: string;
 	timestamp: number;
@@ -91,26 +96,32 @@ export function clearSettingsCache(): void {
 	settingsCache = null;
 }
 
-export function writeSettingsKey(key: string, value: unknown): void {
+export function writeSettingsKey(key: string, value: unknown): SettingsWriteResult {
 	clearSettingsCache();
 	const home = process.env.HOME ?? "";
-	if (!home) return;
+	if (!home) return { success: false, backupCreated: false };
 	const dir = join(home, ".pi");
 	const path = join(dir, "settings.json");
 	let settings: Record<string, unknown> = {};
-	let unparseable = false;
+	let invalid = false;
 	try {
-		if (existsSync(path)) settings = JSON.parse(readFileSync(path, "utf8")) ?? {};
+		if (existsSync(path)) {
+			const raw = JSON.parse(readFileSync(path, "utf8"));
+			if (!raw || typeof raw !== "object" || Array.isArray(raw)) invalid = true;
+			else settings = raw as Record<string, unknown>;
+		}
 	} catch {
-		unparseable = true;
+		invalid = true;
 	}
-	if (unparseable) {
+	let backupCreated = false;
+	if (invalid) {
 		// Refuse to replace the user's whole settings file unless the broken
 		// original remains recoverable.
 		try {
 			copyFileSync(path, `${path}.bak`);
+			backupCreated = true;
 		} catch {
-			return;
+			return { success: false, backupCreated: false };
 		}
 	}
 	settings = normalizeAliases(settings);
@@ -127,7 +138,10 @@ export function writeSettingsKey(key: string, value: unknown): void {
 		const tmp = `${path}.tmp`;
 		writeFileSync(tmp, JSON.stringify(settings, null, 2) + "\n");
 		renameSync(tmp, path);
-	} catch { /* best effort */ }
+		return { success: true, backupCreated };
+	} catch {
+		return { success: false, backupCreated };
+	}
 }
 
 export function readSettings(): SettingsSnapshot {

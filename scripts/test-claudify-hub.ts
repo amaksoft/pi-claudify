@@ -18,7 +18,7 @@ process.chdir(cwd);
 
 const { ClaudifyScreen } = await import("../extensions/claudify-screen.ts");
 const { default: extension, COMMON_COLOR_KEYS, DIFF_PRESET_KEYS } = await import("../extensions/index.ts");
-const { MAX_CUSTOM_SPINNER_VERBS, sanitizeSpinnerVerbs } = await import("../extensions/spinner.ts");
+const { MAX_CUSTOM_SPINNER_VERBS, MAX_SPINNER_VERB_LENGTH, sanitizeSpinnerVerbs } = await import("../extensions/spinner.ts");
 const { MAX_CUSTOM_WORKED_VERBS, sanitizeWorkedVerbs } = await import("../extensions/message-chrome.ts");
 const pickerCandidates = { diffThemes: DIFF_PRESET_KEYS, colorKeys: COMMON_COLOR_KEYS };
 
@@ -193,13 +193,20 @@ assert.ok(COMMON_COLOR_KEYS.includes("borderAccent") && COMMON_COLOR_KEYS.includ
 
 const pickerChanges: Array<[string, unknown]> = [];
 const pickerPreviews: Array<[string, unknown]> = [];
+const pickerEvents: Array<["change" | "preview", string, unknown]> = [];
 const pickerScreen = new ClaudifyScreen(
 	{ requestRender: () => { renderRequests += 1; } } as any,
 	theme,
 	keybindings as any,
 	() => {},
-	(key, value) => { pickerChanges.push([key, value]); },
-	(key, value) => { pickerPreviews.push([key, value]); },
+	(key, value) => {
+		pickerChanges.push([key, value]);
+		pickerEvents.push(["change", key, value]);
+	},
+	(key, value) => {
+		pickerPreviews.push([key, value]);
+		pickerEvents.push(["preview", key, value]);
+	},
 	pickerCandidates,
 );
 pickerScreen.handleInput("enter");
@@ -235,6 +242,11 @@ pickerScreen.handleInput("down");
 pickerScreen.handleInput("enter");
 assert.equal(readWrittenSettings().diffTheme, "midnight", "Enter persists the highlighted diff theme");
 assert.deepEqual(pickerChanges.at(-1), ["diffTheme", "midnight"], "Picker commit notifies the host after clearing preview");
+assert.deepEqual(
+	pickerEvents.slice(-2),
+	[["preview", "diffTheme", undefined], ["change", "diffTheme", "midnight"]],
+	"Picker commit clears its preview before notifying the host of the persisted live change",
+);
 
 const diffScreen = new ClaudifyScreen(
 	{ requestRender(): void {} } as any,
@@ -286,7 +298,41 @@ spinnerScreen.handleInput("up");
 spinnerScreen.handleInput("enter");
 assert.equal(readWrittenSettings().spinnerStatusColor, "warning", "the status color Picker commits from the same candidate list");
 
+const failedPickerChanges: Array<[string, unknown]> = [];
+const failedPickerPreviews: Array<[string, unknown]> = [];
+const failedPickerNotices: Array<[string, string | undefined]> = [];
+const failedPickerScreen = new ClaudifyScreen(
+	{ requestRender(): void {} } as any,
+	theme,
+	keybindings as any,
+	() => {},
+	(key, value) => { failedPickerChanges.push([key, value]); },
+	(key, value) => { failedPickerPreviews.push([key, value]); },
+	pickerCandidates,
+	(message, type) => { failedPickerNotices.push([message, type]); },
+);
+failedPickerScreen.handleInput("down");
+failedPickerScreen.handleInput("down");
+failedPickerScreen.handleInput("enter");
+failedPickerScreen.handleInput("enter");
+failedPickerScreen.handleInput("down");
+const previewBeforeFailure = failedPickerPreviews.at(-1);
+const homeBeforeFailure = process.env.HOME;
+process.env.HOME = "";
+try {
+	failedPickerScreen.handleInput("enter");
+} finally {
+	process.env.HOME = homeBeforeFailure;
+}
+assert.ok(render(failedPickerScreen).includes("Couldn't save to ~/.pi/settings.json"), "a failed Picker save replaces its footer with an inline error");
+assert.deepEqual(failedPickerNotices.at(-1), ["Couldn't save to ~/.pi/settings.json", "error"], "a failed Picker save reaches the notification channel");
+assert.deepEqual(failedPickerPreviews.at(-1), previewBeforeFailure, "a failed Picker save keeps its live preview installed");
+assert.deepEqual(failedPickerChanges, [], "a failed Picker save does not report a persisted live change");
+failedPickerScreen.handleInput("escape");
+assert.deepEqual(failedPickerPreviews.at(-1), ["spinnerColor", undefined], "cancelling after a failed Picker save clears the retained preview");
+
 const verbChanges: Array<[string, unknown]> = [];
+const verbNotices: Array<[string, string | undefined]> = [];
 const verbScreen = new ClaudifyScreen(
 	{ requestRender(): void {} } as any,
 	theme,
@@ -295,6 +341,7 @@ const verbScreen = new ClaudifyScreen(
 	(key, value) => { verbChanges.push([key, value]); },
 	undefined,
 	pickerCandidates,
+	(message, type) => { verbNotices.push([message, type]); },
 );
 verbScreen.handleInput("down");
 verbScreen.handleInput("down");
@@ -333,10 +380,32 @@ verbScreen.handleInput("enter");
 verbScreen.handleInput("reticulating SPLINES");
 verbScreen.handleInput("enter");
 assert.deepEqual(readWrittenSettings().spinnerVerbs, ["Reticulating splines"], "Spinner Add rejects a case-insensitive duplicate");
+assert.ok(render(verbScreen).includes("That verb or phrase is already in this list."), "a duplicate Add explains its rejection inline");
+assert.deepEqual(verbNotices.at(-1), ["That verb or phrase is already in this list.", "warning"], "a duplicate Add reaches the notification channel");
 verbScreen.handleInput("enter");
 verbScreen.handleInput("   ");
 verbScreen.handleInput("enter");
 assert.deepEqual(readWrittenSettings().spinnerVerbs, ["Reticulating splines"], "Spinner Add rejects whitespace-only input");
+assert.ok(render(verbScreen).includes("Enter a verb or phrase before adding."), "an empty Add explains its rejection inline");
+assert.deepEqual(verbNotices.at(-1), ["Enter a verb or phrase before adding.", "warning"], "an empty Add reaches the notification channel");
+verbScreen.handleInput("enter");
+const longVerb = "x".repeat(MAX_SPINNER_VERB_LENGTH + 1);
+verbScreen.handleInput(longVerb);
+verbScreen.handleInput("enter");
+assert.deepEqual(readWrittenSettings().spinnerVerbs, ["Reticulating splines", "x".repeat(MAX_SPINNER_VERB_LENGTH)], "Spinner Add persists the sanitized form of a long phrase");
+assert.ok(render(verbScreen).includes(`Phrase shortened to ${MAX_SPINNER_VERB_LENGTH} characters.`), "a truncated Add reports the shortening inline");
+assert.deepEqual(verbNotices.at(-1), [`Phrase shortened to ${MAX_SPINNER_VERB_LENGTH} characters.`, "warning"], "a truncated Add reaches the notification channel");
+verbScreen.handleInput("down");
+verbScreen.handleInput("enter");
+verbScreen.handleInput(longVerb);
+verbScreen.handleInput("enter");
+const collapsedDuplicateNotice = `Phrase shortened to ${MAX_SPINNER_VERB_LENGTH} characters; that verb or phrase is already in this list.`;
+assert.ok(render(verbScreen).includes(collapsedDuplicateNotice), "a truncated phrase that collapses to a duplicate reports both reasons inline");
+assert.deepEqual(verbNotices.at(-1), [collapsedDuplicateNotice, "warning"], "a truncation-induced duplicate reaches the notification channel");
+assert.deepEqual(readWrittenSettings().spinnerVerbs, ["Reticulating splines", "x".repeat(MAX_SPINNER_VERB_LENGTH)], "a truncation-induced duplicate does not write");
+verbScreen.handleInput("up");
+verbScreen.handleInput("backspace");
+assert.deepEqual(readWrittenSettings().spinnerVerbs, ["Reticulating splines"], "the truncated test phrase can be removed without disturbing earlier entries");
 verbScreen.handleInput("enter");
 verbScreen.handleInput("Balancing gyros");
 verbScreen.handleInput("enter");
@@ -404,6 +473,81 @@ assert.ok(verbChanges.some(([key]) => key === "spinnerVerbMode"), "Spinner verb 
 assert.ok(verbChanges.some(([key]) => key === "workedVerbs"), "Worked verb list commits notify the host");
 assert.ok(verbChanges.some(([key]) => key === "workedVerbMode"), "Worked verb mode commits notify the host");
 
+const recoverySandbox = mkdtempSync(join(tmpdir(), "claudify-recovery-"));
+const recoveryHome = join(recoverySandbox, "home");
+const recoverySettingsPath = join(recoveryHome, ".pi", "settings.json");
+mkdirSync(join(recoveryHome, ".pi"), { recursive: true });
+writeFileSync(recoverySettingsPath, "{ broken settings");
+const homeBeforeRecovery = process.env.HOME;
+process.env.HOME = recoveryHome;
+try {
+	const recoveryNotices: Array<[string, string | undefined]> = [];
+	const recoveryScreen = new ClaudifyScreen(
+		{ requestRender(): void {} } as any,
+		theme,
+		keybindings as any,
+		() => {},
+		undefined,
+		undefined,
+		pickerCandidates,
+		(message, type) => { recoveryNotices.push([message, type]); },
+	);
+	for (let index = 0; index < 4; index++) recoveryScreen.handleInput("down");
+	recoveryScreen.handleInput("enter");
+	recoveryScreen.handleInput("enter");
+	assert.ok(render(recoveryScreen).includes("Backed up invalid settings to ~/.pi/settings.json.bak"), "recovering invalid settings reports the backup inline");
+	assert.deepEqual(recoveryNotices.at(-1), ["Backed up invalid settings to ~/.pi/settings.json.bak", "warning"], "settings recovery reaches the notification channel");
+	assert.equal(readFileSync(`${recoverySettingsPath}.bak`, "utf8"), "{ broken settings", "the recovery notice corresponds to a real backup");
+
+	writeFileSync(recoverySettingsPath, "{ backup then fail");
+	mkdirSync(`${recoverySettingsPath}.tmp`);
+	recoveryScreen.handleInput("enter");
+	const partialRecoveryNotice = "Backed up to ~/.pi/settings.json.bak, but couldn't save to ~/.pi/settings.json";
+	assert.ok(render(recoveryScreen).includes(partialRecoveryNotice), "a post-backup write failure keeps both outcomes in the inline footer");
+	assert.deepEqual(recoveryNotices.at(-1), [partialRecoveryNotice, "error"], "a post-backup write failure sends one complete notification");
+	assert.equal(readFileSync(`${recoverySettingsPath}.bak`, "utf8"), "{ backup then fail", "the partial-recovery notice corresponds to a real backup");
+	assert.equal(readFileSync(recoverySettingsPath, "utf8"), "{ backup then fail", "a post-backup write failure leaves the invalid source intact");
+} finally {
+	process.env.HOME = homeBeforeRecovery;
+}
+
+const capSandbox = mkdtempSync(join(tmpdir(), "claudify-cap-"));
+const capHome = join(capSandbox, "home");
+const capSettingsPath = join(capHome, ".pi", "settings.json");
+const cappedVerbs = Array.from({ length: MAX_CUSTOM_SPINNER_VERBS }, (_, index) => `Capped ${index}`);
+mkdirSync(join(capHome, ".pi"), { recursive: true });
+writeFileSync(capSettingsPath, JSON.stringify({ spinnerVerbs: cappedVerbs }));
+const homeBeforeCap = process.env.HOME;
+process.env.HOME = capHome;
+try {
+	const capNotices: Array<[string, string | undefined]> = [];
+	const capScreen = new ClaudifyScreen(
+		{ requestRender(): void {} } as any,
+		theme,
+		keybindings as any,
+		() => {},
+		undefined,
+		undefined,
+		pickerCandidates,
+		(message, type) => { capNotices.push([message, type]); },
+	);
+	capScreen.handleInput("down");
+	capScreen.handleInput("down");
+	capScreen.handleInput("enter");
+	capScreen.handleInput("down");
+	capScreen.handleInput("down");
+	capScreen.handleInput("enter");
+	for (let index = 0; index <= MAX_CUSTOM_SPINNER_VERBS; index++) capScreen.handleInput("down");
+	capScreen.handleInput("enter");
+	capScreen.handleInput("One entry too many");
+	capScreen.handleInput("enter");
+	assert.ok(render(capScreen).includes(`Limit reached: ${MAX_CUSTOM_SPINNER_VERBS} custom entries.`), "Add at the cap explains its rejection inline");
+	assert.deepEqual(capNotices.at(-1), [`Limit reached: ${MAX_CUSTOM_SPINNER_VERBS} custom entries.`, "warning"], "the cap rejection reaches the notification channel");
+	assert.deepEqual(JSON.parse(readFileSync(capSettingsPath, "utf8")).spinnerVerbs, cappedVerbs, "Add at the cap leaves the persisted pool unchanged");
+} finally {
+	process.env.HOME = homeBeforeCap;
+}
+
 assert.ok(changedKeys.includes("toolBackground"), "commits notify the host for live side effects");
 assert.ok(changedKeys.includes("assistantPrefix"), "message commits notify the host for live side effects");
 assert.ok(renderRequests >= 20, "navigation and commits request TUI repaints");
@@ -455,12 +599,15 @@ for (const removedCommand of ["cc-tools", "cc-theme", "cc-spinner", "cc-message"
 let tuiCustomCalls = 0;
 let hostRenderRequests = 0;
 let receivedOverlayOptions: any;
+const commandNotices: Array<[string, string | undefined]> = [];
 await command.handler("", {
 	mode: "tui",
 	hasUI: true,
 	ui: {
 		theme,
-		notify(): void {},
+		notify(message: string, type?: string): void {
+			commandNotices.push([message, type]);
+		},
 		setHiddenThinkingLabel(): void {},
 		custom(factory: any, options: any): Promise<void> {
 			tuiCustomCalls += 1;
@@ -500,6 +647,16 @@ await command.handler("", {
 				component.handleInput("enter");
 				assert.deepEqual(readWrittenSettings().spinnerVerbs, ["Spinning plates", "Juggling planets"], "the registered command persists Spinner verb additions");
 				assert.ok((globalThis as any)[spinnerBustKey] > beforeVerbBust, "Spinner verb list changes bust the running Spinner settings cache");
+				component.handleInput("escape");
+				const commandHome = process.env.HOME;
+				process.env.HOME = "";
+				try {
+					component.handleInput("enter");
+					component.handleInput("enter");
+					assert.deepEqual(commandNotices.at(-1), ["Couldn't save to ~/.pi/settings.json", "error"], "the registered command forwards screen feedback through ctx.ui.notify");
+				} finally {
+					process.env.HOME = commandHome;
+				}
 				component.handleInput("escape");
 				component.handleInput("escape");
 				component.handleInput("escape");
