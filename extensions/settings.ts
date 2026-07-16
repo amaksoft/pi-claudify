@@ -50,6 +50,11 @@ export interface SettingsSnapshot {
 	file: SettingsFileInfo;
 }
 
+export interface SettingsWriteResult {
+	readonly success: boolean;
+	readonly backupCreated: boolean;
+}
+
 interface CachedSettings extends SettingsSnapshot {
 	cacheKey: string;
 	timestamp: number;
@@ -91,10 +96,10 @@ export function clearSettingsCache(): void {
 	settingsCache = null;
 }
 
-export function writeSettingsKey(key: string, value: unknown): boolean {
+export function writeSettingsKey(key: string, value: unknown): SettingsWriteResult {
 	clearSettingsCache();
 	const home = process.env.HOME ?? "";
-	if (!home) return false;
+	if (!home) return { success: false, backupCreated: false };
 	const dir = join(home, ".pi");
 	const path = join(dir, "settings.json");
 	let settings: Record<string, unknown> = {};
@@ -108,13 +113,15 @@ export function writeSettingsKey(key: string, value: unknown): boolean {
 	} catch {
 		invalid = true;
 	}
+	let backupCreated = false;
 	if (invalid) {
 		// Refuse to replace the user's whole settings file unless the broken
 		// original remains recoverable.
 		try {
 			copyFileSync(path, `${path}.bak`);
+			backupCreated = true;
 		} catch {
-			return false;
+			return { success: false, backupCreated: false };
 		}
 	}
 	settings = normalizeAliases(settings);
@@ -131,9 +138,9 @@ export function writeSettingsKey(key: string, value: unknown): boolean {
 		const tmp = `${path}.tmp`;
 		writeFileSync(tmp, JSON.stringify(settings, null, 2) + "\n");
 		renameSync(tmp, path);
-		return true;
+		return { success: true, backupCreated };
 	} catch {
-		return false;
+		return { success: false, backupCreated };
 	}
 }
 

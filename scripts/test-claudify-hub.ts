@@ -193,13 +193,20 @@ assert.ok(COMMON_COLOR_KEYS.includes("borderAccent") && COMMON_COLOR_KEYS.includ
 
 const pickerChanges: Array<[string, unknown]> = [];
 const pickerPreviews: Array<[string, unknown]> = [];
+const pickerEvents: Array<["change" | "preview", string, unknown]> = [];
 const pickerScreen = new ClaudifyScreen(
 	{ requestRender: () => { renderRequests += 1; } } as any,
 	theme,
 	keybindings as any,
 	() => {},
-	(key, value) => { pickerChanges.push([key, value]); },
-	(key, value) => { pickerPreviews.push([key, value]); },
+	(key, value) => {
+		pickerChanges.push([key, value]);
+		pickerEvents.push(["change", key, value]);
+	},
+	(key, value) => {
+		pickerPreviews.push([key, value]);
+		pickerEvents.push(["preview", key, value]);
+	},
 	pickerCandidates,
 );
 pickerScreen.handleInput("enter");
@@ -235,6 +242,11 @@ pickerScreen.handleInput("down");
 pickerScreen.handleInput("enter");
 assert.equal(readWrittenSettings().diffTheme, "midnight", "Enter persists the highlighted diff theme");
 assert.deepEqual(pickerChanges.at(-1), ["diffTheme", "midnight"], "Picker commit notifies the host after clearing preview");
+assert.deepEqual(
+	pickerEvents.slice(-2),
+	[["preview", "diffTheme", undefined], ["change", "diffTheme", "midnight"]],
+	"Picker commit clears its preview before notifying the host of the persisted live change",
+);
 
 const diffScreen = new ClaudifyScreen(
 	{ requestRender(): void {} } as any,
@@ -383,6 +395,15 @@ verbScreen.handleInput("enter");
 assert.deepEqual(readWrittenSettings().spinnerVerbs, ["Reticulating splines", "x".repeat(MAX_SPINNER_VERB_LENGTH)], "Spinner Add persists the sanitized form of a long phrase");
 assert.ok(render(verbScreen).includes(`Phrase shortened to ${MAX_SPINNER_VERB_LENGTH} characters.`), "a truncated Add reports the shortening inline");
 assert.deepEqual(verbNotices.at(-1), [`Phrase shortened to ${MAX_SPINNER_VERB_LENGTH} characters.`, "warning"], "a truncated Add reaches the notification channel");
+verbScreen.handleInput("down");
+verbScreen.handleInput("enter");
+verbScreen.handleInput(longVerb);
+verbScreen.handleInput("enter");
+const collapsedDuplicateNotice = `Phrase shortened to ${MAX_SPINNER_VERB_LENGTH} characters; that verb or phrase is already in this list.`;
+assert.ok(render(verbScreen).includes(collapsedDuplicateNotice), "a truncated phrase that collapses to a duplicate reports both reasons inline");
+assert.deepEqual(verbNotices.at(-1), [collapsedDuplicateNotice, "warning"], "a truncation-induced duplicate reaches the notification channel");
+assert.deepEqual(readWrittenSettings().spinnerVerbs, ["Reticulating splines", "x".repeat(MAX_SPINNER_VERB_LENGTH)], "a truncation-induced duplicate does not write");
+verbScreen.handleInput("up");
 verbScreen.handleInput("backspace");
 assert.deepEqual(readWrittenSettings().spinnerVerbs, ["Reticulating splines"], "the truncated test phrase can be removed without disturbing earlier entries");
 verbScreen.handleInput("enter");
