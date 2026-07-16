@@ -190,20 +190,55 @@ function setThemeFg(theme: unknown, key: string, value: string): void {
 
 // Claude Code's selection/accent lavender, replacing pi's teal `accent`.
 // Extraction + dark/light assignment: docs/plans/2026-07-16-cc-accent-color.md.
-const CC_ACCENT_DARK = "#B1B9F9";
-const CC_ACCENT_LIGHT = "#5769F7";
+// pi's Theme stores READY-MADE ANSI ESCAPES in fgColors — theme.fg() only
+// concatenates — so the override must store escapes, never hex (a hex string
+// renders as literal text and widens lines past the terminal, crashing pi's
+// renderer; shipped broken in 2.3.0). The 256-color indices are precomputed
+// with pi's own rgbTo256 quantizer (147 matches the live CC capture).
+const CC_ACCENT_ANSI = {
+	dark: { truecolor: "\x1b[38;2;177;185;249m", ansi256: "\x1b[38;5;147m" },
+	light: { truecolor: "\x1b[38;2;87;105;247m", ansi256: "\x1b[38;5;63m" },
+} as const;
+const CC_ACCENT_VALUES: readonly string[] = [
+	CC_ACCENT_ANSI.dark.truecolor,
+	CC_ACCENT_ANSI.dark.ansi256,
+	CC_ACCENT_ANSI.light.truecolor,
+	CC_ACCENT_ANSI.light.ansi256,
+];
 
 const originalThemeAccent = new WeakMap<object, string>();
 
+function colorToRgb(value: string): { r: number; g: number; b: number } | null {
+	const hex = /^#([0-9a-fA-F]{6})$/.exec(value);
+	if (hex) {
+		return {
+			r: Number.parseInt(hex[1].slice(0, 2), 16),
+			g: Number.parseInt(hex[1].slice(2, 4), 16),
+			b: Number.parseInt(hex[1].slice(4, 6), 16),
+		};
+	}
+	const truecolor = /38;2;(\d+);(\d+);(\d+)/.exec(value);
+	if (truecolor) return { r: +truecolor[1], g: +truecolor[2], b: +truecolor[3] };
+	const indexed = /38;5;(\d+)/.exec(value);
+	if (!indexed) return null;
+	const n = +indexed[1];
+	if (n >= 232 && n <= 255) {
+		const v = 8 + 10 * (n - 232);
+		return { r: v, g: v, b: v };
+	}
+	if (n >= 16 && n <= 231) {
+		const cube = [0, 95, 135, 175, 215, 255];
+		const c = n - 16;
+		return { r: cube[Math.floor(c / 36)], g: cube[Math.floor(c / 6) % 6], b: cube[c % 6] };
+	}
+	return null;
+}
+
 function isDarkTheme(theme: unknown): boolean {
-	const text = getThemeFg(theme, "text");
-	const match = text ? /^#([0-9a-fA-F]{6})$/.exec(text) : null;
-	if (!match) return true;
-	const r = Number.parseInt(match[1].slice(0, 2), 16);
-	const g = Number.parseInt(match[1].slice(2, 4), 16);
-	const b = Number.parseInt(match[1].slice(4, 6), 16);
+	const rgb = colorToRgb(getThemeFg(theme, "text") ?? "");
+	if (!rgb) return true;
 	// Light text means a dark background.
-	return 0.299 * r + 0.587 * g + 0.114 * b > 128;
+	return 0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b > 128;
 }
 
 export function applyAccentOverride(theme: unknown): void {
@@ -212,12 +247,13 @@ export function applyAccentOverride(theme: unknown): void {
 	if (current === undefined) return;
 	// pi exposes the theme both as the instance and via a forwarding Proxy; never
 	// memorize an already-overridden value as the theme's own accent.
-	if (!originalThemeAccent.has(theme) && current !== CC_ACCENT_DARK && current !== CC_ACCENT_LIGHT) {
+	if (!originalThemeAccent.has(theme) && !CC_ACCENT_VALUES.includes(current)) {
 		originalThemeAccent.set(theme, current);
 	}
 	const wantClaude = readSettings().values.accentColor !== "theme";
+	const colorMode = (theme as any).mode === "256color" ? "ansi256" : "truecolor";
 	const target = wantClaude
-		? (isDarkTheme(theme) ? CC_ACCENT_DARK : CC_ACCENT_LIGHT)
+		? CC_ACCENT_ANSI[isDarkTheme(theme) ? "dark" : "light"][colorMode]
 		: originalThemeAccent.get(theme) ?? current;
 	if (current !== target) setThemeFg(theme, "accent", target);
 }
@@ -258,8 +294,10 @@ function applyToolBackgroundMode(theme: unknown): void {
 		if (current && current !== TRANSPARENT_BG && !originalUserMessageBg.has(theme)) {
 			originalUserMessageBg.set(theme, current);
 		}
+		// bgColors store ready-made ANSI escapes (same as fgColors); hex only
+		// appears in test fakes, so pass escapes through and convert hex.
 		const original = originalUserMessageBg.get(theme);
-		userBoxThemeBg = original ? bgAnsiFromHex(original) : null;
+		userBoxThemeBg = original ? (original.startsWith("\x1b") ? original : bgAnsiFromHex(original)) : null;
 		userBoxThemePrefixFg = safeFgAnsi(theme, "dim") ?? safeFgAnsi(theme, "muted");
 	}
 	setThemeBg(theme, "userMessageBg", TRANSPARENT_BG);
@@ -1091,7 +1129,7 @@ function cleanBoxedUserMessageLine(line: string): string {
  * userMessageBg/dim; claude mode uses the captured CC values.
  * docs/plans/2026-07-16-cc-user-message-box.md.
  */
-export function applyUserMessageBox(lines: string[], mode: "theme" | "claude"): string[] {
+export function applyUserMessageBox(lines: string[], mode: "theme" | "claude", maxWidth: number): string[] {
 	const bg = (mode === "theme" ? userBoxThemeBg : null) ?? CC_USER_BOX_BG;
 	const prefixFg = (mode === "theme" ? userBoxThemePrefixFg : null) ?? CC_USER_BOX_PREFIX_FG;
 	const textFg = mode === "claude" ? CC_USER_BOX_TEXT_FG : "";
@@ -1099,7 +1137,12 @@ export function applyUserMessageBox(lines: string[], mode: "theme" | "claude"): 
 	if (contentIndexes.length === 0) return lines;
 	const first = contentIndexes[0];
 	const last = contentIndexes[contentIndexes.length - 1];
-	const boxWidth = Math.max(...contentIndexes.map((index) => visibleWidth(lines[index]))) + 1;
+	// The +1 right padding must never push a full-width line past the render
+	// width — pi's TUI throws on overflow instead of clipping.
+	const boxWidth = Math.min(
+		Math.max(1, maxWidth),
+		Math.max(...contentIndexes.map((index) => visibleWidth(lines[index]))) + 1,
+	);
 	return lines.map((line, index) => {
 		if (index < first || index > last) return line;
 		let body = line;
@@ -1155,7 +1198,7 @@ function patchUserMessageRender(): void {
 		});
 		const rendered = boxMode === "off"
 			? formatted.map((line, index) => (index === 0 ? colorizeUserPrefix(line) : line))
-			: applyUserMessageBox(formatted, boxMode);
+			: applyUserMessageBox(formatted, boxMode, width);
 		rendered[0] = OSC133_ZONE_START + rendered[0];
 		rendered[rendered.length - 1] += OSC133_ZONE_END + OSC133_ZONE_FINAL;
 		return rendered;

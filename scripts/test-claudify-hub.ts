@@ -764,24 +764,34 @@ assert.match(render(resilientScreen), new RegExp(missingKey), "the unresolved ke
 const { applyAccentOverride } = await import("../extensions/index.ts");
 const { clearSettingsCache } = await import("../extensions/settings.ts");
 
+// Fakes mirror real pi themes: fgColors hold READY-MADE ANSI ESCAPES (theme.fg
+// concatenates them verbatim — storing hex renders literal "#B1B9F9" text and
+// crashes pi on line overflow, the 2.3.0 regression).
 writeFileSync(settingsPath, "{}");
 clearSettingsCache();
-const darkFake = { fgColors: { accent: "#8abeb7", text: "#d4d4d4" } };
+const PI_TEAL = "\x1b[38;2;138;190;183m";
+const CC_LAVENDER_TC = "\x1b[38;2;177;185;249m";
+const darkFake = { mode: "truecolor", fgColors: { accent: PI_TEAL, text: "\x1b[38;2;212;212;212m" } };
 applyAccentOverride(darkFake);
-assert.equal(darkFake.fgColors.accent, "#B1B9F9", "default: pi's teal accent becomes CC's dark lavender");
+assert.equal(darkFake.fgColors.accent, CC_LAVENDER_TC, "default: pi's teal accent becomes CC's dark lavender as an ANSI escape");
+assert.doesNotMatch(darkFake.fgColors.accent, /#/, "no raw hex ever reaches fgColors");
 applyAccentOverride(darkFake);
-assert.equal(darkFake.fgColors.accent, "#B1B9F9", "re-applying is idempotent");
+assert.equal(darkFake.fgColors.accent, CC_LAVENDER_TC, "re-applying is idempotent");
 
 writeFileSync(settingsPath, JSON.stringify({ accentColor: "theme" }));
 clearSettingsCache();
 applyAccentOverride(darkFake);
-assert.equal(darkFake.fgColors.accent, "#8abeb7", "accentColor=theme restores the theme's own accent exactly");
+assert.equal(darkFake.fgColors.accent, PI_TEAL, "accentColor=theme restores the theme's own accent exactly");
 
 writeFileSync(settingsPath, "{}");
 clearSettingsCache();
-const lightFake = { fgColors: new Map<string, string>([["accent", "#178f7f"], ["text", "#333333"]]) };
+const fake256 = { mode: "256color", fgColors: { accent: "\x1b[38;5;73m", text: "\x1b[38;5;252m" } };
+applyAccentOverride(fake256);
+assert.equal(fake256.fgColors.accent, "\x1b[38;5;147m", "256-color themes get the quantized lavender (147, matching the CC capture)");
+
+const lightFake = { mode: "truecolor", fgColors: new Map<string, string>([["accent", "\x1b[38;2;23;143;127m"], ["text", "\x1b[38;2;51;51;51m"]]) };
 applyAccentOverride(lightFake);
-assert.equal(lightFake.fgColors.get("accent"), "#5769F7", "light themes (dark text) get CC's darker blue-purple, via Map storage");
+assert.equal(lightFake.fgColors.get("accent"), "\x1b[38;2;87;105;247m", "light themes (dark text) get CC's darker blue-purple, via Map storage");
 
 const accentScreen = new ClaudifyScreen(
 	{ requestRender: () => {} } as any,
@@ -799,7 +809,7 @@ assert.match(render(accentScreen), /Accent\s+claude/, "the Theme Section exposes
 
 const { applyUserMessageBox } = await import("../extensions/index.ts");
 
-const boxedClaude = applyUserMessageBox(["❯ first line of the message", "  wrapped tail", ""], "claude");
+const boxedClaude = applyUserMessageBox(["❯ first line of the message", "  wrapped tail", ""], "claude", 80);
 assert.equal(
 	boxedClaude[0],
 	"\x1b[48;2;58;58;58m\x1b[38;2;78;78;78m❯\x1b[39m\x1b[38;2;255;255;255m first line of the message \x1b[49m\x1b[39m",
@@ -817,13 +827,20 @@ assert.equal(
 	"every boxed line spans the same rectangle width",
 );
 
-const boxedTheme = applyUserMessageBox(["❯ hi"], "theme");
+const boxedTheme = applyUserMessageBox(["❯ hi"], "theme", 80);
 assert.match(boxedTheme[0], /^\x1b\[48;2;\d+;\d+;\d+m/, "theme mode paints a truecolor background");
 assert.ok(boxedTheme[0].endsWith("\x1b[49m\x1b[39m"), "the box resets background and foreground at the line end");
 assert.doesNotMatch(boxedTheme[0], /38;2;255;255;255/, "theme mode leaves the text color to the theme");
 
-const interior = applyUserMessageBox(["❯ para one", "", "  para two", ""], "claude");
+const interior = applyUserMessageBox(["❯ para one", "", "  para two", ""], "claude", 80);
 assert.match(interior[1], /^\x1b\[48;2;58;58;58m {11}\x1b\[49m/, "interior blank lines are painted so the rectangle is solid");
 assert.equal(interior[3], "", "the trailing spacing line stays unpainted");
+
+const clamped = applyUserMessageBox(["\u276f full-width line here"], "claude", 22);
+assert.equal(
+	stripAnsi(clamped[0]).length,
+	22,
+	"the +1 right padding clamps to the render width instead of overflowing (pi throws on overflow)",
+);
 
 console.log("claudify Hub and immediate-commit Section tests passed");
