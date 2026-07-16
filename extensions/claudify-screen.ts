@@ -10,9 +10,18 @@ import {
 	type TUI,
 } from "@earendil-works/pi-tui";
 
-import { resolveMessageChromeSettings, sanitizeWorkedVerbs } from "./message-chrome.ts";
+import {
+	MAX_CUSTOM_WORKED_VERBS,
+	MAX_WORKED_VERB_LENGTH,
+	resolveMessageChromeSettings,
+	sanitizeWorkedVerbs,
+} from "./message-chrome.ts";
 import { readSettings, writeSettingsKey, type SettingsFile } from "./settings.ts";
-import { sanitizeSpinnerVerbs } from "./spinner.ts";
+import {
+	MAX_CUSTOM_SPINNER_VERBS,
+	MAX_SPINNER_VERB_LENGTH,
+	sanitizeSpinnerVerbs,
+} from "./spinner.ts";
 
 export interface ClaudifySection {
 	readonly id: "theme" | "diffs" | "spinner" | "messages" | "tool-output";
@@ -117,6 +126,8 @@ interface VerbEditorSettingRow {
 	readonly label: string;
 	readonly value: readonly string[];
 	readonly mode: VerbMode;
+	readonly maxEntries: number;
+	readonly maxLength: number;
 	readonly sanitize: (value: unknown) => string[];
 }
 
@@ -157,6 +168,13 @@ type RenderRequester = Pick<TUI, "requestRender">;
 type ScreenKeybindings = Pick<KeybindingsManager, "matches">;
 type SettingChangeHandler = (key: EditableSettingsKey, value: unknown) => void;
 type SettingPreviewHandler = (key: PickerSettingsKey, value: SettingPreviewValue) => void;
+type NoticeType = "info" | "warning" | "error";
+type NotifyHandler = (message: string, type?: NoticeType) => void;
+
+interface ScreenNotice {
+	readonly message: string;
+	readonly type: NoticeType;
+}
 
 interface EnumRowDefinition {
 	readonly kind: "enum";
@@ -225,7 +243,7 @@ class IndentedInput extends Input {
 	}
 }
 
-function themedText(theme: Theme, color: "accent" | "dim" | "success" | "text", text: string): string {
+function themedText(theme: Theme, color: "accent" | "dim" | "error" | "success" | "text" | "warning", text: string): string {
 	return theme.fg(color, text);
 }
 
@@ -335,6 +353,8 @@ function sectionRows(section: ClaudifySection, candidates: ClaudifyPickerCandida
 				label: "While working",
 				value: sanitizeSpinnerVerbs(settings.spinnerVerbs),
 				mode: settings.spinnerVerbMode === "replace" ? "replace" : "append",
+				maxEntries: MAX_CUSTOM_SPINNER_VERBS,
+				maxLength: MAX_SPINNER_VERB_LENGTH,
 				sanitize: sanitizeSpinnerVerbs,
 			},
 			{
@@ -344,6 +364,8 @@ function sectionRows(section: ClaudifySection, candidates: ClaudifyPickerCandida
 				label: "After finishing",
 				value: sanitizeWorkedVerbs(settings.workedVerbs),
 				mode: settings.workedVerbMode === "replace" ? "replace" : "append",
+				maxEntries: MAX_CUSTOM_WORKED_VERBS,
+				maxLength: MAX_WORKED_VERB_LENGTH,
 				sanitize: sanitizeWorkedVerbs,
 			},
 		];
@@ -360,9 +382,11 @@ export class ClaudifyScreen extends Container implements Focusable {
 	private readonly onSettingChange?: SettingChangeHandler;
 	private readonly onSettingPreview?: SettingPreviewHandler;
 	private readonly pickerCandidates: ClaudifyPickerCandidates;
+	private readonly onNotify?: NotifyHandler;
 	private state: ClaudifyScreenState = { kind: "hub", selectedIndex: 0 };
 	private input: IndentedInput | null = null;
 	private activePreviewKey: PickerSettingsKey | null = null;
+	private notice: ScreenNotice | null = null;
 	private _focused = false;
 
 	get focused(): boolean {
@@ -382,6 +406,7 @@ export class ClaudifyScreen extends Container implements Focusable {
 		onSettingChange?: SettingChangeHandler,
 		onSettingPreview?: SettingPreviewHandler,
 		pickerCandidates: ClaudifyPickerCandidates = { diffThemes: [], colorKeys: [] },
+		onNotify?: NotifyHandler,
 	) {
 		super();
 		this.tui = tui;
@@ -391,11 +416,13 @@ export class ClaudifyScreen extends Container implements Focusable {
 		this.onSettingChange = onSettingChange;
 		this.onSettingPreview = onSettingPreview;
 		this.pickerCandidates = pickerCandidates;
+		this.onNotify = onNotify;
 		this.addChild(this.content);
 		this.renderState();
 	}
 
 	handleInput(data: string): void {
+		this.notice = null;
 		if (this.state.kind === "section" && this.state.verbEditor) {
 			this.handleVerbEditorInput(data);
 			return;
@@ -535,10 +562,35 @@ export class ClaudifyScreen extends Container implements Focusable {
 			return;
 		}
 		if (this.keybindings.matches(data, "tui.select.confirm")) {
-			const next = row.sanitize([...row.value, this.input.getValue()]);
+			const rawValue = this.input.getValue();
+			const sanitizedValue = row.sanitize([rawValue])[0];
 			this.finishVerbTextInput(false);
-			if (next.length > row.value.length) this.commitSetting(row.key, next);
-			else this.renderState();
+			if (!sanitizedValue) {
+				this.showNotice("Enter a verb or phrase before adding.", "warning");
+				this.renderState();
+				return;
+			}
+
+			const shortened = Array.from(rawValue.trim()).length > row.maxLength;
+			const duplicate = row.value.some((value) => value.toLocaleLowerCase() === sanitizedValue.toLocaleLowerCase());
+			if (duplicate) {
+				const message = shortened
+					? `Phrase shortened to ${row.maxLength} characters; that verb or phrase is already in this list.`
+					: "That verb or phrase is already in this list.";
+				this.showNotice(message, "warning");
+				this.renderState();
+				return;
+			}
+			if (row.value.length >= row.maxEntries) {
+				this.showNotice(`Limit reached: ${row.maxEntries} custom entries.`, "warning");
+				this.renderState();
+				return;
+			}
+
+			const next = row.sanitize([...row.value, rawValue]);
+			const saved = this.commitSetting(row.key, next, false);
+			if (saved && shortened) this.showNotice(`Phrase shortened to ${row.maxLength} characters.`, "warning");
+			this.renderState();
 			return;
 		}
 		this.input.handleInput(data);
@@ -557,8 +609,13 @@ export class ClaudifyScreen extends Container implements Focusable {
 		if (this.keybindings.matches(data, "tui.select.confirm")) {
 			const candidate = row.candidates[this.state.picker.highlightedIndex];
 			if (!candidate) return;
+			if (!this.saveSetting(row.key, candidate.value)) {
+				this.renderState();
+				return;
+			}
 			this.finishPicker(false);
-			this.commitSetting(row.key, candidate.value);
+			this.onSettingChange?.(row.key, candidate.value);
+			this.renderState();
 			return;
 		}
 		let highlightedIndex = this.state.picker.highlightedIndex;
@@ -624,10 +681,32 @@ export class ClaudifyScreen extends Container implements Focusable {
 		this.renderState();
 	}
 
-	private commitSetting(key: EditableSettingsKey, value: unknown): void {
-		writeSettingsKey(key, value);
+	private saveSetting(key: EditableSettingsKey, value: unknown): boolean {
+		const previousStatus = readSettings().file.status;
+		const saved = writeSettingsKey(key, value);
+		if (!saved) {
+			this.showNotice("Couldn't save to ~/.pi/settings.json", "error");
+			return false;
+		}
+		if (previousStatus === "invalid") {
+			this.showNotice("Backed up invalid settings to ~/.pi/settings.json.bak", "warning");
+		}
+		return true;
+	}
+
+	private commitSetting(key: EditableSettingsKey, value: unknown, render = true): boolean {
+		if (!this.saveSetting(key, value)) {
+			if (render) this.renderState();
+			return false;
+		}
 		this.onSettingChange?.(key, value);
-		this.renderState();
+		if (render) this.renderState();
+		return true;
+	}
+
+	private showNotice(message: string, type: NoticeType): void {
+		this.notice = { message, type };
+		this.onNotify?.(message, type);
 	}
 
 	private previewSetting(key: PickerSettingsKey, value: SettingPreviewValue): void {
@@ -804,7 +883,7 @@ export class ClaudifyScreen extends Container implements Focusable {
 		}
 
 		this.content.addChild(new Spacer(1));
-		this.content.addChild(new Text(themedText(this.theme, "dim", this.sectionFooter(rows[state.selectedIndex], state.editing)), 3, 0));
+		this.renderFooter(this.sectionFooter(rows[state.selectedIndex], state.editing));
 	}
 
 	private renderVerbEditor(section: ClaudifySection, row: VerbEditorSettingRow, editor: VerbEditorState): void {
@@ -842,7 +921,7 @@ export class ClaudifyScreen extends Container implements Focusable {
 		if (editor.adding) footer = "Type a verb or phrase · Enter to add · Esc to cancel";
 		else if (editor.selectedIndex === 0) footer = "↑/↓ to move · Enter/Space to change · Esc to back";
 		else if (editor.selectedIndex <= row.value.length) footer = "↑/↓ to move · Backspace/Delete to remove · Esc to back";
-		this.content.addChild(new Text(themedText(this.theme, "dim", footer), 3, 0));
+		this.renderFooter(footer);
 	}
 
 	private renderPicker(section: ClaudifySection, row: PickerSettingRow, picker: PickerState): void {
@@ -862,7 +941,12 @@ export class ClaudifyScreen extends Container implements Focusable {
 			this.content.addChild(new Text(`${marker} ${number} ${label}${check}`, 3, 0));
 		}
 		this.content.addChild(new Spacer(1));
-		this.content.addChild(new Text(themedText(this.theme, "dim", "Enter to select · Esc to cancel"), 3, 0));
+		this.renderFooter("Enter to select · Esc to cancel");
+	}
+
+	private renderFooter(fallback: string): void {
+		const color = this.notice?.type === "error" ? "error" : this.notice?.type === "warning" ? "warning" : "dim";
+		this.content.addChild(new Text(themedText(this.theme, color, this.notice?.message ?? fallback), 3, 0));
 	}
 
 	private sectionFooter(row: SettingRow | undefined, editing: boolean): string {
