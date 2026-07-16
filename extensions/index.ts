@@ -12,6 +12,7 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import {
 	AssistantMessageComponent,
+	CompactionSummaryMessageComponent,
 	CustomMessageComponent,
 	ToolExecutionComponent,
 	UserMessageComponent,
@@ -78,6 +79,7 @@ const TOOL_RENDER_CACHE = Symbol.for("pi-claudify:tool-render-cache");
 const TOOL_CACHE_PATCH_FLAG = Symbol.for("pi-claudify:patched-tool-cache-invalidation");
 const TOOL_IMAGE_EXPAND_PATCH_FLAG = Symbol.for("pi-claudify:patched-read-image-expansion");
 const CUSTOM_MESSAGE_PATCH_FLAG = Symbol.for("pi-claudify:patched-custom-message-render");
+const COMPACTION_MESSAGE_PATCH_FLAG = Symbol.for("pi-claudify:patched-compaction-message-render");
 const USER_MESSAGE_PATCH_FLAG = Symbol.for("pi-claudify:patched-user-message-render");
 const WRAP_MARK = "\uE000";
 const KITTY_IMAGE_PREFIX = "\x1b_G";
@@ -911,6 +913,34 @@ function patchCustomMessageRender(): void {
 		return Array.isArray(lines) ? lines.map(normalizeLeadingCheckGlyph) : lines;
 	};
 	proto[CUSTOM_MESSAGE_PATCH_FLAG] = true;
+}
+
+function patchCompactionSummaryMessages(): void {
+	const proto = CompactionSummaryMessageComponent.prototype as any;
+	if (proto[COMPACTION_MESSAGE_PATCH_FLAG]) return;
+	const originalUpdateDisplay = proto.updateDisplay;
+	if (typeof originalUpdateDisplay !== "function") return;
+	proto.updateDisplay = function patchedCompactionSummaryDisplay() {
+		originalUpdateDisplay.call(this);
+		const summary = this.expanded && Array.isArray(this.children)
+			? this.children[this.children.length - 1]
+			: undefined;
+		if (summary && typeof summary.setText === "function") summary.setText(this.message.summary);
+		this.paddingX = 0;
+		this.paddingY = 0;
+		this.setBgFn?.(undefined);
+		this.clear();
+		this.addChild(new Text(
+			`${CC_GUTTER_FG}${CLAUDE_RESULT_PREFIX}${FG_DEFAULT}Compacted ${WORKED_LINE_FG}(ctrl+o to see full summary)${RESET}`,
+			0,
+			0,
+		));
+		if (summary) {
+			this.addChild(new Spacer(1));
+			this.addChild(summary);
+		}
+	};
+	proto[COMPACTION_MESSAGE_PATCH_FLAG] = true;
 }
 
 function stripOsc133Zones(line: string): string {
@@ -4433,6 +4463,7 @@ export default function (pi: ExtensionAPI): void {
 	patchReadImageExpansion();
 	patchGlobalToolBorders();
 	patchCustomMessageRender();
+	patchCompactionSummaryMessages();
 	patchUserMessageRender();
 	patchAssistantMessages();
 	patchToolRowIndent();
