@@ -79,7 +79,8 @@ type EditableSettingsKey =
 	| "footerColor"
 	| "footerUsageBar"
 	| "editorBorder"
-	| "accentColor";
+	| "accentColor"
+	| "userMessageBox";
 
 const CLAUDE_AUTHENTIC: Partial<Record<EditableSettingsKey, string>> = {
 	// docs/plans/2026-07-13-mcp-grammar.md:13-17 — no per-call MCP result row or preview.
@@ -337,6 +338,14 @@ function messageRows(settings: SettingsFile): SettingRow[] {
 			claudeValue: CLAUDE_AUTHENTIC.messageSpacing,
 		},
 		{ kind: "text", key: "hiddenThinkingLabel", label: "Hidden thinking label", value: resolved.hiddenThinkingLabel },
+		{
+			// docs/plans/2026-07-16-cc-user-message-box.md — CC's settled gray block.
+			kind: "enum",
+			key: "userMessageBox",
+			label: "User message box",
+			value: settings.userMessageBox === "claude" || settings.userMessageBox === "off" ? settings.userMessageBox : "theme",
+			values: ["theme", "claude", "off"],
+		},
 	];
 }
 
