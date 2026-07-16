@@ -1,0 +1,70 @@
+name: Plane Sync
+
+# Closes Plane work items referenced with closing magic words ("Closes CLFY-8",
+# "Fixes CLFY-3, CLFY-4", ...) in the PULL REQUEST description when a PR is
+# merged into master. The closing references are read from the PR body/title,
+# NOT from commit messages: Forgejo's default `merge` style produces an
+# auto-generated merge commit that does not carry the PR body, so commit-based
+# detection never saw the reference. Requires four Actions secrets:
+# PLANE_API_KEY, PLANE_BASE_URL, PLANE_WORKSPACE_SLUG, PLANE_PROJECT_ID.
+#
+# PLANE_API_KEY, PLANE_BASE_URL, and PLANE_WORKSPACE_SLUG live at the user
+# (owlburtoe) level -- they are the same for every repo, so every repo inherits
+# them. PLANE_PROJECT_ID stays REPO-level on purpose: it is this repo's Plane
+# project UUID, and a repo secret overrides a user secret of the same name. Set
+# it at the user level and a repo that forgets to override it would silently
+# close work items in the WRONG project rather than fail loudly.
+#
+# All four are read from `secrets.*` rather than `vars.*` on purpose -- secrets
+# and variables are separate namespaces, and keeping them together means one
+# place to look. The trade-off is that Forgejo masks secret values in job logs,
+# so a bad base URL prints as `***`.
+#
+# Convention: put the closing reference (e.g. "Closes CLFY-8") in the PR body.
+
+on:
+  pull_request:
+    types: [closed]
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  close-issues:
+    name: Close referenced Plane work items
+    runs-on: ubuntu-latest
+    container: node:24
+    # Only act on a PR that actually merged into master — a plain close (not
+    # merged) must never move issues, and only master counts.
+    if: ${{ github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'master' }}
+
+    steps:
+      - name: Checkout (git)
+        env:
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+          # Run the script as it exists on the merged base branch (master).
+          GIT_REF: refs/heads/${{ github.event.pull_request.base.ref }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git init -q .
+          git config --global --add safe.directory "$PWD"
+          git remote add origin "$REPO_URL"
+          AUTH=$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 | tr -d '\n')
+          git -c http.extraheader="Authorization: basic $AUTH" \
+            fetch --depth 1 origin "$GIT_REF"
+          git checkout -q FETCH_HEAD
+
+      # Closing references come from the merged pull request's body/title.
+      - name: Close work items referenced by the merged pull request
+        env:
+          PLANE_API_KEY: ${{ secrets.PLANE_API_KEY }}
+          PLANE_BASE_URL: ${{ secrets.PLANE_BASE_URL }}
+          PLANE_WORKSPACE_SLUG: ${{ secrets.PLANE_WORKSPACE_SLUG }}
+          PLANE_PROJECT_ID: ${{ secrets.PLANE_PROJECT_ID }}
+          PLANE_PROJECT_IDENTIFIER: CLFY
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: node .forgejo/scripts/close-plane-issues.mjs
