@@ -46,3 +46,16 @@ darker blue-purple; `#B1B9F9` on white is illegible, so the assignment is forced
   turn_start, /claudify refresh) and live-reflected when the row commits.
 - Deliberately narrow: only `accent` is overridden. `borderAccent` (pi's cyan) and the
   spinner's color keys are untouched.
+
+## Postmortem addendum (2.3.0 regression, fixed in 2.3.1)
+
+The first implementation stored **hex** in `fgColors.accent`. pi's `Theme` stores
+**ready-made ANSI escapes** (`fg()` concatenates: `theme.js` `fg(color, text)` returns
+`` `${ansi}${text}\x1b[39m` ``; the constructor converts hex → ANSI once via
+`fgAnsi(value, mode)`). The hex rendered as literal `#B1B9F9` text on every accent
+surface and widened pi's update banner past the terminal width — pi's TUI throws on
+overflow, crashing the session. Fix: store escapes precomputed for both color modes
+(truecolor + pi's own `rgbTo256` quantization: dark → 147, light → 63), and detect
+dark/light by parsing the ANSI text color. Lesson recorded in CLAUDE.md: assembled-render
+tests validate claudify's OWN output, not the format contracts of pi structures we
+mutate — a live pi smoke test gates every release now.
