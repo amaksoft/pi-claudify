@@ -173,6 +173,55 @@ function setThemeBg(theme: unknown, key: string, value: string): void {
 	}
 }
 
+function getThemeFg(theme: unknown, key: string): string | undefined {
+	const themeAny = theme as any;
+	const value = themeAny?.fgColors instanceof Map ? themeAny.fgColors.get(key) : themeAny?.fgColors?.[key];
+	return typeof value === "string" ? value : undefined;
+}
+
+function setThemeFg(theme: unknown, key: string, value: string): void {
+	const themeAny = theme as any;
+	if (themeAny.fgColors instanceof Map) {
+		themeAny.fgColors.set(key, value);
+	} else if (themeAny.fgColors && typeof themeAny.fgColors === "object") {
+		themeAny.fgColors[key] = value;
+	}
+}
+
+// Claude Code's selection/accent lavender, replacing pi's teal `accent`.
+// Extraction + dark/light assignment: docs/plans/2026-07-16-cc-accent-color.md.
+const CC_ACCENT_DARK = "#B1B9F9";
+const CC_ACCENT_LIGHT = "#5769F7";
+
+const originalThemeAccent = new WeakMap<object, string>();
+
+function isDarkTheme(theme: unknown): boolean {
+	const text = getThemeFg(theme, "text");
+	const match = text ? /^#([0-9a-fA-F]{6})$/.exec(text) : null;
+	if (!match) return true;
+	const r = Number.parseInt(match[1].slice(0, 2), 16);
+	const g = Number.parseInt(match[1].slice(2, 4), 16);
+	const b = Number.parseInt(match[1].slice(4, 6), 16);
+	// Light text means a dark background.
+	return 0.299 * r + 0.587 * g + 0.114 * b > 128;
+}
+
+export function applyAccentOverride(theme: unknown): void {
+	if (!theme || typeof theme !== "object") return;
+	const current = getThemeFg(theme, "accent");
+	if (current === undefined) return;
+	// pi exposes the theme both as the instance and via a forwarding Proxy; never
+	// memorize an already-overridden value as the theme's own accent.
+	if (!originalThemeAccent.has(theme) && current !== CC_ACCENT_DARK && current !== CC_ACCENT_LIGHT) {
+		originalThemeAccent.set(theme, current);
+	}
+	const wantClaude = readSettings().values.accentColor !== "theme";
+	const target = wantClaude
+		? (isDarkTheme(theme) ? CC_ACCENT_DARK : CC_ACCENT_LIGHT)
+		: originalThemeAccent.get(theme) ?? current;
+	if (current !== target) setThemeFg(theme, "accent", target);
+}
+
 function applyToolBackgroundMode(theme: unknown): void {
 	syncToolBackgroundMode();
 	setThemeBg(theme, "userMessageBg", TRANSPARENT_BG);
@@ -2197,6 +2246,9 @@ const _explicitFgFields = new Set<"fgAdd" | "fgDel" | "fgDim" | "fgLnum" | "fgRu
 
 function applyThemePaletteIfNeeded(theme: any): void {
 	if (!theme) return;
+	// Runs before the adaptive/cache guards: the accent override applies even with
+	// adaptive colors off, and re-checks its setting on every call.
+	applyAccentOverride(theme);
 	if (!themeAdaptiveEnabled()) return;
 	if (_themePaletteCacheTheme === theme) return; // already applied for this theme instance
 	_themePaletteCacheTheme = theme;
@@ -4502,6 +4554,7 @@ export default function (pi: ExtensionAPI): void {
 								applyToolBackgroundMode(ctx.ui.theme);
 							}
 							if (key === "hiddenThinkingLabel") applyHiddenThinkingLabel(ctx);
+							if (key === "accentColor") applyAccentOverride(ctx.ui.theme);
 							if (key === "spinnerColor"
 								|| key === "spinnerStatusColor"
 								|| key === "spinnerVerbs"

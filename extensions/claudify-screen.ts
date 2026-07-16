@@ -78,7 +78,8 @@ type EditableSettingsKey =
 	| "footerColorMode"
 	| "footerColor"
 	| "footerUsageBar"
-	| "editorBorder";
+	| "editorBorder"
+	| "accentColor";
 
 const CLAUDE_AUTHENTIC: Partial<Record<EditableSettingsKey, string>> = {
 	// docs/plans/2026-07-13-mcp-grammar.md:13-17 — no per-call MCP result row or preview.
@@ -220,6 +221,8 @@ type ImmediateRowDefinition = EnumRowDefinition | BooleanRowDefinition | NumberR
 
 const THEME_ROWS: readonly ImmediateRowDefinition[] = [
 	{ kind: "boolean", key: "themeAdaptive", label: "Adaptive colors", defaultValue: true },
+	// docs/plans/2026-07-16-cc-accent-color.md — CC lavender vs pi teal selection highlight.
+	{ kind: "enum", key: "accentColor", label: "Accent", values: ["claude", "theme"], defaultValue: "claude" },
 	{ kind: "enum", key: "diffPalette", label: "Diff palette", values: ["claude", "theme"], defaultValue: "claude" },
 	{ kind: "enum", key: "toolChrome", label: "Tool chrome", values: ["claude", "theme"], defaultValue: "claude" },
 ];
