@@ -1,3 +1,4 @@
+import { DynamicBorder } from "@earendil-works/pi-coding-agent";
 import type { KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
 import {
 	Container,
@@ -164,7 +165,13 @@ export interface ClaudifyPickerCandidates {
 
 export type SettingPreviewValue = string | null | undefined;
 
-type RenderRequester = Pick<TUI, "requestRender">;
+type RenderRequester = Pick<TUI, "requestRender"> & Partial<Pick<TUI, "terminal">>;
+
+// The Extensions Manager sizes its list body to `terminal.rows - 12`, which makes its
+// whole framed panel about `rows - 5` tall (2 rules + title + stats + 2 spacers + footer
+// around that list). We mirror that so /claudify fills the viewport the same way instead of
+// collapsing to a tiny top-anchored block. See docs/plans/2026-07-16-claudify-framed-panel.md.
+const PANEL_HEIGHT_RESERVE = 5;
 type ScreenKeybindings = Pick<KeybindingsManager, "matches">;
 type SettingChangeHandler = (key: EditableSettingsKey, value: unknown) => void;
 type SettingPreviewHandler = (key: PickerSettingsKey, value: SettingPreviewValue) => void;
@@ -387,6 +394,7 @@ export class ClaudifyScreen extends Container implements Focusable {
 	private input: IndentedInput | null = null;
 	private activePreviewKey: PickerSettingsKey | null = null;
 	private notice: ScreenNotice | null = null;
+	private footerLine = "";
 	private _focused = false;
 
 	get focused(): boolean {
@@ -819,9 +827,39 @@ export class ClaudifyScreen extends Container implements Focusable {
 	private renderState(): void {
 		this.content.clear();
 		this.input = null;
+		this.footerLine = "";
 		if (this.state.kind === "hub") this.renderHub(this.state.selectedIndex);
 		else this.renderSection(this.state);
 		this.tui.requestRender();
+	}
+
+	// Wrap the body in the Extensions Manager's chrome: an accent rule, a title (+ hub subtitle),
+	// the body, height-fill padding, the footer pinned above a closing rule. Rendering inline
+	// (the command drops the overlay) plus this fill makes the panel span the viewport instead of
+	// collapsing to a tiny top-anchored block. Degrades to natural height when no terminal size is
+	// available (e.g. the assembled-render tests construct a `tui` without `.terminal`).
+	override render(width: number): string[] {
+		const rule = (): string[] => new DynamicBorder((s) => themedText(this.theme, "accent", s)).render(width);
+		const line = (text: string): string[] => new Text(text, 2, 0).render(width);
+
+		const head: string[] = [...rule(), ...line(themedText(this.theme, "accent", this.theme.bold("Claudify")))];
+		const subtitle = this.subtitle();
+		if (subtitle) head.push(...line(themedText(this.theme, "dim", subtitle)));
+		head.push("");
+
+		const body = this.content.render(width);
+		const footer = [...new Text(this.footerLine, 3, 0).render(width), ...rule()];
+
+		const rows = this.tui.terminal?.rows;
+		const naturalHeight = head.length + body.length + footer.length;
+		const targetHeight = rows ? rows - PANEL_HEIGHT_RESERVE : 0;
+		const gap = Math.max(1, targetHeight - naturalHeight);
+
+		return [...head, ...body, ...Array<string>(gap).fill(""), ...footer];
+	}
+
+	private subtitle(): string {
+		return this.state.kind === "hub" ? `${CLAUDIFY_SECTIONS.length} sections` : "";
 	}
 
 	private renderHub(selectedIndex: number): void {
@@ -831,8 +869,7 @@ export class ClaudifyScreen extends Container implements Focusable {
 			const label = themedText(this.theme, "text", section.label);
 			this.content.addChild(new Text(`${marker} ${label}`, 3, 0));
 		}
-		this.content.addChild(new Spacer(1));
-		this.content.addChild(new Text(themedText(this.theme, "dim", "↑/↓ to move · Enter to open · Esc to close"), 3, 0));
+		this.renderFooter("↑/↓ to move · Enter to open · Esc to close");
 	}
 
 	private renderSection(state: Extract<ClaudifyScreenState, { kind: "section" }>): void {
@@ -856,8 +893,7 @@ export class ClaudifyScreen extends Container implements Focusable {
 		this.content.addChild(new Spacer(1));
 		if (rows.length === 0) {
 			this.content.addChild(new Text(themedText(this.theme, "dim", state.section.placeholder), 3, 0));
-			this.content.addChild(new Spacer(1));
-			this.content.addChild(new Text(themedText(this.theme, "dim", "Esc to go back"), 3, 0));
+			this.renderFooter("Esc to go back");
 			return;
 		}
 
@@ -884,7 +920,6 @@ export class ClaudifyScreen extends Container implements Focusable {
 			this.content.addChild(this.input);
 		}
 
-		this.content.addChild(new Spacer(1));
 		this.renderFooter(this.sectionFooter(rows[state.selectedIndex], state.editing));
 	}
 
@@ -918,7 +953,6 @@ export class ClaudifyScreen extends Container implements Focusable {
 			this.content.addChild(this.input);
 		}
 
-		this.content.addChild(new Spacer(1));
 		let footer = "↑/↓ to move · Enter to add · Esc to back";
 		if (editor.adding) footer = "Type a verb or phrase · Enter to add · Esc to cancel";
 		else if (editor.selectedIndex === 0) footer = "↑/↓ to move · Enter/Space to change · Esc to back";
@@ -942,13 +976,14 @@ export class ClaudifyScreen extends Container implements Focusable {
 			const check = committed ? ` ${this.theme.fg("success", "✔")}` : "";
 			this.content.addChild(new Text(`${marker} ${number} ${label}${check}`, 3, 0));
 		}
-		this.content.addChild(new Spacer(1));
 		this.renderFooter("Enter to select · Esc to cancel");
 	}
 
+	// The footer is composed here but rendered by render() below, pinned above the bottom rule
+	// with the height-fill padding between it and the body (matching the Extensions Manager).
 	private renderFooter(fallback: string): void {
 		const color = this.notice?.type === "error" ? "error" : this.notice?.type === "warning" ? "warning" : "dim";
-		this.content.addChild(new Text(themedText(this.theme, color, this.notice?.message ?? fallback), 3, 0));
+		this.footerLine = themedText(this.theme, color, this.notice?.message ?? fallback);
 	}
 
 	private sectionFooter(row: SettingRow | undefined, editing: boolean): string {

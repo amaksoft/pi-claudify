@@ -88,6 +88,41 @@ assert.match(hub, /^\s*❯ Theme/m, "the highlighted Hub row uses the Claude sel
 assert.doesNotMatch(hub, /[╭╮╰╯│]/, "the Hub has no outer box chrome");
 assert.ok(hub.includes("↑/↓ to move · Enter to open · Esc to close"), "the Hub renders its stateful footer");
 
+// The screen frames itself like the Extensions Manager: an accent rule top and bottom, a
+// "Claudify" title, and a section-count subtitle on the Hub. The rule is a plain ─ run, not
+// box chrome (the assertion above still holds).
+const hubLines = hub.split("\n");
+assert.match(hubLines[0], /^─{5,}$/, "the Hub opens with a full-width accent rule");
+assert.match(hubLines.at(-1) ?? "", /^─{5,}$/, "the Hub closes with a full-width accent rule");
+assert.match(hub, /^\s*Claudify[ \t]*$/m, "the framed panel renders its title");
+assert.match(hub, /^\s*5 sections[ \t]*$/m, "the Hub renders its section-count subtitle");
+assert.ok(
+	hub.indexOf("Claudify") < hub.indexOf("❯ Theme"),
+	"the title sits above the body rows",
+);
+assert.ok(
+	hub.lastIndexOf("Enter to open") < hub.lastIndexOf("─"),
+	"the footer is pinned above the closing rule",
+);
+
+// The panel fills the viewport height when a terminal size is available (mirroring the
+// Extensions Manager's `rows - 12` list sizing). The default fake tui has no `.terminal`, so
+// this uses a screen wired with an explicit row count.
+const filledScreen = new ClaudifyScreen(
+	{ requestRender() {}, terminal: { rows: 40, columns: 100 } } as any,
+	theme,
+	keybindings as any,
+	() => {},
+	undefined,
+	undefined,
+	pickerCandidates,
+);
+const filledLines = stripAnsi(filledScreen.render(100).join("\n")).split("\n");
+assert.equal(filledLines.length, 35, "the framed panel fills to terminal.rows minus the reserve");
+assert.match(filledLines.at(-1) ?? "", /^─{5,}$/, "the filled panel still closes with the accent rule");
+assert.match(filledLines.at(-2) ?? "", /Enter to open/, "the footer stays pinned directly above the closing rule when filled");
+assert.equal(filledLines[filledLines.length - 3], "", "fill padding sits between the body and the pinned footer");
+
 screen.handleInput("down");
 screen.handleInput("down");
 const movedHub = render(screen);
@@ -664,12 +699,9 @@ await command.handler("", {
 		},
 	},
 });
-assert.equal(tuiCustomCalls, 1, "TUI mode opens one custom overlay");
+assert.equal(tuiCustomCalls, 1, "TUI mode opens one custom screen");
 assert.ok(hostRenderRequests >= 8, "the real preview callback requests host repaints while the Picker is active");
-assert.deepEqual(receivedOverlayOptions, {
-	overlay: true,
-	overlayOptions: { width: "100%", maxHeight: "100%", anchor: "top-left" },
-}, "the command opens a full-width overlay anchored over the transcript");
+assert.equal(receivedOverlayOptions, undefined, "the command renders the screen inline (no overlay) like the Extensions Manager");
 
 for (const mode of ["rpc", "json", "print"] as const) {
 	const notices: Array<[string, string]> = [];

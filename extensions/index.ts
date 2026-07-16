@@ -4526,10 +4526,10 @@ export default function (pi: ExtensionAPI): void {
 						(message, type) => ctx.ui.notify(message, type),
 					);
 				},
-				{
-					overlay: true,
-					overlayOptions: { width: "100%", maxHeight: "100%", anchor: "top-left" },
-				},
+				// Render inline (not as an overlay), exactly like pi's Extensions Manager: the screen
+				// frames itself and fills the viewport height, sitting above the input instead of
+				// floating in the top-left corner where it was easy to miss. See
+				// docs/plans/2026-07-16-claudify-framed-panel.md.
 			);
 		},
 	});
