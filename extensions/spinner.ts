@@ -184,7 +184,11 @@ function getDefaultSpinnerCharacters(): string[] {
 
 const SPINNER_CHARS = getDefaultSpinnerCharacters();
 const OB_FRAMES = [...SPINNER_CHARS, ...[...SPINNER_CHARS].reverse()];
-const LOADER_INTERVAL_MS = 250;
+// Claude Code advances its live spinner glyph at 2 Hz (one frame every 500 ms),
+// captured from a real session — CLFY-8. The inherited OpenBrawd cadence was
+// 250 ms (4 Hz), which read twice as fast. The glyph set/bounce is unchanged;
+// only the frame interval is corrected.
+export const LOADER_INTERVAL_MS = 500;
 const LOADER_LAST_TEXT = Symbol.for("pi-claudify:loader-last-text");
 const LOADER_ACTIVE = Symbol.for("pi-claudify:loader-active");
 const LOADER_GENERATION = Symbol.for("pi-claudify:loader-generation");
