@@ -222,8 +222,46 @@ export function applyAccentOverride(theme: unknown): void {
 	if (current !== target) setThemeFg(theme, "accent", target);
 }
 
+// Claude Code's settled user-message box, captured under 256 colors (237/239/231).
+// Capture + geometry: docs/plans/2026-07-16-cc-user-message-box.md.
+const CC_USER_BOX_BG = "\x1b[48;2;58;58;58m";
+const CC_USER_BOX_PREFIX_FG = "\x1b[38;2;78;78;78m";
+const CC_USER_BOX_TEXT_FG = "\x1b[38;2;255;255;255m";
+const FG_DEFAULT_ANSI = "\x1b[39m";
+
+const originalUserMessageBg = new WeakMap<object, string>();
+let userBoxThemeBg: string | null = null;
+let userBoxThemePrefixFg: string | null = null;
+
+function getThemeBg(theme: unknown, key: string): string | undefined {
+	const themeAny = theme as any;
+	const value = themeAny?.bgColors instanceof Map ? themeAny.bgColors.get(key) : themeAny?.bgColors?.[key];
+	return typeof value === "string" ? value : undefined;
+}
+
+function bgAnsiFromHex(hex: string): string | null {
+	const match = /^#([0-9a-fA-F]{6})$/.exec(hex);
+	if (!match) return null;
+	const r = Number.parseInt(match[1].slice(0, 2), 16);
+	const g = Number.parseInt(match[1].slice(2, 4), 16);
+	const b = Number.parseInt(match[1].slice(4, 6), 16);
+	return `\x1b[48;2;${r};${g};${b}m`;
+}
+
 function applyToolBackgroundMode(theme: unknown): void {
 	syncToolBackgroundMode();
+	// Remember the theme's own user-message background before blanking it: the
+	// user-message box (theme mode) paints with the theme's value even though
+	// pi's markdown background stays stripped in every mode.
+	if (theme && typeof theme === "object") {
+		const current = getThemeBg(theme, "userMessageBg");
+		if (current && current !== TRANSPARENT_BG && !originalUserMessageBg.has(theme)) {
+			originalUserMessageBg.set(theme, current);
+		}
+		const original = originalUserMessageBg.get(theme);
+		userBoxThemeBg = original ? bgAnsiFromHex(original) : null;
+		userBoxThemePrefixFg = safeFgAnsi(theme, "dim") ?? safeFgAnsi(theme, "muted");
+	}
 	setThemeBg(theme, "userMessageBg", TRANSPARENT_BG);
 	if (toolBackgroundMode === "default") return;
 
@@ -1033,6 +1071,48 @@ function cleanUserMessageLine(line: string): string {
 
 const USER_PREFIX_WIDTH = visibleWidth(`${DEFAULT_USER_PREFIX} `);
 
+type UserMessageBoxMode = "theme" | "claude" | "off";
+
+function userMessageBoxMode(): UserMessageBoxMode {
+	const value = readSettings().values.userMessageBox;
+	return value === "off" || value === "claude" ? value : "theme";
+}
+
+// Like cleanUserMessageLine, but without the transparent-background wrappers —
+// the box paints its own background around the whole line.
+function cleanBoxedUserMessageLine(line: string): string {
+	return trimAnsiRight(stripBackgroundAnsi(stripOsc133Zones(line)));
+}
+
+/**
+ * Paint the settled Claude Code user-message block: one rectangle from the first
+ * to the last content line, each padded to the widest line + 1 column, the ❯
+ * prefix dim ON the background. Theme mode inherits the active theme's own
+ * userMessageBg/dim; claude mode uses the captured CC values.
+ * docs/plans/2026-07-16-cc-user-message-box.md.
+ */
+export function applyUserMessageBox(lines: string[], mode: "theme" | "claude"): string[] {
+	const bg = (mode === "theme" ? userBoxThemeBg : null) ?? CC_USER_BOX_BG;
+	const prefixFg = (mode === "theme" ? userBoxThemePrefixFg : null) ?? CC_USER_BOX_PREFIX_FG;
+	const textFg = mode === "claude" ? CC_USER_BOX_TEXT_FG : "";
+	const contentIndexes = lines.flatMap((line, index) => (stripAnsi(line).trim() ? [index] : []));
+	if (contentIndexes.length === 0) return lines;
+	const first = contentIndexes[0];
+	const last = contentIndexes[contentIndexes.length - 1];
+	const boxWidth = Math.max(...contentIndexes.map((index) => visibleWidth(lines[index]))) + 1;
+	return lines.map((line, index) => {
+		if (index < first || index > last) return line;
+		let body = line;
+		if (index === first && body.startsWith(DEFAULT_USER_PREFIX)) {
+			body = `${prefixFg}${DEFAULT_USER_PREFIX}${FG_DEFAULT_ANSI}${textFg}${body.slice(DEFAULT_USER_PREFIX.length)}`;
+		} else if (textFg && stripAnsi(body).trim()) {
+			body = `${textFg}${body}`;
+		}
+		const pad = " ".repeat(Math.max(0, boxWidth - visibleWidth(line)));
+		return `${bg}${body}${pad}${TRANSPARENT_BG}${FG_DEFAULT_ANSI}`;
+	});
+}
+
 function colorizeUserPrefix(line: string): string {
 	if (!line.startsWith(DEFAULT_USER_PREFIX)) return line;
 	const rest = line.slice(DEFAULT_USER_PREFIX.length);
@@ -1065,12 +1145,17 @@ function patchUserMessageRender(): void {
 		const contentWidth = Math.max(1, width - USER_PREFIX_WIDTH);
 		const lines = originalRender.call(this, contentWidth);
 		if (!Array.isArray(lines) || lines.length === 0) return lines;
-		const rendered = formatTranscriptLines(lines.map(cleanUserMessageLine), {
+		const boxMode = userMessageBoxMode();
+		const cleaner = boxMode === "off" ? cleanUserMessageLine : cleanBoxedUserMessageLine;
+		const formatted = formatTranscriptLines(lines.map(cleaner), {
 			prefix: DEFAULT_USER_PREFIX,
 			spacing: "comfortable",
 			normalizeChecks: false,
 			visibleWidth,
-		}).map((line, index) => (index === 0 ? colorizeUserPrefix(line) : line));
+		});
+		const rendered = boxMode === "off"
+			? formatted.map((line, index) => (index === 0 ? colorizeUserPrefix(line) : line))
+			: applyUserMessageBox(formatted, boxMode);
 		rendered[0] = OSC133_ZONE_START + rendered[0];
 		rendered[rendered.length - 1] += OSC133_ZONE_END + OSC133_ZONE_FINAL;
 		return rendered;
@@ -4555,6 +4640,7 @@ export default function (pi: ExtensionAPI): void {
 							}
 							if (key === "hiddenThinkingLabel") applyHiddenThinkingLabel(ctx);
 							if (key === "accentColor") applyAccentOverride(ctx.ui.theme);
+							if (key === "userMessageBox") applyToolBackgroundMode(ctx.ui.theme);
 							if (key === "spinnerColor"
 								|| key === "spinnerStatusColor"
 								|| key === "spinnerVerbs"

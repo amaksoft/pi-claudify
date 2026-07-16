@@ -795,4 +795,35 @@ const accentScreen = new ClaudifyScreen(
 accentScreen.handleInput("enter");
 assert.match(render(accentScreen), /Accent\s+claude/, "the Theme Section exposes the Accent row defaulting to claude");
 
+// --- User-message box (docs/plans/2026-07-16-cc-user-message-box.md) ---------
+
+const { applyUserMessageBox } = await import("../extensions/index.ts");
+
+const boxedClaude = applyUserMessageBox(["❯ first line of the message", "  wrapped tail", ""], "claude");
+assert.equal(
+	boxedClaude[0],
+	"\x1b[48;2;58;58;58m\x1b[38;2;78;78;78m❯\x1b[39m\x1b[38;2;255;255;255m first line of the message \x1b[49m\x1b[39m",
+	"claude mode paints the captured CC gray with a dim prefix and bright text",
+);
+assert.equal(
+	boxedClaude[1],
+	"\x1b[48;2;58;58;58m\x1b[38;2;255;255;255m  wrapped tail              \x1b[49m\x1b[39m",
+	"continuation lines pad to the widest line + 1 so the block is a rectangle",
+);
+assert.equal(boxedClaude[2], "", "lines outside the content range stay untouched");
+assert.equal(
+	stripAnsi(boxedClaude[0]).length,
+	stripAnsi(boxedClaude[1]).length,
+	"every boxed line spans the same rectangle width",
+);
+
+const boxedTheme = applyUserMessageBox(["❯ hi"], "theme");
+assert.match(boxedTheme[0], /^\x1b\[48;2;\d+;\d+;\d+m/, "theme mode paints a truecolor background");
+assert.ok(boxedTheme[0].endsWith("\x1b[49m\x1b[39m"), "the box resets background and foreground at the line end");
+assert.doesNotMatch(boxedTheme[0], /38;2;255;255;255/, "theme mode leaves the text color to the theme");
+
+const interior = applyUserMessageBox(["❯ para one", "", "  para two", ""], "claude");
+assert.match(interior[1], /^\x1b\[48;2;58;58;58m {11}\x1b\[49m/, "interior blank lines are painted so the rectangle is solid");
+assert.equal(interior[3], "", "the trailing spacing line stays unpainted");
+
 console.log("claudify Hub and immediate-commit Section tests passed");

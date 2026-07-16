@@ -44,6 +44,7 @@ export interface SettingsFile {
 	footerUsageBar?: boolean;
 	editorBorder?: "gray" | "thinking";
 	accentColor?: "claude" | "theme";
+	userMessageBox?: "theme" | "claude" | "off";
 }
 
 export interface SettingsFileInfo {
