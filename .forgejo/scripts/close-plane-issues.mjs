@@ -3,9 +3,19 @@ const MAGIC_WORD_PATTERN =
 
 const IDENTIFIER_PATTERN = /[A-Z][A-Z0-9]*-\d+/g
 
+// Strip fenced code blocks (```...```) and inline code spans (`...`) before
+// matching. A closing directive written inside code is an *example* or a quote,
+// not a real instruction — GitHub's own closing-keyword parser ignores code the
+// same way. Without this, a PR that documents the "Closes CLFY-N" syntax (like
+// the one that introduced this workflow) closes the very items it names.
+export function stripCode(text) {
+  return text.replace(/```[\s\S]*?```/g, ' ').replace(/`[^`]*`/g, ' ')
+}
+
 export function extractClosingReferences(messages) {
   const identifiers = new Set()
-  for (const message of messages) {
+  for (const rawMessage of messages) {
+    const message = stripCode(rawMessage)
     for (const match of message.matchAll(MAGIC_WORD_PATTERN)) {
       for (const identifier of match[1].toUpperCase().match(IDENTIFIER_PATTERN) ?? []) {
         identifiers.add(identifier)
