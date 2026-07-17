@@ -200,12 +200,18 @@ const CC_ACCENT_ANSI = {
 	dark: { truecolor: "\x1b[38;2;177;185;249m", ansi256: "\x1b[38;5;147m" },
 	light: { truecolor: "\x1b[38;2;87;105;247m", ansi256: "\x1b[38;5;63m" },
 } as const;
-const CC_ACCENT_VALUES: readonly string[] = [
+// Every accent escape claudify has imposed on a theme. pi hands us the theme as
+// both the instance and a forwarding Proxy, so a second object identity arrives
+// with our override already installed; the snapshot guard must recognize it as
+// ours, or it memorizes the override as the theme's own accent and accentColor=
+// "theme" restores the override forever. A fixed CC list only covered the two
+// captured lavenders — a custom hex stranded itself that way.
+const appliedAccentValues = new Set<string>([
 	CC_ACCENT_ANSI.dark.truecolor,
 	CC_ACCENT_ANSI.dark.ansi256,
 	CC_ACCENT_ANSI.light.truecolor,
 	CC_ACCENT_ANSI.light.ansi256,
-];
+]);
 
 interface AccentSnapshot {
 	readonly original: string;
@@ -216,6 +222,17 @@ interface AccentSnapshot {
 }
 
 const originalThemeAccent = new WeakMap<object, AccentSnapshot>();
+
+/** pi hands the same logical theme to us as both the instance and a forwarding
+ * Proxy — two object identities sharing one fgColors container. Keying the
+ * snapshot on the theme object gave each identity its own entry, so whichever
+ * arrived second saw the override already installed and never recorded the
+ * theme's real accent; accentColor="theme" then had nothing to restore. The
+ * container forwards through the Proxy, so it identifies the logical theme. */
+function themeAccentIdentity(theme: unknown): object | null {
+	const fgColors = (theme as any)?.fgColors;
+	return fgColors && typeof fgColors === "object" ? (fgColors as object) : null;
+}
 
 function themeFgKeys(theme: unknown): string[] {
 	const fgColors = (theme as any)?.fgColors;
@@ -283,14 +300,16 @@ export function applyAccentOverride(theme: unknown): void {
 	if (!theme || typeof theme !== "object") return;
 	const current = getThemeFg(theme, "accent");
 	if (current === undefined) return;
-	// pi exposes the theme both as the instance and via a forwarding Proxy; never
-	// memorize an already-overridden value as the theme's own accent.
-	if (!originalThemeAccent.has(theme) && !CC_ACCENT_VALUES.includes(current)) {
+	// Snapshot per logical theme (its fgColors container), not per object identity,
+	// so the instance and its forwarding Proxy share one record. Never memorize an
+	// already-overridden value as the theme's own accent.
+	const identity = themeAccentIdentity(theme) ?? theme;
+	if (!originalThemeAccent.has(identity) && !appliedAccentValues.has(current)) {
 		const aliasKeys = themeFgKeys(theme)
 			.filter((key) => key !== "accent" && getThemeFg(theme, key) === current);
-		originalThemeAccent.set(theme, { original: current, aliasKeys });
+		originalThemeAccent.set(identity, { original: current, aliasKeys });
 	}
-	const snapshot = originalThemeAccent.get(theme);
+	const snapshot = originalThemeAccent.get(identity);
 	const accentColor = readSettings().values.accentColor;
 	const customAccent = storedHexColor(accentColor);
 	const colorMode = (theme as any).mode === "256color" ? "ansi256" : "truecolor";
@@ -300,6 +319,9 @@ export function applyAccentOverride(theme: unknown): void {
 			? ansiFromHex(theme, customAccent, "foreground")
 				?? CC_ACCENT_ANSI[isDarkTheme(theme) ? "dark" : "light"][colorMode]
 			: CC_ACCENT_ANSI[isDarkTheme(theme) ? "dark" : "light"][colorMode];
+	// Register only values we impose, never a restored original: a theme whose own
+	// accent happens to equal some other theme's custom color must still snapshot.
+	if (accentColor !== "theme") appliedAccentValues.add(target);
 	if (current !== target) setThemeFg(theme, "accent", target);
 	for (const key of snapshot?.aliasKeys ?? []) {
 		if (getThemeFg(theme, key) !== target) setThemeFg(theme, key, target);

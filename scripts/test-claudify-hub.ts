@@ -814,6 +814,23 @@ assert.equal(custom256.fgColors.accent, "\x1b[38;5;23m", "a custom accent uses p
 assert.equal(custom256.fgColors.mdCode, "\x1b[38;5;23m", "accent aliases follow the quantized custom accent");
 assert.doesNotMatch(custom256.fgColors.accent, /#123456/, "custom accent hex never reaches 256-color fgColors");
 
+// pi hands the same logical theme over as BOTH the instance and a forwarding
+// Proxy. Snapshotting per object identity left the second arrival with no record
+// of the theme's real accent, so accentColor="theme" restored the override
+// forever and pi's own accent was unreachable without restarting pi.
+writeFileSync(settingsPath, JSON.stringify({ accentColor: "#123456" }));
+clearSettingsCache();
+const proxiedInstance: any = { mode: "truecolor", fgColors: { accent: PI_TEAL, mdCode: PI_TEAL, text: "\x1b[38;2;212;212;212m" } };
+const forwardingProxy: any = new Proxy(proxiedInstance, {});
+applyAccentOverride(proxiedInstance);
+applyAccentOverride(forwardingProxy);
+assert.equal(proxiedInstance.fgColors.accent, "\x1b[38;2;18;52;86m", "a custom accent survives a render through pi's forwarding Proxy");
+writeFileSync(settingsPath, JSON.stringify({ accentColor: "theme" }));
+clearSettingsCache();
+applyAccentOverride(forwardingProxy);
+assert.equal(proxiedInstance.fgColors.accent, PI_TEAL, "accentColor=theme restores pi's own accent even when the Proxy identity applies the change");
+assert.equal(proxiedInstance.fgColors.mdCode, PI_TEAL, "accent aliases restore through the Proxy identity too");
+
 writeFileSync(settingsPath, "{}");
 clearSettingsCache();
 const fake256 = { mode: "256color", fgColors: { accent: "\x1b[38;5;73m", text: "\x1b[38;5;252m" } };
