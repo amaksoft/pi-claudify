@@ -137,10 +137,44 @@ export function parseAnthropicUsage(payload: unknown): readonly UsageWindowData[
 	].filter((window): window is UsageWindowData => window !== null);
 }
 
+// The 7-day window (604800s). Anything at least ~6 days counts as weekly; this
+// rejects the 5-hour primary window while tolerating minor span drift.
+const OPENAI_WEEKLY_MIN_SECONDS = 6 * 24 * 60 * 60;
+
+function windowSpanSeconds(window: Record<string, unknown>): number {
+	const span = window.limit_window_seconds;
+	return typeof span === "number" && Number.isFinite(span) ? span : 0;
+}
+
+/**
+ * Codex reports two rate-limit windows and which one is the 7-day "Week" varies
+ * by plan. The common shape puts the weekly window in `secondary_window` (with a
+ * 5-hour `primary_window`); but on some plans — observed live for `plan_type`
+ * "prolite", capture docs/plans/2026-07-17-cc-quota-payloads.md — `secondary_window`
+ * is null and the 7-day window IS `primary_window`. Reading `secondary_window`
+ * unconditionally rendered a permanent "~" for every such user (CLFY-25). Pick,
+ * of the two windows, the longest one that spans a weekly scale; when neither
+ * reports a span at all, fall back to the legacy secondary→primary order.
+ */
+function openAIWeeklyWindow(rateLimit: Record<string, unknown> | null): unknown {
+	if (!rateLimit) return null;
+	const secondary = recordValue(rateLimit.secondary_window);
+	const primary = recordValue(rateLimit.primary_window);
+	const windows = [secondary, primary].filter((w): w is Record<string, unknown> => w !== null);
+	const weekly = windows
+		.filter((w) => windowSpanSeconds(w) >= OPENAI_WEEKLY_MIN_SECONDS)
+		.sort((a, b) => windowSpanSeconds(b) - windowSpanSeconds(a))[0];
+	if (weekly) return weekly;
+	// A span was reported but none is weekly (e.g. a 5-hour-only window): do not
+	// mislabel it "Week". Only when no window reports a span do we fall back.
+	if (windows.some((w) => windowSpanSeconds(w) > 0)) return null;
+	return secondary ?? primary ?? null;
+}
+
 export function parseOpenAIUsage(payload: unknown): readonly UsageWindowData[] {
 	const root = recordValue(payload);
 	const rateLimit = recordValue(root?.rate_limit);
-	const week = parsedWindow("Week", rateLimit?.secondary_window, "used_percent", "reset_at");
+	const week = parsedWindow("Week", openAIWeeklyWindow(rateLimit), "used_percent", "reset_at");
 	return week ? [week] : [];
 }
 

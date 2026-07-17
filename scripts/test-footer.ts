@@ -147,6 +147,22 @@ assert.deepEqual(
 	],
 	"Anthropic renders current + general weekly windows and omits family-specific extras",
 );
+// CLFY-25: the live Anthropic shape (2026-07-17 capture) parses correctly — the
+// reported "Week: ~" did NOT originate here. Uses the real field format:
+// float utilization and a microsecond ISO timestamp with an explicit +00:00 offset.
+assert.deepEqual(
+	parseAnthropicUsage({
+		five_hour: { utilization: 49.0, resets_at: "2026-07-17T18:09:59.657922+00:00" },
+		seven_day: { utilization: 4.0, resets_at: "2026-07-24T15:59:59.657953+00:00" },
+		seven_day_opus: null,
+		limits: [{ kind: "weekly_all", group: "weekly", percent: 4 }],
+	}),
+	[
+		{ label: "Usage", percent: 49, resetsAt: Date.parse("2026-07-17T18:09:59.657922+00:00") },
+		{ label: "Week", percent: 4, resetsAt: Date.parse("2026-07-24T15:59:59.657953+00:00") },
+	],
+	"Anthropic parses the live capture shape, including a populated seven_day weekly window",
+);
 assert.deepEqual(
 	parseOpenAIUsage({
 		rate_limit: {
@@ -156,6 +172,27 @@ assert.deepEqual(
 	}),
 	[{ label: "Week", percent: 42, resetsAt: 1_768_900_000_000 }],
 	"OpenAI renders its weekly secondary window only",
+);
+// CLFY-25: on some plans (observed "prolite", 2026-07-17 capture) secondary_window
+// is null and the 7-day window IS primary_window. Reading secondary_window
+// unconditionally rendered a permanent "~". Verbatim captured shape:
+assert.deepEqual(
+	parseOpenAIUsage({
+		rate_limit: {
+			primary_window: { used_percent: 16, limit_window_seconds: 604_800, reset_after_seconds: 504_192, reset_at: 1_784_815_409 },
+			secondary_window: null,
+		},
+	}),
+	[{ label: "Week", percent: 16, resetsAt: 1_784_815_409_000 }],
+	"OpenAI reads primary_window as Week when it is the 7-day window and secondary_window is null",
+);
+// A 5-hour-only window must not be mislabeled "Week" — it is not weekly.
+assert.deepEqual(
+	parseOpenAIUsage({
+		rate_limit: { primary_window: { used_percent: 30, limit_window_seconds: 18_000, reset_at: 1_768_500_000 }, secondary_window: null },
+	}),
+	[],
+	"OpenAI omits Week when only a sub-weekly window is reported, rather than mislabeling it",
 );
 
 let activeModel = { provider: "anthropic", id: "claude-fable-5" };
