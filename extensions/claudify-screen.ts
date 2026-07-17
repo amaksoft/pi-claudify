@@ -55,6 +55,7 @@ type EditableSettingsKey =
 	| "diffCollapsedLines"
 	| "spinnerColor"
 	| "spinnerStatusColor"
+	| "spinnerShimmer"
 	| "spinnerVerbs"
 	| "spinnerVerbMode"
 	| "workedVerbs"
@@ -598,6 +599,13 @@ function sectionRows(section: ClaudifySection, candidates: ClaudifyPickerCandida
 				maxEntries: MAX_CUSTOM_WORKED_VERBS,
 				maxLength: MAX_WORKED_VERB_LENGTH,
 				sanitize: sanitizeWorkedVerbs,
+			},
+			{
+				kind: "boolean",
+				key: "spinnerShimmer",
+				label: "Warm shimmer",
+				description: "Claude Code's spinner wave — warms salmon→gold and sweeps as a turn runs. Default Spinner color only.",
+				value: settings.spinnerShimmer !== false,
 			},
 		];
 	}

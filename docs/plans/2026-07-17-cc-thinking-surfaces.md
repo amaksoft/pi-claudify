@@ -191,9 +191,18 @@ user-overridable setting; only the default string changed.
    phase, so this could not be observed; the sweep may simply be an early-phase effect.
 
 ## Decisions (resolved 2026-07-17)
-- **A — spinner shimmer:** filed as a follow-up (**CLFY-27**, low) with the captured spec.
-  Chasing CC's look is in scope for claudify; not urgent. Claudify's spinner stays
-  single-color until that lands.
+- **A — spinner shimmer: IMPLEMENTED (CLFY-27).** `extensions/spinner.ts` now applies the
+  warm hue escalation (salmon→gold, bold at the plateau) to the verb *and* glyph, plus the
+  right→left sweep highlight in the first ~15s, keyed to the spell's elapsed time. It is
+  gated behind a `spinnerShimmer` setting (default on) and suppressed when a custom
+  `spinnerColor` is set (the user's static color wins), since the shimmer imposes CC's fixed
+  palette. **The capture's open question — "can pi's render loop repaint mid-stream at that
+  rate?" — is resolved: yes.** `ui.setWorkingMessage` → `Loader.setMessage` → `updateDisplay`
+  → `requestRender` synchronously (pi-tui `components/loader.js`), so refreshing the working
+  message at ~5 Hz repaints the spinner immediately, independent of the 500 ms glyph timer.
+  Live-smoked: salmon base + the moving sweep highlight render cleanly with no overflow (the
+  many per-char SGR codes were the main 2.3.0-class risk); the >13 s gold/bold plateau is
+  unit-tested but was not caught live (thinking spells stayed under 13 s).
 - **B — collapsed-thinking label:** rotation ruled out (pi's global setter). Default
   changed **"Pondering..." → "Thinking..."** so it reads as a fixed placeholder rather than
   a rotating value. Shipped with this capture.

@@ -4,7 +4,14 @@ import { Loader } from "@earendil-works/pi-tui";
 
 // Importing spinner.ts monkey-patches Loader.prototype (start/stop/updateDisplay)
 // and exposes the captured live-spinner cadence.
-const { LOADER_INTERVAL_MS } = await import("../extensions/spinner.ts");
+const {
+	LOADER_INTERVAL_MS,
+	SHIMMER_PLATEAU_MS,
+	shimmerBase,
+	shimmerSweep,
+	colorizeShimmerVerb,
+	shimmerGlyphAnsi,
+} = await import("../extensions/spinner.ts");
 
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
 const identity = (text: string): string => text;
@@ -47,5 +54,39 @@ assert.equal(
 	"✻",
 	"`✻` is a live rotation frame (the mis-capture that pinned the glyph to `·` was a polling alias)",
 );
+
+// --- CLFY-27: the thinking-spinner shimmer ----------------------------------
+// Capture trajectory: docs/plans/2026-07-17-cc-thinking-surfaces.md.
+
+// Base hue escalates one-way salmon → gold, turning bold, then plateaus.
+assert.deepEqual(shimmerBase(0), { fg: "\x1b[38;5;174m", bold: false }, "0s is salmon, not bold");
+assert.deepEqual(shimmerBase(10_000), { fg: "\x1b[38;5;174m", bold: false }, "still salmon at 10s");
+assert.deepEqual(shimmerBase(13_500), { fg: "\x1b[38;5;180m", bold: false }, "warms to tan by ~13s");
+assert.deepEqual(shimmerBase(16_000), { fg: "\x1b[38;5;215m", bold: false }, "orange by ~15-17s, not yet bold");
+assert.deepEqual(shimmerBase(18_000), { fg: "\x1b[38;5;215m", bold: true }, "bold turns on by ~17s");
+assert.deepEqual(shimmerBase(25_000), { fg: "\x1b[38;5;220m", bold: true }, "gold + bold at the plateau");
+assert.deepEqual(shimmerBase(120_000), shimmerBase(SHIMMER_PLATEAU_MS), "the escalation holds at the plateau, never cycling back");
+
+// The sweep is a ~3-char window that moves right→left over the first ~15s, then stops.
+const early = shimmerSweep(10, 0);
+assert.deepEqual(early, { start: 8, end: 9 }, "the sweep begins at the right edge");
+const later = shimmerSweep(10, 600); // 3 steps at 200ms/step → center moved 3 left
+assert.ok(later && later.end < 9, "the sweep window moves leftward over time");
+assert.equal(shimmerSweep(10, 15_000), null, "the sweep stops after ~15s");
+assert.equal(shimmerSweep(10, 25_000), null, "no sweep at the gold plateau");
+assert.equal(shimmerSweep(0, 1_000), null, "an empty verb has no sweep");
+
+// colorizeShimmerVerb wraps the verb in the base color (+bold) and paints the sweep window.
+const goldVerb = colorizeShimmerVerb("Forging…", 25_000);
+assert.ok(goldVerb.startsWith("\x1b[1m\x1b[38;5;220m"), "at the plateau the verb is bold gold");
+assert.ok(goldVerb.endsWith("\x1b[0m") && !goldVerb.includes("\x1b[38;5;216m"), "no sweep highlight at the plateau");
+const salmonVerb = colorizeShimmerVerb("Forging…", 0);
+assert.ok(salmonVerb.includes("\x1b[38;5;216m"), "during the sweep the highlight color appears");
+assert.ok(salmonVerb.includes("\x1b[38;5;174m"), "the un-highlighted chars keep the salmon base");
+assert.equal(salmonVerb.replace(ANSI_RE, ""), "Forging…", "colorizing changes only color, not the text");
+
+// The glyph shares the escalated base hue (and bold) with the verb.
+assert.equal(shimmerGlyphAnsi(0), "\x1b[38;5;174m", "glyph is salmon early");
+assert.equal(shimmerGlyphAnsi(25_000), "\x1b[1m\x1b[38;5;220m", "glyph is bold gold at the plateau");
 
 console.log("spinner-cadence: ok");
