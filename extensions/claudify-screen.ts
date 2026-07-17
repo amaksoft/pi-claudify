@@ -604,7 +604,7 @@ function sectionRows(section: ClaudifySection, candidates: ClaudifyPickerCandida
 				kind: "boolean",
 				key: "spinnerShimmer",
 				label: "Warm shimmer",
-				description: "Claude Code's spinner wave — warms salmon→gold and sweeps as a turn runs. Default Spinner color only.",
+				description: "Animates the Spinner: warms salmon→gold, then loops a sweep and a breathing pulse. Default Spinner color only.",
 				value: settings.spinnerShimmer !== false,
 			},
 		];

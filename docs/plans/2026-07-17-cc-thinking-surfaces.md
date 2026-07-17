@@ -203,6 +203,15 @@ user-overridable setting; only the default string changed.
   Live-smoked: salmon base + the moving sweep highlight render cleanly with no overflow (the
   many per-char SGR codes were the main 2.3.0-class risk); the >13 s gold/bold plateau is
   unit-tested but was not caught live (thinking spells stayed under 13 s).
+
+  **Deliberate divergence (Berto, on live review):** CC's sweep runs once and then freezes at
+  gold. Claudify does *not* freeze — after the one-way salmon→gold escalation, the animation
+  loops forever, alternating the right→left **sweep** with a whole-verb **breathing** pulse
+  (dim⇄bright). The sweep highlight was also brightened from CC's `#FFAF87` to a more legible
+  cream `#FFD7AF`, because the one-shade CC delta read as "no shimmer" at terminal scale. This
+  is claudify choosing feel over strict fidelity for a purely cosmetic surface; the escalation
+  colors themselves stay CC-accurate. Perf: the spinner now repaints at ~5 Hz for the whole
+  spell while shimmer is on (bounded by the turn; idle when no spinner).
 - **B — collapsed-thinking label:** rotation ruled out (pi's global setter). Default
   changed **"Pondering..." → "Thinking..."** so it reads as a fixed placeholder rather than
   a rotating value. Shipped with this capture.
