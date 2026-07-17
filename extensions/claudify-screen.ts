@@ -256,7 +256,10 @@ const DIFF_ROWS: readonly ImmediateRowDefinition[] = [
 		kind: "number",
 		key: "diffCollapsedLines",
 		label: "Collapsed diff lines",
-		description: "Limits lines shown in collapsed write and edit diff previews.",
+		// Only the write tool reads diffCollapsedLimit(); edit's collapsed diff is a
+		// hardcoded 32 lines (renderEditPreviewBody in index.ts), so naming "edit" here
+		// would promise a control the user cannot feel on Update rows.
+		description: "Limits lines shown in collapsed Write diff previews.",
 		defaultValue: 10,
 		min: 0,
 	},
