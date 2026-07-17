@@ -43,8 +43,8 @@ export interface SettingsFile {
 	footerColor?: string;
 	footerUsageBar?: boolean;
 	editorBorder?: "gray" | "thinking";
-	accentColor?: "claude" | "theme";
-	userMessageBox?: "theme" | "claude" | "off";
+	accentColor?: "claude" | "theme" | `#${string}`;
+	userMessageBox?: "theme" | "claude" | "off" | `#${string}`;
 }
 
 export interface SettingsFileInfo {

@@ -41,7 +41,7 @@ export const CLAUDIFY_SECTIONS: readonly ClaudifySection[] = [
 ];
 
 type MessageTextSettingsKey = "assistantPrefix" | "thinkingPrefix" | "hiddenThinkingLabel";
-type TextRowSettingsKey = MessageTextSettingsKey | "footerColor";
+type TextRowSettingsKey = MessageTextSettingsKey | "footerColor" | "accentColor" | "userMessageBox";
 type PickerSettingsKey = "diffTheme" | "spinnerColor" | "spinnerStatusColor";
 type VerbListSettingsKey = "spinnerVerbs" | "workedVerbs";
 type VerbModeSettingsKey = "spinnerVerbMode" | "workedVerbMode";
@@ -222,8 +222,6 @@ type ImmediateRowDefinition = EnumRowDefinition | BooleanRowDefinition | NumberR
 
 const THEME_ROWS: readonly ImmediateRowDefinition[] = [
 	{ kind: "boolean", key: "themeAdaptive", label: "Adaptive colors", defaultValue: true },
-	// docs/plans/2026-07-16-cc-accent-color.md — CC lavender vs pi teal selection highlight.
-	{ kind: "enum", key: "accentColor", label: "Accent", values: ["claude", "theme"], defaultValue: "claude" },
 	{ kind: "enum", key: "diffPalette", label: "Diff palette", values: ["claude", "theme"], defaultValue: "claude" },
 	{ kind: "enum", key: "toolChrome", label: "Tool chrome", values: ["claude", "theme"], defaultValue: "claude" },
 ];
@@ -301,6 +299,13 @@ function effectiveEnumValue(settings: SettingsFile, definition: EnumRowDefinitio
 	return typeof value === "string" && definition.values.includes(value) ? value : definition.defaultValue;
 }
 
+function effectiveColorTextValue(value: unknown, keywords: readonly string[], defaultValue: string): string {
+	if (typeof value !== "string") return defaultValue;
+	const keyword = value.trim().toLowerCase();
+	if (keywords.includes(keyword)) return keyword;
+	return normalizeHexColor(value) ?? defaultValue;
+}
+
 function effectiveNumberValue(settings: SettingsFile, definition: NumberRowDefinition): number {
 	const value = settings[definition.key];
 	if (typeof value !== "number" || !Number.isFinite(value) || value < definition.min) return definition.defaultValue;
@@ -340,11 +345,10 @@ function messageRows(settings: SettingsFile): SettingRow[] {
 		{ kind: "text", key: "hiddenThinkingLabel", label: "Hidden thinking label", value: resolved.hiddenThinkingLabel },
 		{
 			// docs/plans/2026-07-16-cc-user-message-box.md — CC's settled gray block.
-			kind: "enum",
+			kind: "text",
 			key: "userMessageBox",
 			label: "User message box",
-			value: settings.userMessageBox === "claude" || settings.userMessageBox === "off" ? settings.userMessageBox : "theme",
-			values: ["theme", "claude", "off"],
+			value: effectiveColorTextValue(settings.userMessageBox, ["theme", "claude", "off"], "theme"),
 		},
 	];
 }
@@ -363,11 +367,21 @@ function sectionRows(section: ClaudifySection, candidates: ClaudifyPickerCandida
 		return [...rows.slice(0, 2), colorRow, ...rows.slice(2)];
 	}
 	if (section.id === "theme") {
+		const themeRows = immediateRows(settings, THEME_ROWS);
+		const accentRow: SettingRow = {
+			// docs/plans/2026-07-16-cc-accent-color.md — CC lavender, pi theme accent, or custom hex.
+			kind: "text",
+			key: "accentColor",
+			label: "Accent",
+			value: effectiveColorTextValue(settings.accentColor, ["claude", "theme"], "claude"),
+		};
 		const diffTheme = typeof settings.diffTheme === "string" && candidates.diffThemes.includes(settings.diffTheme)
 			? settings.diffTheme
 			: undefined;
 		return [
-			...immediateRows(settings, THEME_ROWS),
+			...themeRows.slice(0, 1),
+			accentRow,
+			...themeRows.slice(1),
 			{
 				kind: "picker",
 				key: "diffTheme",
@@ -849,11 +863,20 @@ export class ClaudifyScreen extends Container implements Focusable {
 			this.finishTextInput();
 			return;
 		}
-		if (row.key === "footerColor") {
-			const normalized = normalizeHexColor(rawValue);
+		if (row.key === "footerColor" || row.key === "accentColor" || row.key === "userMessageBox") {
+			const keywords = row.key === "accentColor"
+				? ["claude", "theme"]
+				: row.key === "userMessageBox"
+					? ["theme", "claude", "off"]
+					: [];
+			const keyword = rawValue.trim().toLowerCase();
+			const normalized = normalizeHexColor(rawValue) ?? (keywords.includes(keyword) ? keyword : null);
 			this.finishTextInput(false);
 			if (!normalized) {
-				this.showNotice("Enter a hex color like #FF9200.", "warning");
+				const message = keywords.length > 0
+					? `Enter ${keywords.join(", ")}, or a hex color like #FF9200.`
+					: "Enter a hex color like #FF9200.";
+				this.showNotice(message, "warning");
 				this.renderState();
 				return;
 			}

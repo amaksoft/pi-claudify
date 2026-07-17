@@ -14,6 +14,7 @@ import {
 	AssistantMessageComponent,
 	CompactionSummaryMessageComponent,
 	CustomMessageComponent,
+	Theme as PiTheme,
 	ToolExecutionComponent,
 	UserMessageComponent,
 	createBashTool,
@@ -43,7 +44,7 @@ import * as Diff from "diff";
 import type { BundledLanguage, BundledTheme } from "shiki";
 
 import { ClaudifyScreen } from "./claudify-screen.ts";
-import { installClaudeFooter, patchEditorBorderColor } from "./footer.ts";
+import { installClaudeFooter, normalizeHexColor, patchEditorBorderColor } from "./footer.ts";
 import {
 	describeInspectionsActive,
 	describeInspectionsDone,
@@ -249,6 +250,28 @@ function colorToRgb(value: string): { r: number; g: number; b: number } | null {
 	return null;
 }
 
+type CustomHexColor = `#${string}`;
+
+function storedHexColor(value: unknown): CustomHexColor | null {
+	if (typeof value !== "string") return null;
+	return normalizeHexColor(value) as CustomHexColor | null;
+}
+
+function ansiFromHex(theme: unknown, hex: CustomHexColor, layer: "foreground" | "background"): string | null {
+	const rgb = colorToRgb(hex);
+	if (!rgb) return null;
+	const normalized = `#${[rgb.r, rgb.g, rgb.b].map((channel) => channel.toString(16).padStart(2, "0")).join("")}`;
+	const mode = (theme as any)?.mode === "256color" ? "256color" : "truecolor";
+	// Constructing a minimal pi Theme delegates 256-color conversion to pi's
+	// own rgbTo256 implementation instead of maintaining a second quantizer.
+	const converter = new PiTheme(
+		{ accent: normalized, thinkingXhigh: normalized } as any,
+		{ userMessageBg: normalized } as any,
+		mode,
+	);
+	return layer === "foreground" ? converter.getFgAnsi("accent") : converter.getBgAnsi("userMessageBg");
+}
+
 function isDarkTheme(theme: unknown): boolean {
 	const rgb = colorToRgb(getThemeFg(theme, "text") ?? "");
 	if (!rgb) return true;
@@ -268,11 +291,15 @@ export function applyAccentOverride(theme: unknown): void {
 		originalThemeAccent.set(theme, { original: current, aliasKeys });
 	}
 	const snapshot = originalThemeAccent.get(theme);
-	const wantClaude = readSettings().values.accentColor !== "theme";
+	const accentColor = readSettings().values.accentColor;
+	const customAccent = storedHexColor(accentColor);
 	const colorMode = (theme as any).mode === "256color" ? "ansi256" : "truecolor";
-	const target = wantClaude
-		? CC_ACCENT_ANSI[isDarkTheme(theme) ? "dark" : "light"][colorMode]
-		: snapshot?.original ?? current;
+	const target = accentColor === "theme"
+		? snapshot?.original ?? current
+		: customAccent
+			? ansiFromHex(theme, customAccent, "foreground")
+				?? CC_ACCENT_ANSI[isDarkTheme(theme) ? "dark" : "light"][colorMode]
+			: CC_ACCENT_ANSI[isDarkTheme(theme) ? "dark" : "light"][colorMode];
 	if (current !== target) setThemeFg(theme, "accent", target);
 	for (const key of snapshot?.aliasKeys ?? []) {
 		if (getThemeFg(theme, key) !== target) setThemeFg(theme, key, target);
@@ -289,6 +316,7 @@ const FG_DEFAULT_ANSI = "\x1b[39m";
 const originalUserMessageBg = new WeakMap<object, string>();
 let userBoxThemeBg: string | null = null;
 let userBoxThemePrefixFg: string | null = null;
+let userBoxCustomBg: { hex: CustomHexColor; ansi: string } | null = null;
 
 function getThemeBg(theme: unknown, key: string): string | undefined {
 	const themeAny = theme as any;
@@ -305,8 +333,11 @@ function bgAnsiFromHex(hex: string): string | null {
 	return `\x1b[48;2;${r};${g};${b}m`;
 }
 
-function applyToolBackgroundMode(theme: unknown): void {
+export function applyToolBackgroundMode(theme: unknown): void {
 	syncToolBackgroundMode();
+	const customHex = storedHexColor(readSettings().values.userMessageBox);
+	const customAnsi = customHex ? ansiFromHex(theme, customHex, "background") : null;
+	userBoxCustomBg = customHex && customAnsi ? { hex: customHex, ansi: customAnsi } : null;
 	// Remember the theme's own user-message background before blanking it: the
 	// user-message box (theme mode) paints with the theme's value even though
 	// pi's markdown background stays stripped in every mode.
@@ -1130,11 +1161,12 @@ function cleanUserMessageLine(line: string): string {
 
 const USER_PREFIX_WIDTH = visibleWidth(`${DEFAULT_USER_PREFIX} `);
 
-type UserMessageBoxMode = "theme" | "claude" | "off";
+type UserMessageBoxMode = "theme" | "claude" | "off" | CustomHexColor;
 
 function userMessageBoxMode(): UserMessageBoxMode {
 	const value = readSettings().values.userMessageBox;
-	return value === "off" || value === "claude" ? value : "theme";
+	if (value === "theme" || value === "claude" || value === "off") return value;
+	return storedHexColor(value) ?? "theme";
 }
 
 // Like cleanUserMessageLine, but without the transparent-background wrappers —
@@ -1150,8 +1182,14 @@ function cleanBoxedUserMessageLine(line: string): string {
  * userMessageBg/dim; claude mode uses the captured CC values.
  * docs/plans/2026-07-16-cc-user-message-box.md.
  */
-export function applyUserMessageBox(lines: string[], mode: "theme" | "claude", maxWidth: number): string[] {
-	const bg = (mode === "theme" ? userBoxThemeBg : null) ?? CC_USER_BOX_BG;
+export function applyUserMessageBox(lines: string[], mode: Exclude<UserMessageBoxMode, "off">, maxWidth: number): string[] {
+	const bg = mode === "theme"
+		? userBoxThemeBg ?? CC_USER_BOX_BG
+		: mode === "claude"
+			? CC_USER_BOX_BG
+			: userBoxCustomBg?.hex === mode
+				? userBoxCustomBg.ansi
+				: CC_USER_BOX_BG;
 	const prefixFg = (mode === "theme" ? userBoxThemePrefixFg : null) ?? CC_USER_BOX_PREFIX_FG;
 	const textFg = mode === "claude" ? CC_USER_BOX_TEXT_FG : "";
 	const contentIndexes = lines.flatMap((line, index) => (stripAnsi(line).trim() ? [index] : []));
