@@ -6,8 +6,9 @@ import { Loader } from "@earendil-works/pi-tui";
 // and exposes the captured live-spinner cadence.
 const {
 	LOADER_INTERVAL_MS,
-	SHIMMER_PLATEAU_MS,
-	shimmerBase,
+	shimmerBaseRgb,
+	shimmerPhase,
+	shimmerBreatheFactor,
 	shimmerSweep,
 	colorizeShimmerVerb,
 	shimmerGlyphAnsi,
@@ -55,38 +56,48 @@ assert.equal(
 	"`✻` is a live rotation frame (the mis-capture that pinned the glyph to `·` was a polling alias)",
 );
 
-// --- CLFY-27: the thinking-spinner shimmer ----------------------------------
-// Capture trajectory: docs/plans/2026-07-17-cc-thinking-surfaces.md.
+// --- CLFY-27: the thinking-spinner shimmer (continuous sweep ⇄ breathe) -------
+// Capture trajectory: docs/plans/2026-07-17-cc-thinking-surfaces.md. Claudify
+// deliberately diverges from CC by never freezing; see that doc's Decision A.
 
-// Base hue escalates one-way salmon → gold, turning bold, then plateaus.
-assert.deepEqual(shimmerBase(0), { fg: "\x1b[38;5;174m", bold: false }, "0s is salmon, not bold");
-assert.deepEqual(shimmerBase(10_000), { fg: "\x1b[38;5;174m", bold: false }, "still salmon at 10s");
-assert.deepEqual(shimmerBase(13_500), { fg: "\x1b[38;5;180m", bold: false }, "warms to tan by ~13s");
-assert.deepEqual(shimmerBase(16_000), { fg: "\x1b[38;5;215m", bold: false }, "orange by ~15-17s, not yet bold");
-assert.deepEqual(shimmerBase(18_000), { fg: "\x1b[38;5;215m", bold: true }, "bold turns on by ~17s");
-assert.deepEqual(shimmerBase(25_000), { fg: "\x1b[38;5;220m", bold: true }, "gold + bold at the plateau");
-assert.deepEqual(shimmerBase(120_000), shimmerBase(SHIMMER_PLATEAU_MS), "the escalation holds at the plateau, never cycling back");
+// Base hue escalates one-way salmon → gold, turning bold, then holds.
+assert.deepEqual(shimmerBaseRgb(0), { rgb: { r: 215, g: 135, b: 135 }, bold: false }, "0s is salmon, not bold");
+assert.deepEqual(shimmerBaseRgb(10_000), { rgb: { r: 215, g: 135, b: 135 }, bold: false }, "still salmon at 10s");
+assert.deepEqual(shimmerBaseRgb(13_500), { rgb: { r: 215, g: 175, b: 135 }, bold: false }, "warms to tan by ~13s");
+assert.deepEqual(shimmerBaseRgb(18_000), { rgb: { r: 255, g: 175, b: 95 }, bold: true }, "orange + bold by ~17s");
+assert.deepEqual(shimmerBaseRgb(25_000), { rgb: { r: 255, g: 215, b: 0 }, bold: true }, "gold + bold by ~20s");
+assert.deepEqual(shimmerBaseRgb(120_000), shimmerBaseRgb(25_000), "the escalation holds, never cycling back");
 
-// The sweep is a ~3-char window that moves right→left over the first ~15s, then stops.
-const early = shimmerSweep(10, 0);
-assert.deepEqual(early, { start: 8, end: 9 }, "the sweep begins at the right edge");
-const later = shimmerSweep(10, 600); // 3 steps at 200ms/step → center moved 3 left
+// The overlay alternates sweep → breathe → sweep forever (4s + 3.2s = 7.2s cycle).
+assert.equal(shimmerPhase(0), "sweep", "a cycle opens on the sweep");
+assert.equal(shimmerPhase(3_000), "sweep", "still sweeping at 3s");
+assert.equal(shimmerPhase(5_000), "breathe", "breathing after the sweep window");
+assert.equal(shimmerPhase(7_300), "sweep", "the next cycle sweeps again — it never stops");
+
+// The sweep is a ~3-char window moving right→left; absent during the breathe phase.
+assert.deepEqual(shimmerSweep(10, 0), { start: 8, end: 9 }, "the sweep begins at the right edge");
+const later = shimmerSweep(10, 600); // 3 steps at 200ms/step → center moved left
 assert.ok(later && later.end < 9, "the sweep window moves leftward over time");
-assert.equal(shimmerSweep(10, 15_000), null, "the sweep stops after ~15s");
-assert.equal(shimmerSweep(10, 25_000), null, "no sweep at the gold plateau");
+assert.equal(shimmerSweep(10, 5_000), null, "no sweep during the breathe phase");
+assert.deepEqual(shimmerSweep(10, 7_200), { start: 8, end: 9 }, "the sweep returns on the next cycle");
 assert.equal(shimmerSweep(0, 1_000), null, "an empty verb has no sweep");
 
-// colorizeShimmerVerb wraps the verb in the base color (+bold) and paints the sweep window.
-const goldVerb = colorizeShimmerVerb("Forging…", 25_000);
-assert.ok(goldVerb.startsWith("\x1b[1m\x1b[38;5;220m"), "at the plateau the verb is bold gold");
-assert.ok(goldVerb.endsWith("\x1b[0m") && !goldVerb.includes("\x1b[38;5;216m"), "no sweep highlight at the plateau");
-const salmonVerb = colorizeShimmerVerb("Forging…", 0);
-assert.ok(salmonVerb.includes("\x1b[38;5;216m"), "during the sweep the highlight color appears");
-assert.ok(salmonVerb.includes("\x1b[38;5;174m"), "the un-highlighted chars keep the salmon base");
-assert.equal(salmonVerb.replace(ANSI_RE, ""), "Forging…", "colorizing changes only color, not the text");
+// Breathing dims the whole verb during the breathe phase, and is neutral while sweeping.
+assert.equal(shimmerBreatheFactor(1_000), 1, "no breathing during the sweep phase");
+const dim = shimmerBreatheFactor(4_000 + 800); // ~half a breath into the breathe phase
+assert.ok(dim < 1 && dim >= 0.55, "the breath dims within [0.55, 1)");
 
-// The glyph shares the escalated base hue (and bold) with the verb.
-assert.equal(shimmerGlyphAnsi(0), "\x1b[38;5;174m", "glyph is salmon early");
-assert.equal(shimmerGlyphAnsi(25_000), "\x1b[1m\x1b[38;5;220m", "glyph is bold gold at the plateau");
+// colorizeShimmerVerb: truecolor base, a legible sweep highlight, text preserved.
+const salmonVerb = colorizeShimmerVerb("Forging…", 0);
+assert.ok(salmonVerb.includes("\x1b[38;2;255;215;175m"), "the sweep highlight (#FFD7AF) appears during the sweep");
+assert.ok(salmonVerb.includes("\x1b[38;2;215;135;135m"), "un-highlighted chars keep the salmon base");
+assert.equal(salmonVerb.replace(ANSI_RE, ""), "Forging…", "colorizing changes only color, not the text");
+// 21_600 = start of a cycle (pos 0 → sweep at the right edge) and past the 20s gold plateau.
+const goldSweep = colorizeShimmerVerb("Forging…", 21_600);
+assert.ok(goldSweep.startsWith("\x1b[1m") && goldSweep.includes("\x1b[38;2;255;215;175m"), "the sweep still runs at the gold plateau — bold + highlight");
+
+// The glyph shares the breathed base hue (and bold) with the verb.
+assert.equal(shimmerGlyphAnsi(0), "\x1b[38;2;215;135;135m", "glyph is salmon early");
+assert.equal(shimmerGlyphAnsi(25_000), "\x1b[1m\x1b[38;2;255;215;0m", "glyph is bold gold at the plateau");
 
 console.log("spinner-cadence: ok");
