@@ -66,7 +66,7 @@ assert.deepEqual(resolveMessageChromeSettings({
 	assistantPrefix: "⏺",
 	thinkingPrefix: "thinking",
 	messageSpacing: "comfortable",
-	hiddenThinkingLabel: "Pondering...",
+	hiddenThinkingLabel: "Thinking...",
 });
 
 // Wide glyphs still align: continuation matches the rendered prefix width.
