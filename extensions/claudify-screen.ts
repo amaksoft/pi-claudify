@@ -90,6 +90,7 @@ const CLAUDE_AUTHENTIC: Partial<Record<EditableSettingsKey, string>> = {
 interface SettingRowBase {
 	readonly key: EditableSettingsKey;
 	readonly label: string;
+	readonly description: string;
 	readonly value: string | number | boolean | undefined;
 }
 
@@ -135,6 +136,7 @@ interface VerbEditorSettingRow {
 	readonly key: VerbListSettingsKey;
 	readonly modeKey: VerbModeSettingsKey;
 	readonly label: string;
+	readonly description: string;
 	readonly value: readonly string[];
 	readonly mode: VerbMode;
 	readonly maxEntries: number;
@@ -197,6 +199,7 @@ interface EnumRowDefinition {
 	readonly kind: "enum";
 	readonly key: EditableSettingsKey;
 	readonly label: string;
+	readonly description: string;
 	readonly values: readonly string[];
 	readonly defaultValue: string;
 	readonly claudeValue?: string;
@@ -206,6 +209,7 @@ interface BooleanRowDefinition {
 	readonly kind: "boolean";
 	readonly key: EditableSettingsKey;
 	readonly label: string;
+	readonly description: string;
 	readonly defaultValue: boolean;
 }
 
@@ -213,6 +217,7 @@ interface NumberRowDefinition {
 	readonly kind: "number";
 	readonly key: EditableSettingsKey;
 	readonly label: string;
+	readonly description: string;
 	readonly defaultValue: number;
 	readonly min: number;
 	readonly max?: number;
@@ -221,17 +226,54 @@ interface NumberRowDefinition {
 type ImmediateRowDefinition = EnumRowDefinition | BooleanRowDefinition | NumberRowDefinition;
 
 const THEME_ROWS: readonly ImmediateRowDefinition[] = [
-	{ kind: "boolean", key: "themeAdaptive", label: "Adaptive colors", defaultValue: true },
-	{ kind: "enum", key: "diffPalette", label: "Diff palette", values: ["claude", "theme"], defaultValue: "claude" },
-	{ kind: "enum", key: "toolChrome", label: "Tool chrome", values: ["claude", "theme"], defaultValue: "claude" },
+	{
+		kind: "boolean",
+		key: "themeAdaptive",
+		label: "Adaptive colors",
+		description: "Derives Spinner, border, and automatic diff colors from pi's theme.",
+		defaultValue: true,
+	},
+	{
+		kind: "enum",
+		key: "diffPalette",
+		label: "Diff palette",
+		description: "Uses Claude's fixed unified diffs or pi theme-derived colors and layout.",
+		values: ["claude", "theme"],
+		defaultValue: "claude",
+	},
+	{
+		kind: "enum",
+		key: "toolChrome",
+		label: "Tool chrome",
+		description: "Uses Claude or theme chrome for tool bullets, names, paths, and results.",
+		values: ["claude", "theme"],
+		defaultValue: "claude",
+	},
 ];
 
 const DIFF_ROWS: readonly ImmediateRowDefinition[] = [
-	{ kind: "number", key: "diffCollapsedLines", label: "Collapsed diff lines", defaultValue: 10, min: 0 },
+	{
+		kind: "number",
+		key: "diffCollapsedLines",
+		label: "Collapsed diff lines",
+		// Only the write tool reads diffCollapsedLimit(); edit's collapsed diff is a
+		// hardcoded 32 lines (renderEditPreviewBody in index.ts), so naming "edit" here
+		// would promise a control the user cannot feel on Update rows.
+		description: "Limits lines shown in collapsed Write diff previews.",
+		defaultValue: 10,
+		min: 0,
+	},
 ];
 
 const TOOL_OUTPUT_ROWS: readonly ImmediateRowDefinition[] = [
-	{ kind: "enum", key: "toolBackground", label: "Tool background", values: ["default", "transparent", "outlines"], defaultValue: "transparent" },
+	{
+		kind: "enum",
+		key: "toolBackground",
+		label: "Tool background",
+		description: "Keeps pi backgrounds, clears them, or outlines tool rows horizontally.",
+		values: ["default", "transparent", "outlines"],
+		defaultValue: "transparent",
+	},
 	// readOutputMode / searchOutputMode intentionally omitted: no renderer reads
 	// them yet, so exposing them as immediate-commit rows would be controls that
 	// persist but change nothing in the transcript. Re-add once the read/grep
@@ -240,28 +282,110 @@ const TOOL_OUTPUT_ROWS: readonly ImmediateRowDefinition[] = [
 		kind: "enum",
 		key: "mcpOutputMode",
 		label: "MCP output",
+		description: "Hides MCP results, shows a status summary, or previews their payload.",
 		values: ["hidden", "summary", "preview"],
 		defaultValue: "preview",
 		claudeValue: CLAUDE_AUTHENTIC.mcpOutputMode,
 	},
-	{ kind: "enum", key: "bashOutputMode", label: "Bash output", values: ["opencode", "summary", "preview"], defaultValue: "opencode" },
-	{ kind: "number", key: "previewLines", label: "Preview lines", defaultValue: 8, min: 1 },
-	{ kind: "number", key: "bashCollapsedLines", label: "Collapsed Bash lines", defaultValue: 10, min: 0 },
-	{ kind: "boolean", key: "bashStackConsecutive", label: "Stack consecutive Bash", defaultValue: true },
-	{ kind: "boolean", key: "bashSemanticDisplay", label: "Semantic Bash display", defaultValue: true },
-	{ kind: "boolean", key: "readOnlyToolGrouping", label: "Group read-only tools", defaultValue: true },
-	{ kind: "number", key: "readOnlyToolGroupLimit", label: "Read-only group limit", defaultValue: 5, min: 1, max: 20 },
-	{ kind: "number", key: "expandedPreviewMaxLines", label: "Expanded preview max lines", defaultValue: 4000, min: 1 },
+	{
+		kind: "enum",
+		key: "bashOutputMode",
+		label: "Bash output",
+		description: "Chooses expandable, summary-only, or inline-preview Bash results.",
+		values: ["opencode", "summary", "preview"],
+		defaultValue: "opencode",
+	},
+	{
+		kind: "number",
+		key: "previewLines",
+		label: "Preview lines",
+		description: "Limits lines or items in compact tool previews and expanded file listings.",
+		defaultValue: 8,
+		min: 1,
+	},
+	{
+		kind: "number",
+		key: "bashCollapsedLines",
+		label: "Collapsed Bash lines",
+		description: "Limits output lines shown by Bash preview mode before expansion.",
+		defaultValue: 10,
+		min: 0,
+	},
+	{
+		kind: "boolean",
+		key: "bashStackConsecutive",
+		label: "Stack consecutive Bash",
+		description: "Removes gaps between consecutive Bash rows outside grouped summaries.",
+		defaultValue: true,
+	},
+	{
+		kind: "boolean",
+		key: "bashSemanticDisplay",
+		label: "Semantic Bash display",
+		description: "Renders simple cat, head, tail, sed, and nl file reads as Read calls.",
+		defaultValue: true,
+	},
+	{
+		kind: "boolean",
+		key: "readOnlyToolGrouping",
+		label: "Group read-only tools",
+		description: "Groups Read, search, list, MCP, and Bash calls into Claude summaries.",
+		defaultValue: true,
+	},
+	{
+		kind: "number",
+		key: "readOnlyToolGroupLimit",
+		label: "Read-only group limit",
+		description: "Caps visible targets and compact-list entries in grouped tool summaries.",
+		defaultValue: 5,
+		min: 1,
+		max: 20,
+	},
+	{
+		kind: "number",
+		key: "expandedPreviewMaxLines",
+		label: "Expanded preview max lines",
+		description: "Caps lines in expanded output previews that can otherwise grow unbounded.",
+		defaultValue: 4000,
+		min: 1,
+	},
 ];
 
 // docs/plans/2026-07-16-cc-input-box-footer.md — the Claude Code statusline port
 // and the pinned-gray input border. footerColor is a text row, added separately
 // in sectionRows so it can sit next to "Color mode".
 const FOOTER_ROWS: readonly ImmediateRowDefinition[] = [
-	{ kind: "enum", key: "footerStyle", label: "Footer style", values: ["claude", "pi"], defaultValue: "claude" },
-	{ kind: "enum", key: "footerColorMode", label: "Color mode", values: ["colored", "single", "monochrome"], defaultValue: "colored" },
-	{ kind: "boolean", key: "footerUsageBar", label: "Usage bar", defaultValue: true },
-	{ kind: "enum", key: "editorBorder", label: "Input border", values: ["gray", "thinking"], defaultValue: "gray" },
+	{
+		kind: "enum",
+		key: "footerStyle",
+		label: "Footer style",
+		description: "Uses claudify's Claude-style statusline or pi's stock footer.",
+		values: ["claude", "pi"],
+		defaultValue: "claude",
+	},
+	{
+		kind: "enum",
+		key: "footerColorMode",
+		label: "Color mode",
+		description: "Colors footer segments separately, with one color, or not at all.",
+		values: ["colored", "single", "monochrome"],
+		defaultValue: "colored",
+	},
+	{
+		kind: "boolean",
+		key: "footerUsageBar",
+		label: "Usage bar",
+		description: "Shows a ten-block bar beside known provider usage percentages.",
+		defaultValue: true,
+	},
+	{
+		kind: "enum",
+		key: "editorBorder",
+		label: "Input border",
+		description: "Uses gray or thinking-level input borders; Bash can still recolor them.",
+		values: ["gray", "thinking"],
+		defaultValue: "gray",
+	},
 ];
 
 class IndentedInput extends Input {
@@ -328,26 +452,47 @@ function messageRows(settings: SettingsFile): SettingRow[] {
 			kind: "enum",
 			key: "messageStyle",
 			label: "Message style",
+			description: "Switches assistant and thinking rows between classic and Claude chrome.",
 			value: resolved.messageStyle,
 			values: ["classic", "claude"],
 			claudeValue: CLAUDE_AUTHENTIC.messageStyle,
 		},
-		{ kind: "text", key: "assistantPrefix", label: "Assistant prefix", value: resolved.assistantPrefix },
-		{ kind: "text", key: "thinkingPrefix", label: "Thinking prefix", value: resolved.thinkingPrefix },
+		{
+			kind: "text",
+			key: "assistantPrefix",
+			label: "Assistant prefix",
+			description: "Sets the first-line glyph for Claude-style assistant messages.",
+			value: resolved.assistantPrefix,
+		},
+		{
+			kind: "text",
+			key: "thinkingPrefix",
+			label: "Thinking prefix",
+			description: "Sets the first-line glyph for Claude-style thinking messages.",
+			value: resolved.thinkingPrefix,
+		},
 		{
 			kind: "enum",
 			key: "messageSpacing",
 			label: "Message spacing",
+			description: "Preserves or removes blank lines inside assistant and thinking messages.",
 			value: resolved.messageSpacing,
 			values: ["compact", "comfortable"],
 			claudeValue: CLAUDE_AUTHENTIC.messageSpacing,
 		},
-		{ kind: "text", key: "hiddenThinkingLabel", label: "Hidden thinking label", value: resolved.hiddenThinkingLabel },
+		{
+			kind: "text",
+			key: "hiddenThinkingLabel",
+			label: "Hidden thinking label",
+			description: "Sets the label shown while hidden thinking is in progress.",
+			value: resolved.hiddenThinkingLabel,
+		},
 		{
 			// docs/plans/2026-07-16-cc-user-message-box.md — CC's settled gray block.
 			kind: "text",
 			key: "userMessageBox",
 			label: "User message box",
+			description: "Styles user messages with theme, Claude gray, a custom color, or no box.",
 			value: effectiveColorTextValue(settings.userMessageBox, ["theme", "claude", "off"], "theme"),
 		},
 	];
@@ -363,7 +508,13 @@ function sectionRows(section: ClaudifySection, candidates: ClaudifyPickerCandida
 		const color = typeof settings.footerColor === "string"
 			? normalizeHexColor(settings.footerColor) ?? DEFAULT_FOOTER_COLOR
 			: DEFAULT_FOOTER_COLOR;
-		const colorRow: SettingRow = { kind: "text", key: "footerColor", label: "Color", value: color };
+		const colorRow: SettingRow = {
+			kind: "text",
+			key: "footerColor",
+			label: "Color",
+			description: "Sets the footer color used in single-color mode.",
+			value: color,
+		};
 		return [...rows.slice(0, 2), colorRow, ...rows.slice(2)];
 	}
 	if (section.id === "theme") {
@@ -373,6 +524,7 @@ function sectionRows(section: ClaudifySection, candidates: ClaudifyPickerCandida
 			kind: "text",
 			key: "accentColor",
 			label: "Accent",
+			description: "Sets selection highlights plus accent-linked inline code and list bullets.",
 			value: effectiveColorTextValue(settings.accentColor, ["claude", "theme"], "claude"),
 		};
 		const diffTheme = typeof settings.diffTheme === "string" && candidates.diffThemes.includes(settings.diffTheme)
@@ -386,6 +538,7 @@ function sectionRows(section: ClaudifySection, candidates: ClaudifyPickerCandida
 				kind: "picker",
 				key: "diffTheme",
 				label: "Diff theme",
+				description: "Applies a named diff color and syntax-highlighting preset.",
 				value: diffTheme,
 				candidates: [
 					{ label: "None (automatic)", value: undefined },
@@ -403,13 +556,28 @@ function sectionRows(section: ClaudifySection, candidates: ClaudifyPickerCandida
 			? settings.spinnerStatusColor
 			: "muted";
 		return [
-			{ kind: "picker", key: "spinnerColor", label: "Spinner color", value: spinnerColor, candidates: colorCandidates },
-			{ kind: "picker", key: "spinnerStatusColor", label: "Status color", value: statusColor, candidates: colorCandidates },
+			{
+				kind: "picker",
+				key: "spinnerColor",
+				label: "Spinner color",
+				description: "Colors the live Spinner glyph and Spinner verb.",
+				value: spinnerColor,
+				candidates: colorCandidates,
+			},
+			{
+				kind: "picker",
+				key: "spinnerStatusColor",
+				label: "Status color",
+				description: "Colors elapsed time, token counts, and thinking status beside the Spinner.",
+				value: statusColor,
+				candidates: colorCandidates,
+			},
 			{
 				kind: "verbs",
 				key: "spinnerVerbs",
 				modeKey: "spinnerVerbMode",
 				label: "While working",
+				description: "Adds to or replaces the Spinner verb pool shown while a turn runs.",
 				value: sanitizeSpinnerVerbs(settings.spinnerVerbs),
 				mode: settings.spinnerVerbMode === "replace" ? "replace" : "append",
 				maxEntries: MAX_CUSTOM_SPINNER_VERBS,
@@ -421,6 +589,7 @@ function sectionRows(section: ClaudifySection, candidates: ClaudifyPickerCandida
 				key: "workedVerbs",
 				modeKey: "workedVerbMode",
 				label: "After finishing",
+				description: "Adds to or replaces the Worked verb pool used after a turn finishes.",
 				value: sanitizeWorkedVerbs(settings.workedVerbs),
 				mode: settings.workedVerbMode === "replace" ? "replace" : "append",
 				maxEntries: MAX_CUSTOM_WORKED_VERBS,
@@ -981,6 +1150,9 @@ export class ClaudifyScreen extends Container implements Focusable {
 				? themedByKey(this.theme, String(row.value), displayValue)
 				: themedText(this.theme, "text", displayValue);
 			this.content.addChild(new Text(`${marker} ${label}${value}${claudeAuthenticMarker(this.theme, row)}`, 3, 0));
+			if (selected) {
+				this.content.addChild(new Text(themedText(this.theme, "dim", `  ${row.description}`), 3, 0));
+			}
 		}
 
 		if (state.editing) {
