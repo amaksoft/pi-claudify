@@ -353,7 +353,7 @@ const diffScreen = new ClaudifyScreen(
 );
 diffScreen.handleInput("down");
 diffScreen.handleInput("enter");
-assert.match(render(diffScreen), /^\s*❯ Collapsed diff lines\s+10[ \t]*$/m, "a preference row renders its default with no Claude marker");
+assert.match(render(diffScreen), /^\s*❯ Collapsed Write lines\s+10[ \t]*$/m, "a preference row renders its default with no Claude marker");
 assert.doesNotMatch(render(diffScreen), /coming soon/, "Diffs no longer renders its placeholder");
 diffScreen.handleInput("right");
 assert.equal(readWrittenSettings().diffCollapsedLines, 11, "collapsed diff lines commits immediately");

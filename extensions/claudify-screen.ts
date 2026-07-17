@@ -255,10 +255,13 @@ const DIFF_ROWS: readonly ImmediateRowDefinition[] = [
 	{
 		kind: "number",
 		key: "diffCollapsedLines",
-		label: "Collapsed diff lines",
-		// Only the write tool reads diffCollapsedLimit(); edit's collapsed diff is a
-		// hardcoded 32 lines (renderEditPreviewBody in index.ts), so naming "edit" here
-		// would promise a control the user cannot feel on Update rows.
+		label: "Collapsed Write lines",
+		// Write-scoped by name, deliberately (CLFY-23). Only the write tool reads
+		// diffCollapsedLimit(); edit's collapsed diff renders a larger fixed budget
+		// (renderEditPreviewBody in index.ts). Claude Code never collapses edit diffs
+		// at all — it shows them in full (capture: docs/plans/2026-07-17-cc-edit-diff-collapse.md)
+		// — so the larger edit budget is the more CC-faithful of the two, and a generic
+		// "diff" label would promise a control the user cannot feel on Update rows.
 		description: "Limits lines shown in collapsed Write diff previews.",
 		defaultValue: 10,
 		min: 0,
