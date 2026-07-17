@@ -167,11 +167,54 @@ for (const label of [
 	assert.ok(toolOutput.includes(label), `Tool output renders ${label}`);
 }
 assert.match(toolOutput, /^\s*❯ Tool background\s+outlines/m, "Tool output selects its first row and shows the effective legacy value");
+assert.match(
+	toolOutput,
+	/^[ \t]+Keeps pi backgrounds, clears them, or outlines tool rows horizontally\.[ \t]*$/m,
+	"the selected row renders its one-line description directly beneath it",
+);
+assert.doesNotMatch(
+	toolOutput,
+	/Hides MCP results, shows a status summary, or previews their payload\./,
+	"an unselected row does not render its description",
+);
 assert.match(toolOutput, /^\s*MCP output\s+preview\s+\(Claude: hidden\)[ \t]*$/m, "a deviating fidelity enum names its Claude-authentic value");
 assert.doesNotMatch(toolOutput, /[╭╮╰╯│]/, "Tool output rows are unboxed");
 assert.ok(toolOutput.includes("Enter/Space to change · Esc to back"), "enum rows render the change footer");
+const naturalToolOutputLines = toolOutput.split("\n");
+assert.ok(naturalToolOutputLines.length < 35, "a Section without terminal dimensions keeps its natural framed height");
+assert.match(naturalToolOutputLines[0], /^─{5,}$/, "the naturally sized Section opens with the accent rule");
+assert.match(naturalToolOutputLines.at(-1) ?? "", /^─{5,}$/, "the naturally sized Section closes with the accent rule");
+
+const filledSectionScreen = new ClaudifyScreen(
+	{ requestRender() {}, terminal: { rows: 40, columns: 100 } } as any,
+	theme,
+	keybindings as any,
+	() => {},
+	undefined,
+	undefined,
+	pickerCandidates,
+);
+for (let index = 0; index < 4; index++) filledSectionScreen.handleInput("down");
+filledSectionScreen.handleInput("enter");
+const filledSectionLines = stripAnsi(filledSectionScreen.render(100).join("\n")).split("\n");
+assert.equal(filledSectionLines.length, 35, "a Section with a selected-row description still fills to terminal.rows minus the reserve");
+assert.match(filledSectionLines[0], /^─{5,}$/, "the filled Section opens with the accent rule");
+assert.match(filledSectionLines.at(-1) ?? "", /^─{5,}$/, "the filled Section closes with the accent rule");
+assert.match(filledSectionLines.at(-2) ?? "", /Enter\/Space to change/, "the filled Section footer stays directly above the closing rule");
+assert.equal(filledSectionLines[filledSectionLines.length - 3], "", "the selected-row description reduces fill without displacing the footer");
 
 settingsScreen.handleInput("down");
+const selectedMcpOutput = render(settingsScreen);
+assert.match(
+	selectedMcpOutput,
+	/^[ \t]+Hides MCP results, shows a status summary, or previews their payload\.[ \t]*$/m,
+	"moving selection renders the new row's description",
+);
+assert.doesNotMatch(
+	selectedMcpOutput,
+	/Keeps pi backgrounds, clears them, or outlines tool rows horizontally\./,
+	"moving selection removes the previous row's description",
+);
 settingsScreen.handleInput("right");
 assert.match(render(settingsScreen), /^\s*❯ MCP output\s+hidden\s+✓ Claude[ \t]*$/m, "an authentic fidelity enum renders its Claude marker");
 settingsScreen.handleInput("up");
