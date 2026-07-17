@@ -30,7 +30,12 @@ export interface TranscriptLineOptions {
 	dedentWorkedLine?: boolean;
 }
 
-export const DEFAULT_HIDDEN_THINKING_LABEL = "Pondering...";
+// Claude Code shows no label here at all (it renders no hidden-thinking block);
+// pi requires one. "Thinking..." is pi's own default — plain wording that reads as
+// a fixed placeholder, not a claudify rotating-verb value. It cannot rotate: pi's
+// setHiddenThinkingLabel is global across all collapsed blocks (see CLFY-26 capture,
+// docs/plans/2026-07-17-cc-thinking-surfaces.md).
+export const DEFAULT_HIDDEN_THINKING_LABEL = "Thinking...";
 
 /** Claude Code prefixes user messages with ❯ and no box. */
 export const DEFAULT_USER_PREFIX = "❯";

@@ -248,7 +248,7 @@ for (const [label, value] of [
 	["Assistant prefix", "⏺"],
 	["Thinking prefix", "✻"],
 	["Message spacing", "comfortable"],
-	["Hidden thinking label", "Pondering..."],
+	["Hidden thinking label", "Thinking..."],
 ]) {
 	assert.ok(messages.includes(label) && messages.includes(value), `Messages renders ${label} with its effective value`);
 }
