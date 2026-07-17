@@ -897,12 +897,12 @@ function workedVerbs(): readonly string[] {
 	return resolveWorkedVerbs(settings.workedVerbs, mode);
 }
 
-function workedDurationText(ms: number, seed?: number): string {
-	return `${WORKED_LINE_FG}${formatWorkedLine(ms, { seed, verbs: workedVerbs() })}${RESET}`;
+function workedDurationText(ms: number, seed?: number, verbs: readonly string[] = workedVerbs()): string {
+	return `${WORKED_LINE_FG}${formatWorkedLine(ms, { seed, verbs })}${RESET}`;
 }
 
-function inlineWorkedDurationText(ms: number, seed?: number): string {
-	return workedDurationText(ms, seed);
+function inlineWorkedDurationText(ms: number, seed?: number, verbs?: readonly string[]): string {
+	return workedDurationText(ms, seed, verbs);
 }
 
 function isWorkedDurationLine(line: string): boolean {
@@ -926,13 +926,17 @@ function hasWorkedDurationLine(message: any): boolean {
 	});
 }
 
-function appendWorkedDurationLine(message: any, durationMs: number): void {
+export function appendWorkedDurationLine(message: any, durationMs: number, seed?: number, verbs?: readonly string[]): void {
 	if (!message || message.role !== "assistant" || !Array.isArray(message.content)) return;
 	const textBlocks = message.content.filter((block: any) => block?.type === "text" && typeof block.text === "string" && block.text.trim());
 	const lastText = textBlocks[textBlocks.length - 1];
 	if (!lastText) return;
 	const text = lastText.text.includes(WORKED_DURATION_GLYPH) ? stripWorkedDurationLine(lastText.text) : lastText.text;
-	lastText.text = `${text.trimEnd()}\n\n${inlineWorkedDurationText(durationMs)}`;
+	// Seed the verb with the turn's start timestamp: stable across repaints (baked
+	// in here once at message_end), yet varies per turn. A seedless call pins the
+	// verb to pool[0] forever (CLFY-24); a duration-derived seed would cluster
+	// short turns on the same few verbs, so the start time is the right choice.
+	lastText.text = `${text.trimEnd()}\n\n${inlineWorkedDurationText(durationMs, seed, verbs)}`;
 }
 
 function messageChromeCacheKey(settings: MessageChromeSettings, kind: "assistant" | "thinking"): string {
@@ -3674,7 +3678,7 @@ function registerThinkingLabels(pi: ExtensionAPI): void {
 				// reliable than the spinner because pi removes the loader on agent_end,
 				// and more reliable than component monkey-patching when extensions are
 				// loaded from a different package instance than the running TUI.
-				appendWorkedDurationLine(message, durationMs);
+				appendWorkedDurationLine(message, durationMs, started);
 			}
 			currentAssistantMessageStartMs = undefined;
 		}
