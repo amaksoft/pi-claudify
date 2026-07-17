@@ -443,6 +443,7 @@ verbScreen.handleInput("enter");
 const spinnerVerbRows = render(verbScreen);
 assert.ok(spinnerVerbRows.includes("While working"), "Spinner renders the Spinner verbs editor under While working");
 assert.ok(spinnerVerbRows.includes("After finishing"), "Spinner renders the Worked verbs editor under After finishing");
+assert.ok(spinnerVerbRows.includes("Warm shimmer"), "Spinner renders the Warm shimmer toggle");
 assert.match(spinnerVerbRows, /While working\s+0 custom · append/, "Spinner verbs summarize their custom count and effective mode");
 assert.match(spinnerVerbRows, /After finishing\s+0 custom · append/, "Worked verbs summarize their custom count and effective mode");
 

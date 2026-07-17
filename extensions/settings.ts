@@ -29,6 +29,7 @@ export interface SettingsFile {
 	themeAdaptive?: boolean;
 	spinnerColor?: string;
 	spinnerStatusColor?: string;
+	spinnerShimmer?: boolean;
 	spinnerVerbs?: string[];
 	spinnerVerbMode?: SpinnerVerbMode;
 	messageStyle?: MessageStyle;

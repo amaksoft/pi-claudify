@@ -4771,6 +4771,7 @@ export default function (pi: ExtensionAPI): void {
 							if (key === "userMessageBox") applyToolBackgroundMode(ctx.ui.theme);
 							if (key === "spinnerColor"
 								|| key === "spinnerStatusColor"
+								|| key === "spinnerShimmer"
 								|| key === "spinnerVerbs"
 								|| key === "spinnerVerbMode"
 								|| key === "themeAdaptive") {

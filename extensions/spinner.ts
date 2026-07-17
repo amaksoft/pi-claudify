@@ -26,6 +26,7 @@ interface SpinnerSettings {
 	verbColor: string;
 	statusColor: string;
 	verbs: readonly string[];
+	shimmer: boolean;
 }
 
 let _spinnerSettingsCache: { value: SpinnerSettings; expires: number } | null = null;
@@ -108,11 +109,16 @@ function readSpinnerSettings(): SpinnerSettings {
 			: "muted";
 	const customVerbs = Array.isArray(raw.spinnerVerbs) ? sanitizeSpinnerVerbs(raw.spinnerVerbs) : null;
 	const verbMode: SpinnerVerbMode = raw.spinnerVerbMode === "replace" ? "replace" : "append";
+	// CC's warm shimmer imposes its own fixed palette, so it only applies when the
+	// spinner is at its default color — a custom spinnerColor (or a live preview of
+	// one) means the user picked a static color and wins. Opt-out via spinnerShimmer.
+	const shimmer = raw.spinnerShimmer !== false && verbColor === "borderAccent";
 	const value: SpinnerSettings = {
 		adaptive,
 		verbColor,
 		statusColor,
 		verbs: resolveSpinnerVerbs(customVerbs, verbMode),
+		shimmer,
 	};
 	_spinnerSettingsCache = { value, expires: now + SPINNER_SETTINGS_TTL_MS };
 	return value;
@@ -142,8 +148,89 @@ function resolveThemeColor(theme: any, key: string, fallbackKey: string): string
 	return null;
 }
 
+// ---------------------------------------------------------------------------
+// CLFY-27: Claude Code's thinking-spinner shimmer.
+// Capture: docs/plans/2026-07-17-cc-thinking-surfaces.md. Two effects on the
+// spinner verb + glyph, both keyed to how long the current spell has run:
+//   1. a one-way warm hue escalation salmon → gold (the reporter's "wave"), and
+//   2. a ~3-char highlight sweeping right→left across the verb in the first ~15s.
+// CC emits 256-color indices; we match them for byte-fidelity. pi repaints the
+// spinner on every setWorkingMessage (setMessage → updateDisplay → requestRender),
+// so the sweep can animate at the refresh cadence independent of the glyph timer.
+const SHIMMER_BOLD = "\x1b[1m";
+const SHIMMER_SWEEP_FG = "\x1b[38;5;216m"; // #FFAF87 highlight window
+const SHIMMER_SWEEP_UNTIL_MS = 15_000;
+export const SHIMMER_PLATEAU_MS = 20_000;
+const SHIMMER_SWEEP_STEP_MS = 200; // ~5 char-steps/s
+const SHIMMER_SWEEP_GAP_STEPS = 5; // uniform pause between sweeps
+
+interface ShimmerStop { readonly atMs: number; readonly fg: string; readonly bold: boolean; }
+// Warm escalation, keyed to elapsed seconds (captured at effort=high on CC 2.1.212).
+const SHIMMER_STOPS: readonly ShimmerStop[] = [
+	{ atMs: 0, fg: "\x1b[38;5;174m", bold: false }, // #D78787 salmon
+	{ atMs: 13_000, fg: "\x1b[38;5;180m", bold: false }, // #D7AF87 tan
+	{ atMs: 14_000, fg: "\x1b[38;5;179m", bold: false }, // #D7AF5F
+	{ atMs: 15_000, fg: "\x1b[38;5;215m", bold: false }, // #FFAF5F orange
+	{ atMs: 17_000, fg: "\x1b[38;5;215m", bold: true }, // + bold
+	{ atMs: SHIMMER_PLATEAU_MS, fg: "\x1b[38;5;220m", bold: true }, // #FFD700 gold (plateau)
+];
+
+/** Base verb/glyph color + bold for the elapsed time (the "wave"). */
+export function shimmerBase(elapsedMs: number): { fg: string; bold: boolean } {
+	let stop = SHIMMER_STOPS[0];
+	for (const candidate of SHIMMER_STOPS) {
+		if (elapsedMs >= candidate.atMs) stop = candidate;
+		else break;
+	}
+	return { fg: stop.fg, bold: stop.bold };
+}
+
+/** Inclusive [start,end] char indices of the sweep highlight, or null (gap / past the sweep window). */
+export function shimmerSweep(verbLen: number, elapsedMs: number): { start: number; end: number } | null {
+	if (verbLen <= 0 || elapsedMs < 0 || elapsedMs >= SHIMMER_SWEEP_UNTIL_MS) return null;
+	const cycleSteps = verbLen + SHIMMER_SWEEP_GAP_STEPS;
+	const step = Math.floor(elapsedMs / SHIMMER_SWEEP_STEP_MS) % cycleSteps;
+	if (step >= verbLen) return null; // uniform gap between sweeps
+	const center = verbLen - 1 - step; // right → left
+	return { start: Math.max(0, center - 1), end: Math.min(verbLen - 1, center + 1) };
+}
+
+/** Wrap the verb in the escalated base color, bold at the plateau, with the sweep highlight. */
+export function colorizeShimmerVerb(verb: string, elapsedMs: number): string {
+	const chars = Array.from(verb);
+	const { fg, bold } = shimmerBase(elapsedMs);
+	const boldSeq = bold ? SHIMMER_BOLD : "";
+	const sweep = shimmerSweep(chars.length, elapsedMs);
+	if (!sweep) return `${boldSeq}${fg}${verb}${RESET}`;
+	let out = boldSeq;
+	for (let i = 0; i < chars.length; i++) {
+		out += (i >= sweep.start && i <= sweep.end ? SHIMMER_SWEEP_FG : fg) + chars[i];
+	}
+	return `${out}${RESET}`;
+}
+
+/** Base color for the leading glyph — bold + fg, matching the verb's escalation. */
+export function shimmerGlyphAnsi(elapsedMs: number): string {
+	const { fg, bold } = shimmerBase(elapsedMs);
+	return `${bold ? SHIMMER_BOLD : ""}${fg}`;
+}
+
+// Shared with the extension closure below: the anchor timestamp of the active
+// spell (0 = inactive) and whether shimmer is enabled. updateDisplay (a Loader
+// prototype method) reads these; the extension writes them on turn boundaries.
+let _shimmerAnchorMs = 0;
+let _shimmerEnabled = false;
+export function shimmerElapsedMs(): number {
+	return _shimmerAnchorMs > 0 ? Date.now() - _shimmerAnchorMs : -1;
+}
+function shimmerActive(): boolean {
+	return _shimmerEnabled && _shimmerAnchorMs > 0;
+}
+
 function applyThemeColors(theme: any): void {
-	const { adaptive, verbColor, statusColor } = readSpinnerSettings();
+	const settings = readSpinnerSettings();
+	const { adaptive, verbColor, statusColor } = settings;
+	_shimmerEnabled = settings.shimmer;
 
 	// Respond to runtime toggles (themeAdaptive or spinner color key changes)
 	// without restarting pi.
@@ -208,7 +295,8 @@ function unrefTimer(timer: ReturnType<typeof setTimeout> | null | undefined): vo
 	const message = typeof this.message === "string" && RAW_ANSI_RE.test(this.message)
 		? this.message
 		: this.messageColorFn(this.message);
-	const nextText = `${CLAUDE_ORANGE}${frame}${RESET} ${message}`;
+	const glyphColor = shimmerActive() ? shimmerGlyphAnsi(shimmerElapsedMs()) : CLAUDE_ORANGE;
+	const nextText = `${glyphColor}${frame}${RESET} ${message}`;
 	if ((this as any)[LOADER_LAST_TEXT] === nextText) return;
 	(this as any)[LOADER_LAST_TEXT] = nextText;
 	this.setText(nextText);
@@ -553,7 +641,9 @@ export default function (pi: ExtensionAPI) {
 			statusParts.push(`thought for ${Math.max(1, Math.round(thinkingStatus / 1000))}s`);
 		}
 
-		let message = `${CLAUDE_ORANGE}${currentVerb}…${RESET}`;
+		let message = shimmerActive()
+			? colorizeShimmerVerb(`${currentVerb}…`, elapsed)
+			: `${CLAUDE_ORANGE}${currentVerb}…${RESET}`;
 		if (statusParts.length > 0) {
 			message += statusText(` (${statusParts.join(" · ")})`);
 		}
@@ -572,6 +662,9 @@ export default function (pi: ExtensionAPI) {
 	}
 
 	function syncWorkingMessage(force = false): void {
+		// Anchor the shimmer to the same elapsed base buildWorkingMessage uses, so the
+		// glyph (read from _shimmerAnchorMs in updateDisplay) tracks the verb's escalation.
+		_shimmerAnchorMs = turnActive ? (agentStartTime || turnStartTime) : 0;
 		if (!activeCtx?.hasUI) return;
 		// Re-derive colors on every tick so Claudify screen color/status changes
 		// take effect within ~250 ms without waiting for the next pi event.
@@ -596,6 +689,12 @@ export default function (pi: ExtensionAPI) {
 
 	function getWorkingMessageIntervalMs(): number {
 		const elapsed = Date.now() - (agentStartTime || turnStartTime);
+		// While the shimmer escalates (and the sweep runs), refresh fast enough to
+		// animate it. Bounded to the escalation window — past the plateau the color is
+		// constant and the updateDisplay text-equality guard throttles re-renders anyway.
+		if (_shimmerEnabled && _shimmerAnchorMs > 0 && elapsed < SHIMMER_PLATEAU_MS + 500) {
+			return SHIMMER_SWEEP_STEP_MS;
+		}
 		const tokenCount = Math.max(0, Math.round(responseLength / 4));
 		// Keep ticking once per second even when idle so Claudify screen changes
 		// take effect within ~1s and elapsed-time crossover into the timer-on
@@ -679,6 +778,7 @@ export default function (pi: ExtensionAPI) {
 		stopRefreshLoop();
 		clearCompletionTimer();
 		clearThoughtStatusTimer();
+		_shimmerAnchorMs = 0;
 		agentStartTime = 0;
 		turnStartTime = 0;
 		thinkingStatus = null;
@@ -776,6 +876,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("turn_end", async (_event, ctx) => {
 		turnActive = false;
+		_shimmerAnchorMs = 0; // the "✻ Worked for …" completion line is not shimmered
 		activeCtx = ctx;
 		applyThemeColors(ctx.ui?.theme);
 		const turnId = activeTurnId;
