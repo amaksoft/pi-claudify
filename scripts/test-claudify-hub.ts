@@ -222,6 +222,12 @@ settingsScreen.handleInput("◆");
 settingsScreen.handleInput("enter");
 assert.match(render(settingsScreen), /^\s*❯ Assistant prefix\s+◆/m, "submitting text updates the assembled render");
 assert.equal(readWrittenSettings().assistantPrefix, "◆", "sanitized text persists immediately");
+for (let index = 0; index < 4; index++) settingsScreen.handleInput("down");
+settingsScreen.handleInput("enter");
+settingsScreen.handleInput("345678");
+settingsScreen.handleInput("enter");
+assert.equal(readWrittenSettings().userMessageBox, "#345678", "a custom user-message background commits as normalized hex");
+assert.ok(changedKeys.includes("userMessageBox"), "a custom user-message background reaches the host for live reflection");
 
 assert.deepEqual(DIFF_PRESET_KEYS, ["default", "midnight", "neon"], "the Picker consumes the renderer's exact diff preset keys");
 assert.ok(COMMON_COLOR_KEYS.includes("borderAccent") && COMMON_COLOR_KEYS.includes("muted"), "the Spinner Picker consumes the renderer's common color keys");
@@ -255,7 +261,14 @@ pickerScreen.handleInput("enter");
 assert.equal(readWrittenSettings().themeAdaptive, false, "Theme adaptive commits immediately");
 pickerScreen.handleInput("down");
 pickerScreen.handleInput("enter");
+pickerScreen.handleInput("theme");
+pickerScreen.handleInput("enter");
 assert.equal(readWrittenSettings().accentColor, "theme", "Accent commits immediately");
+pickerScreen.handleInput("enter");
+pickerScreen.handleInput("12abef");
+pickerScreen.handleInput("enter");
+assert.equal(readWrittenSettings().accentColor, "#12ABEF", "a custom accent commits as normalized hex");
+assert.deepEqual(pickerChanges.at(-1), ["accentColor", "#12ABEF"], "a custom accent reaches the host for live reflection");
 pickerScreen.handleInput("down");
 pickerScreen.handleInput("enter");
 assert.equal(readWrittenSettings().diffPalette, "theme", "Diff palette commits immediately");
@@ -761,7 +774,7 @@ assert.match(render(resilientScreen), new RegExp(missingKey), "the unresolved ke
 
 // --- Claude accent override (docs/plans/2026-07-16-cc-accent-color.md) -------
 
-const { applyAccentOverride } = await import("../extensions/index.ts");
+const { applyAccentOverride, applyToolBackgroundMode } = await import("../extensions/index.ts");
 const { clearSettingsCache } = await import("../extensions/settings.ts");
 
 // Fakes mirror real pi themes: fgColors hold READY-MADE ANSI ESCAPES (theme.fg
@@ -786,6 +799,37 @@ clearSettingsCache();
 applyAccentOverride(darkFake);
 assert.equal(darkFake.fgColors.accent, PI_TEAL, "accentColor=theme restores the theme's own accent exactly");
 assert.equal(darkFake.fgColors.mdCode, PI_TEAL, "aliased keys restore exactly too");
+
+writeFileSync(settingsPath, JSON.stringify({ accentColor: "#123456" }));
+clearSettingsCache();
+applyAccentOverride(darkFake);
+assert.equal(darkFake.fgColors.accent, "\x1b[38;2;18;52;86m", "a custom accent is stored as a truecolor ANSI escape, never hex");
+assert.equal(darkFake.fgColors.mdCode, "\x1b[38;2;18;52;86m", "accent aliases follow a custom truecolor accent");
+assert.equal(darkFake.fgColors.mdListBullet, "\x1b[38;2;18;52;86m", "every captured accent alias follows the custom color");
+assert.doesNotMatch(darkFake.fgColors.accent, /#123456/, "custom accent hex never reaches fgColors");
+
+const custom256 = { mode: "256color", fgColors: { accent: "\x1b[38;5;73m", mdCode: "\x1b[38;5;73m", text: "\x1b[38;5;252m" } };
+applyAccentOverride(custom256);
+assert.equal(custom256.fgColors.accent, "\x1b[38;5;23m", "a custom accent uses pi's rgbTo256 quantizer in 256-color mode");
+assert.equal(custom256.fgColors.mdCode, "\x1b[38;5;23m", "accent aliases follow the quantized custom accent");
+assert.doesNotMatch(custom256.fgColors.accent, /#123456/, "custom accent hex never reaches 256-color fgColors");
+
+// pi hands the same logical theme over as BOTH the instance and a forwarding
+// Proxy. Snapshotting per object identity left the second arrival with no record
+// of the theme's real accent, so accentColor="theme" restored the override
+// forever and pi's own accent was unreachable without restarting pi.
+writeFileSync(settingsPath, JSON.stringify({ accentColor: "#123456" }));
+clearSettingsCache();
+const proxiedInstance: any = { mode: "truecolor", fgColors: { accent: PI_TEAL, mdCode: PI_TEAL, text: "\x1b[38;2;212;212;212m" } };
+const forwardingProxy: any = new Proxy(proxiedInstance, {});
+applyAccentOverride(proxiedInstance);
+applyAccentOverride(forwardingProxy);
+assert.equal(proxiedInstance.fgColors.accent, "\x1b[38;2;18;52;86m", "a custom accent survives a render through pi's forwarding Proxy");
+writeFileSync(settingsPath, JSON.stringify({ accentColor: "theme" }));
+clearSettingsCache();
+applyAccentOverride(forwardingProxy);
+assert.equal(proxiedInstance.fgColors.accent, PI_TEAL, "accentColor=theme restores pi's own accent even when the Proxy identity applies the change");
+assert.equal(proxiedInstance.fgColors.mdCode, PI_TEAL, "accent aliases restore through the Proxy identity too");
 
 writeFileSync(settingsPath, "{}");
 clearSettingsCache();
@@ -812,6 +856,29 @@ assert.match(render(accentScreen), /Accent\s+claude/, "the Theme Section exposes
 // --- User-message box (docs/plans/2026-07-16-cc-user-message-box.md) ---------
 
 const { applyUserMessageBox } = await import("../extensions/index.ts");
+
+writeFileSync(settingsPath, JSON.stringify({ userMessageBox: "#123456" }));
+clearSettingsCache();
+const customBoxTruecolorTheme = {
+	mode: "truecolor",
+	bgColors: { userMessageBg: "\x1b[48;2;52;53;65m" },
+	getFgAnsi: () => "\x1b[38;2;128;128;128m",
+};
+applyToolBackgroundMode(customBoxTruecolorTheme);
+const customBoxTruecolor = applyUserMessageBox(["❯ custom"], "#123456", 80);
+assert.match(customBoxTruecolor[0], /^\x1b\[48;2;18;52;86m/, "a custom user-message background is stored and rendered as a truecolor ANSI escape");
+assert.doesNotMatch(customBoxTruecolor[0], /#123456/, "custom background hex never reaches rendered output");
+
+const customBox256Theme = {
+	mode: "256color",
+	bgColors: { userMessageBg: "\x1b[48;5;236m" },
+	getFgAnsi: () => "\x1b[38;5;244m",
+};
+applyToolBackgroundMode(customBox256Theme);
+const customBox256 = applyUserMessageBox(["❯ custom"], "#123456", 80);
+assert.match(customBox256[0], /^\x1b\[48;5;23m/, "a custom user-message background uses pi's rgbTo256 quantizer in 256-color mode");
+assert.doesNotMatch(customBox256[0], /#123456/, "custom background hex never reaches 256-color output");
+applyToolBackgroundMode(customBoxTruecolorTheme);
 
 const boxedClaude = applyUserMessageBox(["❯ first line of the message", "  wrapped tail", ""], "claude", 80);
 assert.equal(

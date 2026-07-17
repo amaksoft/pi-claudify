@@ -14,6 +14,7 @@ import {
 	AssistantMessageComponent,
 	CompactionSummaryMessageComponent,
 	CustomMessageComponent,
+	Theme as PiTheme,
 	ToolExecutionComponent,
 	UserMessageComponent,
 	createBashTool,
@@ -43,7 +44,7 @@ import * as Diff from "diff";
 import type { BundledLanguage, BundledTheme } from "shiki";
 
 import { ClaudifyScreen } from "./claudify-screen.ts";
-import { installClaudeFooter, patchEditorBorderColor } from "./footer.ts";
+import { installClaudeFooter, normalizeHexColor, patchEditorBorderColor } from "./footer.ts";
 import {
 	describeInspectionsActive,
 	describeInspectionsDone,
@@ -199,12 +200,18 @@ const CC_ACCENT_ANSI = {
 	dark: { truecolor: "\x1b[38;2;177;185;249m", ansi256: "\x1b[38;5;147m" },
 	light: { truecolor: "\x1b[38;2;87;105;247m", ansi256: "\x1b[38;5;63m" },
 } as const;
-const CC_ACCENT_VALUES: readonly string[] = [
+// Every accent escape claudify has imposed on a theme. pi hands us the theme as
+// both the instance and a forwarding Proxy, so a second object identity arrives
+// with our override already installed; the snapshot guard must recognize it as
+// ours, or it memorizes the override as the theme's own accent and accentColor=
+// "theme" restores the override forever. A fixed CC list only covered the two
+// captured lavenders — a custom hex stranded itself that way.
+const appliedAccentValues = new Set<string>([
 	CC_ACCENT_ANSI.dark.truecolor,
 	CC_ACCENT_ANSI.dark.ansi256,
 	CC_ACCENT_ANSI.light.truecolor,
 	CC_ACCENT_ANSI.light.ansi256,
-];
+]);
 
 interface AccentSnapshot {
 	readonly original: string;
@@ -215,6 +222,17 @@ interface AccentSnapshot {
 }
 
 const originalThemeAccent = new WeakMap<object, AccentSnapshot>();
+
+/** pi hands the same logical theme to us as both the instance and a forwarding
+ * Proxy — two object identities sharing one fgColors container. Keying the
+ * snapshot on the theme object gave each identity its own entry, so whichever
+ * arrived second saw the override already installed and never recorded the
+ * theme's real accent; accentColor="theme" then had nothing to restore. The
+ * container forwards through the Proxy, so it identifies the logical theme. */
+function themeAccentIdentity(theme: unknown): object | null {
+	const fgColors = (theme as any)?.fgColors;
+	return fgColors && typeof fgColors === "object" ? (fgColors as object) : null;
+}
 
 function themeFgKeys(theme: unknown): string[] {
 	const fgColors = (theme as any)?.fgColors;
@@ -249,6 +267,28 @@ function colorToRgb(value: string): { r: number; g: number; b: number } | null {
 	return null;
 }
 
+type CustomHexColor = `#${string}`;
+
+function storedHexColor(value: unknown): CustomHexColor | null {
+	if (typeof value !== "string") return null;
+	return normalizeHexColor(value) as CustomHexColor | null;
+}
+
+function ansiFromHex(theme: unknown, hex: CustomHexColor, layer: "foreground" | "background"): string | null {
+	const rgb = colorToRgb(hex);
+	if (!rgb) return null;
+	const normalized = `#${[rgb.r, rgb.g, rgb.b].map((channel) => channel.toString(16).padStart(2, "0")).join("")}`;
+	const mode = (theme as any)?.mode === "256color" ? "256color" : "truecolor";
+	// Constructing a minimal pi Theme delegates 256-color conversion to pi's
+	// own rgbTo256 implementation instead of maintaining a second quantizer.
+	const converter = new PiTheme(
+		{ accent: normalized, thinkingXhigh: normalized } as any,
+		{ userMessageBg: normalized } as any,
+		mode,
+	);
+	return layer === "foreground" ? converter.getFgAnsi("accent") : converter.getBgAnsi("userMessageBg");
+}
+
 function isDarkTheme(theme: unknown): boolean {
 	const rgb = colorToRgb(getThemeFg(theme, "text") ?? "");
 	if (!rgb) return true;
@@ -260,19 +300,28 @@ export function applyAccentOverride(theme: unknown): void {
 	if (!theme || typeof theme !== "object") return;
 	const current = getThemeFg(theme, "accent");
 	if (current === undefined) return;
-	// pi exposes the theme both as the instance and via a forwarding Proxy; never
-	// memorize an already-overridden value as the theme's own accent.
-	if (!originalThemeAccent.has(theme) && !CC_ACCENT_VALUES.includes(current)) {
+	// Snapshot per logical theme (its fgColors container), not per object identity,
+	// so the instance and its forwarding Proxy share one record. Never memorize an
+	// already-overridden value as the theme's own accent.
+	const identity = themeAccentIdentity(theme) ?? theme;
+	if (!originalThemeAccent.has(identity) && !appliedAccentValues.has(current)) {
 		const aliasKeys = themeFgKeys(theme)
 			.filter((key) => key !== "accent" && getThemeFg(theme, key) === current);
-		originalThemeAccent.set(theme, { original: current, aliasKeys });
+		originalThemeAccent.set(identity, { original: current, aliasKeys });
 	}
-	const snapshot = originalThemeAccent.get(theme);
-	const wantClaude = readSettings().values.accentColor !== "theme";
+	const snapshot = originalThemeAccent.get(identity);
+	const accentColor = readSettings().values.accentColor;
+	const customAccent = storedHexColor(accentColor);
 	const colorMode = (theme as any).mode === "256color" ? "ansi256" : "truecolor";
-	const target = wantClaude
-		? CC_ACCENT_ANSI[isDarkTheme(theme) ? "dark" : "light"][colorMode]
-		: snapshot?.original ?? current;
+	const target = accentColor === "theme"
+		? snapshot?.original ?? current
+		: customAccent
+			? ansiFromHex(theme, customAccent, "foreground")
+				?? CC_ACCENT_ANSI[isDarkTheme(theme) ? "dark" : "light"][colorMode]
+			: CC_ACCENT_ANSI[isDarkTheme(theme) ? "dark" : "light"][colorMode];
+	// Register only values we impose, never a restored original: a theme whose own
+	// accent happens to equal some other theme's custom color must still snapshot.
+	if (accentColor !== "theme") appliedAccentValues.add(target);
 	if (current !== target) setThemeFg(theme, "accent", target);
 	for (const key of snapshot?.aliasKeys ?? []) {
 		if (getThemeFg(theme, key) !== target) setThemeFg(theme, key, target);
@@ -289,6 +338,7 @@ const FG_DEFAULT_ANSI = "\x1b[39m";
 const originalUserMessageBg = new WeakMap<object, string>();
 let userBoxThemeBg: string | null = null;
 let userBoxThemePrefixFg: string | null = null;
+let userBoxCustomBg: { hex: CustomHexColor; ansi: string } | null = null;
 
 function getThemeBg(theme: unknown, key: string): string | undefined {
 	const themeAny = theme as any;
@@ -305,8 +355,11 @@ function bgAnsiFromHex(hex: string): string | null {
 	return `\x1b[48;2;${r};${g};${b}m`;
 }
 
-function applyToolBackgroundMode(theme: unknown): void {
+export function applyToolBackgroundMode(theme: unknown): void {
 	syncToolBackgroundMode();
+	const customHex = storedHexColor(readSettings().values.userMessageBox);
+	const customAnsi = customHex ? ansiFromHex(theme, customHex, "background") : null;
+	userBoxCustomBg = customHex && customAnsi ? { hex: customHex, ansi: customAnsi } : null;
 	// Remember the theme's own user-message background before blanking it: the
 	// user-message box (theme mode) paints with the theme's value even though
 	// pi's markdown background stays stripped in every mode.
@@ -1130,11 +1183,12 @@ function cleanUserMessageLine(line: string): string {
 
 const USER_PREFIX_WIDTH = visibleWidth(`${DEFAULT_USER_PREFIX} `);
 
-type UserMessageBoxMode = "theme" | "claude" | "off";
+type UserMessageBoxMode = "theme" | "claude" | "off" | CustomHexColor;
 
 function userMessageBoxMode(): UserMessageBoxMode {
 	const value = readSettings().values.userMessageBox;
-	return value === "off" || value === "claude" ? value : "theme";
+	if (value === "theme" || value === "claude" || value === "off") return value;
+	return storedHexColor(value) ?? "theme";
 }
 
 // Like cleanUserMessageLine, but without the transparent-background wrappers —
@@ -1150,8 +1204,14 @@ function cleanBoxedUserMessageLine(line: string): string {
  * userMessageBg/dim; claude mode uses the captured CC values.
  * docs/plans/2026-07-16-cc-user-message-box.md.
  */
-export function applyUserMessageBox(lines: string[], mode: "theme" | "claude", maxWidth: number): string[] {
-	const bg = (mode === "theme" ? userBoxThemeBg : null) ?? CC_USER_BOX_BG;
+export function applyUserMessageBox(lines: string[], mode: Exclude<UserMessageBoxMode, "off">, maxWidth: number): string[] {
+	const bg = mode === "theme"
+		? userBoxThemeBg ?? CC_USER_BOX_BG
+		: mode === "claude"
+			? CC_USER_BOX_BG
+			: userBoxCustomBg?.hex === mode
+				? userBoxCustomBg.ansi
+				: CC_USER_BOX_BG;
 	const prefixFg = (mode === "theme" ? userBoxThemePrefixFg : null) ?? CC_USER_BOX_PREFIX_FG;
 	const textFg = mode === "claude" ? CC_USER_BOX_TEXT_FG : "";
 	const contentIndexes = lines.flatMap((line, index) => (stripAnsi(line).trim() ? [index] : []));
