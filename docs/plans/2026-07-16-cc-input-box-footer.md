@@ -83,6 +83,25 @@ like everything else):
 Color modes: `colored` (per-segment palette above), `singleColor` (one truecolor hex for
 everything), `monochrome` (no SGR at all).
 
+### Divergence: an effort suffix on the model segment (2026-07-25)
+
+The script has no effort segment and Claude Code shows effort only in its banner text
+("Fable 5 with medium effort"), so the footer had none. pi does expose the level live
+through `ctx.getThinkingLevel()` (`off | minimal | low | medium | high | xhigh | max`),
+and it is worth seeing at a glance, so the model segment now reads `Fable 5 · high` —
+the compact form rather than the banner's prose, to spend the fewest columns. Hidden when
+the level is `off` or unavailable, and behind `footerEffort` (default on, Footer section).
+
+### Divergence: Directory names the repository, not the folder (2026-07-25)
+
+The script's `basename $PWD` is faithful but degenerate inside a git worktree, where the
+folder is named after the branch — the footer read
+`sim-276-badge-dynamic-type │ ⎇ sim-276-badge-dynamic-type │ …`. Claudify instead resolves
+the *main* repository's name via `git rev-parse --path-format=absolute --git-common-dir`
+(a linked worktree reports the main checkout's `.git`), giving `simpler │ ⎇ sim-276-…`.
+Outside a repo, or if git fails, the segment falls back to the cwd basename, matching the
+script. The probe is memoized per cwd because `render()` runs every frame.
+
 Bar grammar: 10 blocks, `▓` filled / `░` empty, `filled = round(pct/10)`.
 
 ## Provider quota-source verification
