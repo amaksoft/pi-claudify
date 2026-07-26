@@ -631,8 +631,12 @@ export class ClaudeFooterComponent {
 	}
 }
 
-/** Install (or uninstall) the Claude-style footer for the current session. */
-export function installClaudeFooter(ctx: any): void {
+/**
+ * Install (or uninstall) the Claude-style footer for the current session. `pi` is
+ * the extension API; only the thinking level is read from it, so omitting it just
+ * drops the effort suffix.
+ */
+export function installClaudeFooter(ctx: any, pi?: any): void {
 	if (!ctx?.hasUI || typeof ctx.ui?.setFooter !== "function") return;
 	if (resolveFooterSettings(readSettings().values).style !== "claude") {
 		ctx.ui.setFooter(undefined);
@@ -682,7 +686,9 @@ export function installClaudeFooter(ctx: any): void {
 			},
 			getEffort() {
 				try {
-					const level: unknown = ctx.getThinkingLevel?.();
+					// The thinking level hangs off pi's ExtensionAPI, not the per-event
+					// ExtensionContext the rest of these sources read.
+					const level: unknown = pi?.getThinkingLevel?.();
 					return typeof level === "string" && level && level !== "off" ? level : null;
 				} catch {
 					return null;
