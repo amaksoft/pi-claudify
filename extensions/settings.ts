@@ -43,6 +43,7 @@ export interface SettingsFile {
 	footerColorMode?: "colored" | "single" | "monochrome";
 	footerColor?: string;
 	footerUsageBar?: boolean;
+	footerEffort?: boolean;
 	editorBorder?: "gray" | "thinking";
 	accentColor?: "claude" | "theme" | `#${string}`;
 	userMessageBox?: "theme" | "claude" | "off" | `#${string}`;

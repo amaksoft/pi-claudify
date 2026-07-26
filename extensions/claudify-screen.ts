@@ -79,6 +79,7 @@ type EditableSettingsKey =
 	| "footerColorMode"
 	| "footerColor"
 	| "footerUsageBar"
+	| "footerEffort"
 	| "editorBorder"
 	| "accentColor"
 	| "userMessageBox";
@@ -380,6 +381,13 @@ const FOOTER_ROWS: readonly ImmediateRowDefinition[] = [
 		key: "footerUsageBar",
 		label: "Usage bar",
 		description: "Shows a ten-block bar beside known provider usage percentages.",
+		defaultValue: true,
+	},
+	{
+		kind: "boolean",
+		key: "footerEffort",
+		label: "Effort",
+		description: "Appends pi's thinking level to the model name, as in \"Fable 5 · high\".",
 		defaultValue: true,
 	},
 	{

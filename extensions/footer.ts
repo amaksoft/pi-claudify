@@ -1,3 +1,6 @@
+import { execFileSync } from "node:child_process";
+import { basename, dirname } from "node:path";
+
 import { Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 
@@ -16,6 +19,7 @@ export interface FooterSettings {
 	readonly colorMode: FooterColorMode;
 	readonly color: string;
 	readonly usageBar: boolean;
+	readonly effort: boolean;
 	readonly editorBorder: EditorBorderMode;
 }
 
@@ -91,6 +95,7 @@ export function resolveFooterSettings(values: SettingsFile): FooterSettings {
 		colorMode,
 		color,
 		usageBar: values.footerUsageBar !== false,
+		effort: values.footerEffort !== false,
 		editorBorder: values.editorBorder === "thinking" ? "thinking" : "gray",
 	};
 }
@@ -388,6 +393,8 @@ export interface FooterLineData {
 	/** null outside a git repo — the segment is omitted, like the script. */
 	readonly branch: string | null;
 	readonly modelName: string | null;
+	/** pi's thinking level, or null when thinking is off or the model has none. */
+	readonly effort: string | null;
 	/** Percent of the current model's context window; null while tokens are unknown. */
 	readonly contextPercent: number | null;
 	readonly usage: readonly UsageWindowData[];
@@ -483,7 +490,12 @@ export function buildFooterLine(data: FooterLineData, settings: FooterSettings):
 
 	if (data.directory) segments.push(paint(palette.dir, data.directory));
 	if (data.branch) segments.push(paint(palette.branch, `⎇ ${data.branch}`));
-	if (data.modelName) segments.push(paint(palette.model, data.modelName));
+	if (data.modelName) {
+		// Claude Code spells this out ("Fable 5 with high effort") in its banner, never in
+		// the statusline; the compact suffix keeps the segment short on narrow terminals.
+		const effort = settings.effort && data.effort ? ` · ${data.effort}` : "";
+		segments.push(paint(palette.model, `${data.modelName}${effort}`));
+	}
 
 	const contextPercent = data.contextPercent === null ? null : Math.floor(Math.max(0, Math.min(100, data.contextPercent)));
 	const contextColor = contextPercent !== null && contextPercent > 75
@@ -507,6 +519,44 @@ export function buildFooterLine(data: FooterLineData, settings: FooterSettings):
 	return `  ${segments.join(separator)}`;
 }
 
+/**
+ * Deliberate divergence from the captured statusline, which prints
+ * `basename $PWD`: inside a git worktree the folder is named after the branch,
+ * so the first segment repeated the ⎇ segment verbatim. The main repository's
+ * name is stable across worktrees and keeps the segment informative.
+ */
+export function projectNameFrom(cwd: string, gitCommonDir: string | null): string {
+	const trimmedCwd = cwd.replace(/\/+$/, "");
+	const fallback = basename(trimmedCwd) || cwd;
+	if (!gitCommonDir) return fallback;
+	const commonDir = gitCommonDir.replace(/\/+$/, "");
+	const leaf = basename(commonDir);
+	const name = leaf === ".git" ? basename(dirname(commonDir)) : leaf.replace(/\.git$/, "");
+	return name || fallback;
+}
+
+// render() runs every frame, so the git probe happens once per directory.
+const projectNames = new Map<string, string>();
+
+function projectName(cwd: string): string {
+	const cached = projectNames.get(cwd);
+	if (cached !== undefined) return cached;
+	let commonDir: string | null = null;
+	try {
+		commonDir = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], {
+			cwd,
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "ignore"],
+			timeout: 2_000,
+		}).trim() || null;
+	} catch {
+		// Not a repository, or git is unavailable — the cwd basename still reads fine.
+	}
+	const name = projectNameFrom(cwd, commonDir);
+	projectNames.set(cwd, name);
+	return name;
+}
+
 /** The slice of pi's FooterDataProvider the footer reads; structural so tests can fake it. */
 export interface FooterDataLike {
 	getGitBranch(): string | null;
@@ -518,6 +568,7 @@ export interface FooterSources {
 	getDirectory(): string;
 	getBranch(footerData: FooterDataLike): string | null;
 	getModelName(): string | null;
+	getEffort(): string | null;
 	getContextPercent(): number | null;
 	getUsage(): readonly UsageWindowData[];
 	dispose?(): void;
@@ -559,6 +610,7 @@ export class ClaudeFooterComponent {
 				directory: this.sources.getDirectory(),
 				branch: this.sources.getBranch(this.footerData),
 				modelName: this.sources.getModelName(),
+				effort: this.sources.getEffort(),
 				contextPercent: this.sources.getContextPercent(),
 				usage: this.sources.getUsage(),
 			},
@@ -609,8 +661,7 @@ export function installClaudeFooter(ctx: any): void {
 			getDirectory() {
 				try {
 					const cwd: unknown = ctx.sessionManager?.getCwd?.();
-					const path = typeof cwd === "string" && cwd ? cwd : process.cwd();
-					return path.split("/").filter(Boolean).pop() ?? path;
+					return projectName(typeof cwd === "string" && cwd ? cwd : process.cwd());
 				} catch {
 					return "";
 				}
@@ -625,6 +676,14 @@ export function installClaudeFooter(ctx: any): void {
 			getModelName() {
 				try {
 					return ctx.model?.name || ctx.model?.id || null;
+				} catch {
+					return null;
+				}
+			},
+			getEffort() {
+				try {
+					const level: unknown = ctx.getThinkingLevel?.();
+					return typeof level === "string" && level && level !== "off" ? level : null;
 				} catch {
 					return null;
 				}

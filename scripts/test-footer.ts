@@ -25,6 +25,7 @@ const {
 	parseAnthropicUsage,
 	parseOpenAIUsage,
 	patchEditorBorderColor,
+	projectNameFrom,
 	ProviderUsageSource,
 	resolveFooterSettings,
 } = await import("../extensions/footer.ts");
@@ -55,11 +56,30 @@ assert.deepEqual(defaults, {
 	colorMode: "colored",
 	color: "#FF9200",
 	usageBar: true,
+	effort: true,
 	editorBorder: "gray",
 });
 assert.equal(resolveFooterSettings({ footerColor: "not-a-color" }).color, DEFAULT_FOOTER_COLOR, "invalid stored hex falls back");
 assert.equal(resolveFooterSettings({ footerStyle: "pi" }).style, "pi");
+assert.equal(resolveFooterSettings({}).effort, true, "the effort suffix defaults on");
+assert.equal(resolveFooterSettings({ footerEffort: false }).effort, false);
 assert.equal(resolveFooterSettings({ editorBorder: "thinking" }).editorBorder, "thinking");
+
+// --- projectNameFrom: the first segment names the repo, not the worktree -----
+
+assert.equal(
+	projectNameFrom("/Users/berto/Projects/worktrees/simpler/sim-276-badge", "/Users/berto/Projects/simpler/.git"),
+	"simpler",
+	"a linked worktree shows the main repository's name, not the branch-named folder",
+);
+assert.equal(
+	projectNameFrom("/Users/berto/Projects/claudify", "/Users/berto/Projects/claudify/.git"),
+	"claudify",
+	"the main checkout is unchanged",
+);
+assert.equal(projectNameFrom("/srv/repos/pi.git", "/srv/repos/pi.git"), "pi", "a bare repo drops the .git suffix");
+assert.equal(projectNameFrom("/tmp/scratch", null), "scratch", "outside a repo the segment stays the cwd basename");
+assert.equal(projectNameFrom("/tmp/scratch/", null), "scratch", "a trailing slash does not blank the segment");
 
 // --- buildFooterLine: the statusline script's grammar, byte-for-byte ---------
 
@@ -78,6 +98,7 @@ const fullData = {
 	directory: "claudify",
 	branch: "master",
 	modelName: "Fable 5",
+	effort: null,
 	contextPercent: 10,
 	usage: [
 		{ label: "Usage", percent: 10, resetsAt: Date.UTC(2026, 6, 16, 18, 40) },
@@ -92,6 +113,25 @@ assert.equal(
 		+ `${CYAN}Ctx: 10%${RESET}${SEP}${LEVEL_1}Usage: 10% ▓░░░░░░░░░ → Reset: 06:40 PM${RESET}${SEP}`
 		+ `${LEVEL_7}Week: 70% ▓▓▓▓▓▓▓░░░ → Reset: 08:00 PM${RESET}`,
 	"colored mode reproduces the captured context and provider-usage grammar",
+);
+
+// The effort suffix rides inside the model segment, sharing its color.
+assert.ok(
+	buildFooterLine({ ...fullData, effort: "high" }, colored).includes(`${YELLOW}Fable 5 · high${RESET}`),
+	"effort renders as a compact suffix on the model segment",
+);
+assert.ok(
+	buildFooterLine({ ...fullData, effort: null }, colored).includes(`${YELLOW}Fable 5${RESET}`),
+	"no reported effort leaves the model segment untouched",
+);
+assert.ok(
+	buildFooterLine({ ...fullData, effort: "high" }, { ...colored, effort: false }).includes(`${YELLOW}Fable 5${RESET}`),
+	"footerEffort off hides the suffix",
+);
+assert.doesNotMatch(
+	buildFooterLine({ ...fullData, modelName: null, effort: "high" }, colored),
+	/high/,
+	"the suffix never renders without a model name to attach it to",
 );
 
 // Context threshold tiers (≤50 cyan, ≤75 yellow, >75 the script's LEVEL_9 red).
@@ -336,6 +376,7 @@ const component = new ClaudeFooterComponent(fakeFooterData, {
 	getDirectory: () => "project",
 	getBranch: (data) => data.getGitBranch(),
 	getModelName: () => "Fable 5",
+	getEffort: () => null,
 	getContextPercent: () => 25,
 	getUsage: () => [{ label: "Week", percent: 50, resetsAt: Date.UTC(2026, 6, 20, 20, 0) }],
 });
@@ -347,6 +388,7 @@ assert.ok(component.render(20)[0].replace(/\x1b\[[0-9;]*m/g, "").length <= 20, "
 // --- installClaudeFooter ------------------------------------------------------
 
 setSettings({});
+let thinkingLevel = "off";
 const setFooterCalls: unknown[] = [];
 const fakeCtx = {
 	hasUI: true,
@@ -354,6 +396,7 @@ const fakeCtx = {
 	sessionManager: { getCwd: () => join(sandbox, "workspace") },
 	model: { name: "Fable 5", id: "claude-fable-5", reasoning: true },
 	getContextUsage: () => ({ tokens: 5_000, contextWindow: 200_000, percent: 2.5 }),
+	getThinkingLevel: () => thinkingLevel,
 };
 
 installClaudeFooter(fakeCtx);
@@ -366,6 +409,20 @@ const installed = (setFooterCalls[0] as (t: unknown, th: unknown, fd: unknown) =
 );
 const liveLine = installed.render(200)[0].replace(/\x1b\[[0-9;]*m/g, "");
 assert.equal(liveLine, "  workspace │ Fable 5 │ Ctx: 2%", "live sources feed directory, model, and model-aware context");
+
+thinkingLevel = "high";
+assert.match(
+	installed.render(200)[0].replace(/\x1b\[[0-9;]*m/g, ""),
+	/Fable 5 · high/,
+	"pi's live thinking level rides along with the model name",
+);
+setSettings({ footerEffort: false });
+assert.doesNotMatch(
+	installed.render(200)[0].replace(/\x1b\[[0-9;]*m/g, ""),
+	/high/,
+	"toggling footerEffort off reflects on the next render, with no reinstall",
+);
+setSettings({});
 
 setSettings({ footerStyle: "pi" });
 installClaudeFooter(fakeCtx);
@@ -420,7 +477,7 @@ const footerIndex = CLAUDIFY_SECTIONS.findIndex((section) => section.id === "foo
 for (let i = 0; i < footerIndex; i += 1) screen.handleInput("down");
 screen.handleInput("enter");
 const sectionText = stripAnsi(screen.render(100).join("\n"));
-for (const label of ["Footer style", "Color mode", "Color", "Usage bar", "Input border"]) {
+for (const label of ["Footer style", "Color mode", "Color", "Usage bar", "Effort", "Input border"]) {
 	assert.match(sectionText, new RegExp(label), `Footer section shows the "${label}" row`);
 }
 assert.match(sectionText, /#FF9200/, "the color row shows the default hex");
