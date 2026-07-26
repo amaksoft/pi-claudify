@@ -396,10 +396,13 @@ const fakeCtx = {
 	sessionManager: { getCwd: () => join(sandbox, "workspace") },
 	model: { name: "Fable 5", id: "claude-fable-5", reasoning: true },
 	getContextUsage: () => ({ tokens: 5_000, contextWindow: 200_000, percent: 2.5 }),
-	getThinkingLevel: () => thinkingLevel,
+	// A decoy: pi's ExtensionContext has no getThinkingLevel, so reading it here
+	// silently yields no effort in a real session (caught by the 2.5.1 live smoke).
+	getThinkingLevel: () => "decoy",
 };
+const fakePi = { getThinkingLevel: () => thinkingLevel };
 
-installClaudeFooter(fakeCtx);
+installClaudeFooter(fakeCtx, fakePi);
 assert.equal(setFooterCalls.length, 1);
 assert.equal(typeof setFooterCalls[0], "function", "claude style installs a footer factory");
 const installed = (setFooterCalls[0] as (t: unknown, th: unknown, fd: unknown) => { render(width: number): string[] })(
