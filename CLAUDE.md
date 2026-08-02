@@ -54,3 +54,4 @@ Architectural decisions are in `docs/adr/`; live-capture specs are in `docs/plan
 ### Plane issue auto-close (CI)
 
 `.forgejo/workflows/plane-sync.yml` (+ `.forgejo/scripts/close-plane-issues.mjs`) closes Plane work items on PR merge. Put the closing reference as **plain prose** in the PR **body** — `Closes CLFY-14` (also `Fixes`/`Resolves`); references in commit messages are not read, because Forgejo's merge commit doesn't carry the PR body. References inside code spans/backticks are **ignored** (so a PR documenting the syntax doesn't fire) — `scripts/test-plane-refs.ts` guards this. Needs a repo-level `PLANE_PROJECT_ID` secret; the other three Plane secrets are inherited from the owlburtoe user.
+- If using XcodeBuildMCP, use the installed XcodeBuildMCP skill before calling XcodeBuildMCP tools.

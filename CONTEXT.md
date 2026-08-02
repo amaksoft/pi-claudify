@@ -5,7 +5,7 @@ Makes pi's transcript render the way Claude Code's does, because that rendering 
 ## Language
 
 **Claudify screen**:
-The full-screen keyboard-driven overlay opened by the bare `/claudify` command. In 2.0.0 it is the only way to change this package's settings at runtime; the `/cc-*` commands are gone.
+The settings Hub opened by `/claudify`. It owns the runtime settings rows; the `/cc-*` commands are gone.
 _Avoid_: settings dialog, config panel, /cc screens
 
 **Hub**:
