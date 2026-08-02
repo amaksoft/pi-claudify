@@ -45,6 +45,7 @@ import type { BundledLanguage, BundledTheme } from "shiki";
 
 import { ClaudifyScreen } from "./claudify-screen.ts";
 import { installClaudeFooter, normalizeHexColor, patchEditorBorderColor } from "./footer.ts";
+import { registerFullscreenTui } from "./fullscreen-tui.ts";
 import {
 	describeInspectionsActive,
 	describeInspectionsDone,
@@ -4737,6 +4738,7 @@ export default function (pi: ExtensionAPI): void {
 	patchEditorBorderColor();
 	applyDiffPalette();
 	registerThinkingLabels(pi);
+	registerFullscreenTui(pi);
 
 	pi.registerCommand("claudify", {
 		description: "Open the Claudify settings screen",

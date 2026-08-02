@@ -1,0 +1,51 @@
+[38;5;239m[48;5;237m❯ Print exactly 70 short numbered lines, from 1 through 70, with one concrete DNS fact per line. Do not use tools. Do not add headings, paragraphs, or text …[39m
+[49m  7. AAAA record maps a domain to an IPv6 address.
+  8. CNAME record creates an alias for a domain.
+  9. MX record specifies mail servers for a domain.
+  10. NS record delegates a zone to nameservers.
+  11. TXT record stores text information like SPF and DKIM.
+  12. SOA record contains zone authority and serial number.
+  13. SRV record specifies service location and port.
+  14. PTR record is used for reverse DNS lookups.
+  15. Root nameservers are the top level of DNS hierarchy.
+  16. There are 13 root nameserver instances worldwide.
+  17. The root zone file is maintained by ICANN.
+  18. TLDs are managed by ICANN accredited registries.
+  19. Authoritative nameservers hold the actual DNS records.
+  20. Recursive resolvers query authoritative nameservers on behalf of clients.
+  21. Caching nameservers store DNS responses temporarily.
+  22. TTL (Time To Live) specifies how long DNS records are cached.
+  23. DNS responses have a TTL measured in seconds.
+  24. A minimum TTL is typically 300 seconds.
+  25. A maximum TTL is typically 86400 seconds (one day).
+  26. DNSSEC adds cryptographic signatures to DNS records.
+  27. DNSSEC requires DNSKEY records for zone signing.
+  28. DS records link DNSSEC keys between parent and child zones.
+  29. NSEC records prove non-existence of DNS records.
+  30. DNS over HTTPS (DoH) encrypts DNS queries.
+  31. DNS over TLS (DoT) encrypts DNS queries on port 853.
+  32. EDNS0 extends DNS with additional options.
+  33. DNS flag AA indicates an authoritative answer.
+  34. DNS flag TC indicates a truncated response.
+  35. DNS flag RD indicates recursion is desired.
+  36. DNS flag RA indicates recursion is available.
+  37. Response code 0 is NOERROR; 3 is NXDOMAIN.
+  38. NXDOMAIN response means the domain does not exist.
+  39. REFUSED response means the server declined to answer.
+  40. SERVFAIL response indicates a server failure condition.
+  41. DNS queries contain a question section with qname, qtype, and qclass.
+  42. DNS responses contain answer, authority, and additional sections.
+  43. DNS message IDs are 16-bit values for matching queries and responses.
+  44. DNS uses wire format for binary data representation.
+  45. DNS labels are 63 bytes maximum in length.
+  46. DNS domain names are 255 bytes maximum in length.
+  47. Wildcard records use an asterisk (*) as the first label.
+  48. Wildcard records match any single label at that position.
+  49. DNS delegation creates a boundary between zones.
+  50. Glue records provide IP addresses for delegated nameserve[38;5;231m[48;5;237m Jump to bottom: fn+↓ to scroll [39m[49m
+
+[38;5;244m──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[39m❯ 
+[38;5;244m──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[39m  [38;5;214mclaudify │ ⎇ master │ Haiku 4.5 │ Ctx: 17% │ Usage: 46% ▓▓▓▓▓░░░░[38;5;34m┃[38;5;214m → Reset: 06:30 PM[39m
+  [38;5;246m⏸ manual mode on · ← for agents[39m

@@ -1,0 +1,13 @@
+printf 'BEFORE_CLAUDE_SCROLLBACK_SENTINEL
+'; claude --model haiku; printf '
+AFTER_CLAUDE_EXIT_SENTINEL
+'
+Last login: Sat Aug  1 17:12:46 on tty??
+berto@Albertos-MacBook-Pro claudify % printf 'BEFORE_CLAUDE_SCROLLBACK_SENTINEL
+quote> '; claude --model haiku; printf '
+quote> AFTER_CLAUDE_EXIT_SENTINEL
+quote> '
+BEFORE_CLAUDE_SCROLLBACK_SENTINEL
+
+Resume this session with:
+claude --resume a110ed2e-28da-4823-98b5-abcd46ad5dd1

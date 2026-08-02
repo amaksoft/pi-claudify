@@ -5,7 +5,7 @@ Makes pi's transcript render the way Claude Code's does, because that rendering 
 ## Language
 
 **Claudify screen**:
-The full-screen keyboard-driven overlay opened by the bare `/claudify` command. In 2.0.0 it is the only way to change this package's settings at runtime; the `/cc-*` commands are gone.
+The settings Hub opened by `/claudify`. It owns the runtime settings rows; the `/cc-*` commands are gone.
 _Avoid_: settings dialog, config panel, /cc screens
 
 **Hub**:
@@ -19,6 +19,10 @@ _Avoid_: tab, category, submenu
 **Picker**:
 A row on a Section that chooses from a list of visual candidates (spinner color, diff theme). Moving the highlight previews the candidate live; enter commits it, esc restores what was set before. All other rows (booleans, enums, numbers) commit and persist the moment they change.
 _Avoid_: selector, dropdown
+
+**Fullscreen TUI**:
+The session-local `/tui` toggle that switches Claudify into Claude Code-style fullscreen mode. It owns the alternate screen for the session, pads short transcript output above Pi's existing editor/footer, and when transcript output overflows it owns a bounded viewport: Page Up/Page Down (fn+↑/fn+↓ on macOS) move about half a viewport, mouse wheels and trackpads move by row, scrolled output shows Claude's `Jump to bottom: fn+↓ to scroll` hint, and submit snaps back to the live bottom. It restores Pi's renderer and terminal mouse state on disable or shutdown and adds no setting, timer, or persistence.
+_Avoid_: fullscreen setting, persistent mode, overlay mode
 
 **Project override** _(retired by ADR 0004)_:
 2.0.0 ignores the project `.pi/settings.json` entirely; every setting of this extension is user-scoped in `~/.pi/settings.json`, so no override, badge, or provenance exists. The term survives only for reading ADR 0003's history.

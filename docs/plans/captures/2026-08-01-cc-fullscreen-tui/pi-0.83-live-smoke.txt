@@ -1,0 +1,67 @@
+CLFY-30 live smoke — 2026-08-01
+
+Checkout: /Users/berto/Projects/claudify @ c40667e + uncommitted CLFY-30 change
+Pi: 0.83.0
+Terminal: detached tmux real PTY
+Package loading: both ~/.pi/agent/settings.json and <repo>/.pi/settings.json temporarily changed from npm:@owlburtoe/pi-claudify to the checkout path; both restored byte-for-byte after each run.
+
+PASS — /tui activation
+- At 100x30, the short transcript filled the viewport and kept Pi's existing editor and three-line Claudify footer at the bottom.
+- PI_TUI_WRITE_LOG recorded one CSI ?1049h transition.
+
+PASS — streaming and settle
+- Anthropic Fable authentication was expired, so the session switched to authenticated openai-codex/gpt-5.4-mini.
+- The agent ran `sleep 10`; the live worked/working rows, editor, and footer stayed in the fullscreen layout.
+- The final response rendered normally with no transcript replacement.
+
+PASS — resize
+- The active/settled session resized from 100x30 to 70x24.
+- Transcript and footer reflowed to the new width, filler recalculated, and no stale rows remained in the current viewport.
+
+PASS — transcript paging follow-up
+- A 50-line response at 100x30 stayed bounded to the current alternate-screen viewport with editor/footer pinned and tmux history_size=0, matching the Claude Code capture.
+- Page Up moved the viewport upward by about half the available transcript rows; repeated Page Up reached earlier numbered rows.
+- The final visible transcript row showed `Jump to bottom: fn+↓ to scroll` while scrolled; repeated Page Down restored the live tail and removed the hint.
+- While scrolled, appending transcript rows kept the visible page anchored. Submitting `Reply with exactly OK.` returned to the live bottom before the working row appeared, and the answer settled above the pinned editor/footer.
+- Resize from 100x30 to 80x24 preserved the scrolled page, hint, and footer placement.
+
+PASS — /claudify
+- The Hub rendered inside fullscreen mode at 70x24 with its own pinned key-hint row and closing rule.
+- Page Up did not change the custom screen or page the transcript while it owned focus.
+- The normal Claudify footer remained below it and Esc restored the editor.
+
+PASS — deactivation
+- /tui wrote one CSI ?1049l for the matching activation.
+- The normal-buffer forced repaint omitted CSI 3J, preserving pre-toggle shell scrollback.
+- The current disabled viewport rendered Pi's normal transcript/editor/footer.
+
+PASS — reload
+- /reload while fullscreen produced balanced enter/leave counts (2/2), loaded the local checkout again, and returned with fullscreen disabled.
+- No duplicate marker, wrapper, or alternate-screen transition remained.
+
+PASS — Ctrl+D quit and SIGTERM quit
+- Both exits from active fullscreen produced balanced enter/leave counts (1/1 in each focused run).
+- The quit path cleared the restored viewport with CSI 2J + CSI H after any queued repaint, but emitted no CSI 3J.
+- The current pane contained only CLFY30_SMOKE_EXIT=0, CLFY30_SETTINGS_RESTORED, and a clean shell prompt; prior Pi content remained available only in scrollback.
+
+PASS — cleanup
+- Both settings files again contain npm:@owlburtoe/pi-claudify.
+- No smoke process remained active.
+
+CLFY-30 mouse follow-up — 2026-08-02
+
+Checkout: /Users/berto/Projects/claudify @ master + uncommitted CLFY-30 change
+Pi: 0.83.0
+Terminal: detached tmux real PTY, attached once through macOS Terminal
+Package loading: both ~/.pi/agent/settings.json and <repo>/.pi/settings.json already referenced the checkout path.
+
+PASS — captured mouse protocol
+- /tui enabled DEC mouse modes 1000, 1002, and 1003 plus SGR mode 1006 while it owned the alternate screen.
+- Raw SGR wheel-up events moved the bounded transcript viewport by row and showed the live-bottom hint; wheel-down events returned to the current tail and removed the hint.
+
+PASS — focus and cleanup
+- Raw wheel input while /claudify owned focus left its selected row unchanged and did not page the transcript.
+- Toggle-off restored normal rendering; Ctrl+D closed Pi and the detached tmux session cleanly.
+
+PASS — physical trackpad gesture
+- The user confirmed trackpad scrolling works in Orca terminal term_a7404274-ed02-4282-b966-7320719ae32b.

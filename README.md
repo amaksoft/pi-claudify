@@ -30,7 +30,7 @@ pi 0.74.0 or newer. pi renamed its npm scope from `@mariozechner/*` to `@earendi
 
 ## Configuration
 
-Open the Claudify screen with `/claudify`. From the Hub, use the arrow keys to choose a Section and press Enter to open it. Press Esc to return to the Hub, then Esc again to close the screen.
+Open the Claudify screen with `/claudify`. Use `/tui` to toggle the session-local fullscreen TUI mode on and off. In `/tui`, Claudify owns a bounded transcript viewport while Pi's editor/footer stay pinned; Page Up/Page Down (fn+↑/fn+↓ on macOS) scroll about half a viewport, mouse wheels and trackpads scroll by row, and a scrolled view shows `Jump to bottom: fn+↓ to scroll`. Hold Shift to bypass mouse reporting for terminal text selection. From the Hub, use the arrow keys to choose a Section and press Enter to open it. Press Esc to return to the Hub, then Esc again to close the screen.
 
 Most rows save as soon as they change. Pickers preview the highlighted choice live; Enter commits it, while Esc cancels the preview and restores the saved value.
 
@@ -84,7 +84,7 @@ The 2.0.0 release removes the legacy runtime commands. Their settings now live h
 | `/cc-message style\|spacing\|…-prefix\|hidden-thinking-label` | Messages → the matching rows |
 | `/cc-message verbs …` | Spinner → **After finishing** verb editor |
 
-The screen writes user-scoped settings to `~/.pi/settings.json`. Settings written by 1.x remain compatible: `spinnerVerbColor` is read as `spinnerColor`, and `toolBackground: "border"` is read as `"outlines"`.
+The screen writes user-scoped settings to `~/.pi/settings.json`. Settings written by 1.x remain compatible: `spinnerVerbColor` is read as `spinnerColor`, and `toolBackground: "border"` is read as `"outlines"`. `/tui` is session-local, TUI-only, and leaves no setting or persistence behind; when transcript output overflows, it owns the live viewport and returns to the bottom on submit.
 
 ## Notes
 

@@ -1,0 +1,7 @@
+bytes: 91856
+b'\x1b[?1049h': count=1 offsets=[79]
+b'\x1b[?1049l': count=1 offsets=[91483]
+b'\x1b[2J': count=1 offsets=[87]
+b'\x1b[3J': count=0 offsets=[]
+b'\x1b[?2026h': count=637 offsets=[171, 1349, 1530, 1588, 1807, 1970, 2145, 2709, 3526, 3603]
+b'\x1b[?2026l': count=637 offsets=[1341, 1522, 1580, 1799, 1858, 2137, 2672, 3518, 3595, 3672]
