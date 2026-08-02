@@ -1,0 +1,52 @@
+
+ ▐▛███▜▌   Claude Code v2.1.220
+▝▜█████▛▘  Haiku 4.5 · Claude Max
+  ▘▘ ▝▝    ~/Projects/claudify
+
+
+❯ For a terminal-layout capture, use Bash to run sleep 20, then reply exactly: Short capture complete. Do not do anything else.                               
+
+⏺ Running 1 shell command…
+  ⎿  $ sleep 20
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+✳ Reading the Scrolls of Isildur… (5s · ↓ 248 tokens · thought for 2s)
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  claudify │ ⎇ master │ Haiku 4.5 │ Ctx: 17% │ Usage: 26% ▓▓▓░░░░┃░░ → Reset: 06:30 PM
+  ⏸ manual mode on · ← for agents

@@ -1,0 +1,52 @@
+  viewport testing.
+  Line 27 — The quick brown fox demonstrates a long transcript row for
+  viewport testing.
+  Line 28 — The quick brown fox demonstrates a long transcript row for
+  viewport testing.
+  Line 29 — The quick brown fox demonstrates a long transcript row for
+  viewport testing.
+  Line 30 — The quick brown fox demonstrates a long transcript row for
+  viewport testing.
+  Line 31 — The quick brown fox demonstrates a long transcript row for
+  viewport testing.
+  Line 32 — The quick brown fox demonstrates a long transcript row for
+  viewport testing.
+  Line 33 — The quick brown fox demonstrates a long transcript row for
+  viewport testing.
+  Line 34 — The quick brown fox demonstrates a long transcript row for
+  viewport testing.
+  Line 35 — The quick brown fox demonstrates a long transcript row for
+  viewport testing.
+  Line 36 — The quick brown fox demonstrates a long transcript row for
+  viewport testing.
+  Line 37 — The quick brown fox demonstrates a long transcript row for
+  viewport testing.
+  Line 38 — The quick brown fox demonstrates a long transcript row for
+  viewport testing.
+  Line 39 — The quick brown fox demonstrates a long transcript row for
+  viewport testing.
+  Line 40 — The quick brown fox demonstrates a long transcript row for
+  viewport testing.
+
+✻ Sautéed for 7s
+
+❯ For the narrow terminal capture, use Bash to run sleep 20, then reply       
+  exactly: Narrow capture complete. This intentionally long request wraps     
+  across several visible terminal rows so the capture verifies that wrapped   
+  transcript content still leaves the working indicator, editor, and footer   
+  pinned to the bottom.                                                       
+  
+  Ran 1 shell command 
+
+⏺ Narrow capture complete. This intentionally long request wraps across
+  several visible terminal rows so the capture verifies that wrapped
+  transcript content still leaves the working indicator, editor, and footer
+  pinned to the bottom.
+
+✻ Cooked for 25s
+
+──────────────────────────────────────────────────────────────────────────────
+❯ 
+──────────────────────────────────────────────────────────────────────────────
+  claudify │ ⎇ master │ Haiku 4.5 │ Ctx: 17% │ Usage: 26% ▓▓▓░░░░░┃░ → Reset…
+  ⏸ manual mode on · ← for agents

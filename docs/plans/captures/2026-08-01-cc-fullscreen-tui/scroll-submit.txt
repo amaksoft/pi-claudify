@@ -1,0 +1,54 @@
+Claude Code in the same tmux session after submitting `Reply with exactly OK.` from the top-scrolled viewport.
+Observed behavior: submission returns immediately to the live bottom; the new user row, working row, and answer are visible while the editor/footer remain pinned.
+
+  34. DNS flag TC indicates a truncated response.
+  35. DNS flag RD indicates recursion is desired.
+  36. DNS flag RA indicates recursion is available.
+  37. Response code 0 is NOERROR; 3 is NXDOMAIN.
+  38. NXDOMAIN response means the domain does not exist.
+  39. REFUSED response means the server declined to answer.
+  40. SERVFAIL response indicates a server failure condition.
+  41. DNS queries contain a question section with qname, qtype, and qclass.
+  42. DNS responses contain answer, authority, and additional sections.
+  43. DNS message IDs are 16-bit values for matching queries and responses.
+  44. DNS uses wire format for binary data representation.
+  45. DNS labels are 63 bytes maximum in length.
+  46. DNS domain names are 255 bytes maximum in length.
+  47. Wildcard records use an asterisk (*) as the first label.
+  48. Wildcard records match any single label at that position.
+  49. DNS delegation creates a boundary between zones.
+  50. Glue records provide IP addresses for delegated nameservers.
+  51. DNS resolution follows an iterative or recursive model.
+  52. Stub resolvers send queries to recursive resolvers.
+  53. Full resolvers perform the complete resolution process.
+  54. DNS forwarders pass queries to other nameservers.
+  55. Conditional forwarding routes queries based on domain name.
+  56. DNS zones are administrative boundaries for domain management.
+  57. Primary nameserver holds the authoritative zone data.
+  58. Secondary nameservers receive zone data via zone transfer.
+  59. Zone serial numbers track update versions for zones.
+  60. SOA refresh parameter specifies zone transfer frequency.
+  61. SOA retry parameter specifies retry interval on transfer failure.
+  62. SOA expire parameter specifies when zone data expires.
+  63. SOA minimum parameter is the default TTL for negative responses.
+  64. Dynamic DNS (DDNS) allows automatic record updates.
+  65. NOTIFY messages alert secondaries of zone changes.
+  66. AXFR query type requests a full zone transfer.
+  67. IXFR query type requests an incremental zone transfer.
+  68. Reverse DNS zones use in-addr.arpa for IPv4 addresses.
+  69. Reverse DNS zones use ip6.arpa for IPv6 addresses.
+  70. DNS amplification attacks abuse recursive resolvers with spoofed queries.
+
+✻ Churned for 21s
+
+❯ Reply with exactly OK.
+
+⏺ OK
+
+✻ Churned for 1s
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  claudify │ ⎇ master │ Haiku 4.5 │ Ctx: 18% │ Usage: 0% ░░░░░░░░░░ → Reset: 11:30 PM
+  ⏸ manual mode on · ← for agents
