@@ -6,6 +6,11 @@ import { initTheme } from "../node_modules/@earendil-works/pi-coding-agent/dist/
 
 import extension from "../extensions/index.ts";
 
+import { useSandboxHome } from "./sandbox-home.ts";
+
+// Assert default rendering, not the settings of whoever runs the suite.
+useSandboxHome("cc-readonly");
+
 // Claude Code aggregates read-only tools at ANY count: a single read renders as
 // `⏺ Reading 1 file…` and collapses to `Read 1 file` — never `⏺ Read(path)`.
 // Captured side by side against pi: docs/plans/2026-07-14-tool-row-conformance-audit.md

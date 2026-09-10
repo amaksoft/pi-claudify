@@ -6,12 +6,17 @@ import { Loader } from "@earendil-works/pi-tui";
 // and exposes the captured live-spinner cadence.
 const {
 	LOADER_INTERVAL_MS,
+	activeThinkingProgressPhrase,
 	shimmerBaseRgb,
 	shimmerPhase,
 	shimmerBreatheFactor,
 	shimmerSweep,
 	colorizeShimmerVerb,
 	shimmerGlyphAnsi,
+	shimmerHighlightRgb,
+	thinkingProgressPhrase,
+	OutputTokenTracker,
+	sanitizeSpinnerVerbs,
 } = await import("../extensions/spinner.ts");
 
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
@@ -56,6 +61,48 @@ assert.equal(
 	"`✻` is a live rotation frame (the mis-capture that pinned the glyph to `·` was a polling alias)",
 );
 
+// --- Thinking phrase escalation is effort-independent. ----------------------
+// Frame-by-frame Claude 2.1.266 captures at low and medium effort use the same
+// thresholds; only the suffix (`with low/medium effort`) differs.
+assert.equal(thinkingProgressPhrase(11_999), "thinking");
+assert.equal(thinkingProgressPhrase(12_000), "still thinking");
+assert.equal(thinkingProgressPhrase(22_000), "thinking more");
+assert.equal(thinkingProgressPhrase(32_000), "thinking some more");
+assert.equal(thinkingProgressPhrase(47_000), "almost done thinking");
+assert.equal(activeThinkingProgressPhrase(99_000, 100_000), "thinking", "a thinking spell starts its phrase clock at thinking_start, not at an older request start");
+
+// --- Provider-reported output tokens, cumulative across tool rounds. ---------
+const tokens = new OutputTokenTracker();
+tokens.resetRequest();
+assert.equal(tokens.total(), 0);
+assert.equal(tokens.update({ partial: { usage: { output: 12 } } }), true);
+assert.equal(tokens.total(), 12, "streaming usage is cumulative, not added per event");
+assert.equal(tokens.update({ partial: { usage: { output: 20 } } }), true);
+assert.equal(tokens.total(), 20);
+assert.equal(tokens.update({ partial: { usage: { output: 20 } } }), false, "duplicate cumulative usage is ignored");
+assert.equal(tokens.update({ partial: { usage: { output: 3 } } }), false, "a regressing stream sample cannot lower the high-water mark");
+assert.equal(tokens.total(), 20);
+assert.equal(tokens.finish({ usage: { output: 0 } }), true);
+assert.equal(tokens.total(), 20, "a lower final count cannot erase the streaming high-water mark");
+assert.equal(tokens.finish({ usage: { output: 20 } }), false, "finish is idempotent within a turn");
+assert.equal(tokens.total(), 20, "a duplicate message_end cannot settle the turn twice");
+tokens.startTurn();
+assert.equal(tokens.update({ message: { usage: { output: 7 } } }), true);
+assert.equal(tokens.total(), 27, "next tool round adds to settled request usage");
+tokens.finish({});
+assert.equal(tokens.total(), 27, "missing final usage falls back to the last streamed value");
+tokens.resetRequest();
+assert.equal(tokens.update({ partial: {} }), false, "missing provider usage is omitted, never estimated from text");
+assert.equal(tokens.total(), 0);
+
+// Spinner verbs use grapheme boundaries too: truncation and ANSI coloring must
+// never split modifiers, variation selectors, or a valid ZWJ sequence.
+const emojiVerb = `${"a".repeat(47)}👩🏽‍🚀tail`;
+assert.equal(sanitizeSpinnerVerbs([emojiVerb])[0], `${"a".repeat(47)}👩🏽‍🚀`);
+assert.equal(sanitizeSpinnerVerbs(["❤️‍🔥", "🏳️‍🌈", "a\u200db", "bad\x1b[31mred"])[0], "❤️‍🔥");
+assert.equal(sanitizeSpinnerVerbs(["a\u200db"])[0], "ab", "standalone joiners are removed from verbs");
+assert.equal(sanitizeSpinnerVerbs(["bad\x1b[31mred"])[0], "badred", "terminal controls are removed from verbs");
+
 // --- CLFY-27: the thinking-spinner shimmer (continuous sweep ⇄ breathe) -------
 // Capture trajectory: docs/plans/2026-07-17-cc-thinking-surfaces.md. Claudify
 // deliberately diverges from CC by never freezing; see that doc's Decision A.
@@ -87,14 +134,16 @@ assert.equal(shimmerBreatheFactor(1_000), 1, "no breathing during the sweep phas
 const dim = shimmerBreatheFactor(4_000 + 800); // ~half a breath into the breathe phase
 assert.ok(dim < 1 && dim >= 0.55, "the breath dims within [0.55, 1)");
 
-// colorizeShimmerVerb: truecolor base, a legible sweep highlight, text preserved.
+// colorizeShimmerVerb: captured time-varying highlight + base, text preserved.
 const salmonVerb = colorizeShimmerVerb("Forging…", 0);
-assert.ok(salmonVerb.includes("\x1b[38;2;255;215;175m"), "the sweep highlight (#FFD7AF) appears during the sweep");
+assert.ok(salmonVerb.includes("\x1b[38;2;255;135;135m"), "the early sweep uses captured xterm-216 red-salmon");
 assert.ok(salmonVerb.includes("\x1b[38;2;215;135;135m"), "un-highlighted chars keep the salmon base");
 assert.equal(salmonVerb.replace(ANSI_RE, ""), "Forging…", "colorizing changes only color, not the text");
 // 21_600 = start of a cycle (pos 0 → sweep at the right edge) and past the 20s gold plateau.
 const goldSweep = colorizeShimmerVerb("Forging…", 21_600);
-assert.ok(goldSweep.startsWith("\x1b[1m") && goldSweep.includes("\x1b[38;2;255;215;175m"), "the sweep still runs at the gold plateau — bold + highlight");
+assert.ok(goldSweep.startsWith("\x1b[1m") && goldSweep.includes("\x1b[38;2;255;215;95m"), "the gold sweep tracks the base with captured xterm-221");
+assert.deepEqual(shimmerHighlightRgb(13_000), { r: 215, g: 175, b: 175 });
+assert.deepEqual(shimmerHighlightRgb(17_000), { r: 215, g: 215, b: 135 });
 
 // The glyph shares the breathed base hue (and bold) with the verb.
 assert.equal(shimmerGlyphAnsi(0), "\x1b[38;2;215;135;135m", "glyph is salmon early");

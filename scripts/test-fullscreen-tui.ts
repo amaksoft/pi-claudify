@@ -279,6 +279,11 @@ const initialInput = [...terminalInputHandlers][0];
 assert.equal(initialInput("\x1b[5~"), undefined, "Page Up remains available to the editor when transcript does not overflow");
 assert.deepEqual(initialInput("\x1b[<64;20;4M"), { consume: true }, "recognized wheel input cannot leak into the editor when no scrolling is needed");
 assert.deepEqual(initialInput("\x1b[<0;20;4M"), { consume: true }, "non-wheel SGR mouse input cannot leak into Pi's editor");
+assert.deepEqual(
+	initialInput("\x1b[<73;82;34M\x1b[<73;82;34M"),
+	{ consume: true },
+	"concatenated SGR reports from one terminal chunk cannot leak as literal [<...M text",
+);
 
 await command.handler("", tuiContext);
 assert.deepEqual(widgetOperations.at(-1), [FULLSCREEN_WIDGET_KEY, "clear"], "second /tui invocation removes the marker widget");

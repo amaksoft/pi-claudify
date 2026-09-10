@@ -8,6 +8,19 @@ process.env.HOME = join(initialSandbox, "home");
 process.chdir(join(initialSandbox));
 
 const { readSettings, writeSettingsKey } = await import("../extensions/settings.ts");
+const {
+	resolveColorSource,
+	resolveMarkdownStyle,
+	resolveSpinnerShimmer,
+	resolveSurfaceColorSource,
+} = await import("../extensions/presentation-profile.ts");
+
+assert.equal(resolveColorSource({}), "claude", "Claude colors are the default profile");
+assert.equal(resolveMarkdownStyle({}), "claude", "Claude Markdown is the default profile");
+assert.equal(resolveSurfaceColorSource({ colorSource: "theme" }, "accentColor"), "theme", "the profile supplies absent surface defaults");
+assert.equal(resolveSurfaceColorSource({ colorSource: "theme", accentColor: "claude" }, "accentColor"), "claude", "explicit surface colors override the profile");
+assert.equal(resolveSpinnerShimmer({ colorSource: "theme" }), false, "Pi-theme color mode disables Claude shimmer by default");
+assert.equal(resolveSpinnerShimmer({ colorSource: "theme", spinnerShimmer: true }), true, "explicit shimmer overrides the profile");
 
 function useSandbox(
 	user: Record<string, unknown> | string | null,

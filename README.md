@@ -15,8 +15,8 @@ One rule drives the work: capture, do not guess. When I wanted to know how Claud
 ## What it does
 
 - Tool rows in Claude Code's shape: `⏺ Tool(args)` headers, `⎿` result rows, and a status bullet that goes from gray to green when the tool succeeds (red when it fails). Tool names are bold, and file paths are OSC 8 hyperlinks you can click to open the file.
-- Read-only tools (`read`, `grep`, `find`, `ls`, `bash`) aggregate under one gerund header while they run, such as `⏺ Searching for 1 pattern, reading 2 files…`, then collapse to a dim past-tense summary like `Read 1 file, ran 1 shell command` once the turn settles. Mutating tools (`write`, `edit`, `apply_patch`) keep their own rows.
-- MCP calls render the way Claude Code renders them, which is barely at all. No header, no result row, no arguments. An MCP call adds one clause naming the server to the aggregated group: `⏺ Calling plane, forgejo 2 times…` while running, `Called plane, forgejo 2 times` when done. This works for every MCP server and both of pi's exposure modes, with nothing server-specific hardcoded. Set `readOnlyToolGrouping: false` if you want per-call rows instead.
+- Read-only tools (`read`, `grep`, `find`, `ls`, `bash`) aggregate under one gerund header while they run, such as `⏺ Searching for 1 pattern, reading 2 files…`, then collapse to a dim past-tense summary like `Read 1 file, ran 1 shell command` once the turn settles. Mutating tools (`write`, `edit`, `apply_patch`) keep their own rows. In Pi 0.85 native fullscreen, clicking opens one aggregate; the next `ctrl+o` collapses that pointer-opened state in one press, and subsequent `ctrl+o` presses resume Pi's global expand/collapse toggle.
+- MCP calls render the way Claude Code renders them, which is barely at all. No header, no result row, no arguments. An MCP call adds one clause naming the server to the aggregated group: `⏺ Calling plane, forgejo 2 times…` while running, `Called plane, forgejo 2 times` when done. This works for the proxy mode and direct tools whose public name identifies MCP (`mcp__server__tool`), with nothing server-specific hardcoded. Ambiguous bare direct-tool names stay native unless the host exposes adapter identity metadata; claudify never replaces execution through private registry fields. Set `readOnlyToolGrouping: false` if you want per-call rows instead.
 - Diffs use Claude Code's exact red and green palette, always unified, with a line-number gutter and no box chrome. Removed lines are left without syntax highlighting because Claude Code leaves them plain too.
 - Results read as sentences, such as `Wrote 3 lines to <path>` and `Added 2 lines, removed 2 lines`, instead of stat bars.
 - Common read-only shell one-liners render semantically, so `nl -ba file | sed -n '1,200p'` shows up as `Read file (lines 1-200)`.
@@ -30,7 +30,7 @@ pi 0.74.0 or newer. pi renamed its npm scope from `@mariozechner/*` to `@earendi
 
 ## Configuration
 
-Open the Claudify screen with `/claudify`. Use `/tui` to toggle the session-local fullscreen TUI mode on and off. In `/tui`, Claudify owns a bounded transcript viewport while Pi's editor/footer stay pinned; Page Up/Page Down (fn+↑/fn+↓ on macOS) scroll about half a viewport, mouse wheels and trackpads scroll by row, and a scrolled view shows `Jump to bottom: fn+↓ to scroll`. Hold Shift to bypass mouse reporting for terminal text selection. From the Hub, use the arrow keys to choose a Section and press Enter to open it. Press Esc to return to the Hub, then Esc again to close the screen.
+Open the Claudify screen with `/claudify`. Use `/tui` to toggle the session-local bounded transcript layout on and off. In `/tui`, Claudify keeps Pi's editor/footer pinned; Page Up/Page Down (fn+↑/fn+↓ on macOS) scroll about half a viewport, mouse wheels and trackpads scroll by row, and a scrolled view shows `Jump to bottom: fn+↓ to scroll`. Hold Shift to bypass mouse reporting for terminal text selection. Per-group click dispatch requires Pi 0.85's native fullscreen renderer—start Pi with `pi --tui-mode fullscreen`; terminal escape sequences alone cannot add a dispatcher to Pi's regular renderer. From the Hub, use the arrow keys to choose a Section and press Enter to open it. Press Esc to return to the Hub, then Esc again to close the screen.
 
 Most rows save as soon as they change. Pickers preview the highlighted choice live; Enter commits it, while Esc cancels the preview and restores the saved value.
 
@@ -38,6 +38,12 @@ Most rows save as soon as they change. Pickers preview the highlighted choice li
 
 #### Theme
 
+Claudify does not ship or select a Pi application theme. It layers Claude-specific transcript chrome over whichever theme the user already selected. **Color source** (`colorSource`, `claude` by default) switches Markdown, accent-linked surfaces, the default user-message box, and Spinner shimmer between captured Claude colors and the active Pi theme. **Markdown style** (`markdownStyle`, `claude` by default) independently switches transcript grammar such as hidden code fences, compact code indentation, literal `---` rules, and `▎` blockquotes. Explicit `accentColor` and `userMessageBox` values remain advanced per-surface overrides. `toolChrome` and `diffPalette` stay independent because they also change wording, links, and diff layout—not only color.
+
+The optional startup banner is Pi-branded and controlled by **Startup banner** (`bannerMode`: `off`, `onboarding`, or `always`; default `off` so claudify never displaces another extension's header without explicit opt-in). **Banner frame** (`bannerFrame`) switches between the responsive framed panel and the compact borderless form. The banner uses the active Pi theme and does not own a separate palette. **Prompt pointer** (`promptPointer`, default on) adds `❯` to Pi's editor only when another extension has not already installed a custom editor.
+
+- **Color source** (`colorSource`) chooses Claude or Pi-theme defaults for eligible semantic colors.
+- **Markdown style** (`markdownStyle`) chooses captured Claude or native Pi Markdown grammar.
 - **Adaptive colors** (`themeAdaptive`) controls whether borders, connectors, spinner accents, and eligible diff colors follow the active pi theme.
 - **Diff palette** (`diffPalette`) switches between the fixed Claude Code palette and theme-derived diff colors.
 - **Tool chrome** (`toolChrome`) switches between Claude-style status bullets and pi theme accents.
@@ -45,10 +51,12 @@ Most rows save as soon as they change. Pickers preview the highlighted choice li
 
 #### Diffs
 
+- **Syntax highlighting** (`diffSyntaxHighlighting`, default on) uses the existing lazy Shiki pipeline for changed code. Turning it off keeps unified layout, line numbers, and add/remove colors while rendering code tokens plainly.
 - **Collapsed diff lines** (`diffCollapsedLines`) sets how many diff lines remain visible before a diff collapses.
 
 #### Spinner
 
+- **Spinner placement** (`spinnerPlacement`) defaults to `above`, matching Claude Code; `input` embeds working status in Pi's editor border.
 - **Spinner color** (`spinnerColor`) and **Status color** (`spinnerStatusColor`) are live-preview Pickers over pi theme color keys.
 - **While working** edits the present-tense Spinner verb pool (`spinnerVerbs`) used in lines such as `✻ Reviewing…`.
 - **After finishing** edits the past-tense Worked verb pool (`workedVerbs`) used in lines such as `✻ Polished for 8s`.
@@ -66,10 +74,18 @@ Each verb editor has a mode row for **append** versus **replace**, an **Add…**
 
 - **Tool background** (`toolBackground`) chooses standard pi backgrounds, transparent rows, or outlined rows.
 - **MCP output** (`mcpOutputMode`) and **Bash output** (`bashOutputMode`) control their collapsed presentation.
-- **Preview lines** (`previewLines`) and **Collapsed Bash lines** (`bashCollapsedLines`) set collapsed preview counts.
+- **Preview lines** (`previewLines`) and **Bash preview lines** (`bashCollapsedLines`) set collapsed visual-row budgets; **Running Bash preview** (`bashRunningPreview`) chooses the oldest (`head`) or newest (`tail`) live rows.
 - **Stack consecutive Bash** (`bashStackConsecutive`) and **Semantic Bash display** (`bashSemanticDisplay`) control Bash row layout and read-only command labeling.
-- **Group read-only tools** (`readOnlyToolGrouping`) and **Read-only group limit** (`readOnlyToolGroupLimit`) control inspection aggregation.
+- **Group read-only tools** (`readOnlyToolGrouping`) and **Read-only group limit** (`readOnlyToolGroupLimit`) control inspection aggregation. **Group shell commands** (`groupShellCommands`) can keep Bash calls as always-visible native rows while other inspection calls remain grouped.
+- **Skip tool overrides** (`skipToolOverrides`, JSON-only string array) leaves selected built-ins such as `grep` or `find` owned by another extension. `PI_CLAUDIFY_SKIP_TOOL_OVERRIDES=grep,find` is the process-local equivalent. The legacy fork key `ccSkipToolOverrides` is accepted.
 - **Expanded preview max lines** (`expandedPreviewMaxLines`) caps fully expanded output.
+
+#### Footer
+
+- **Usage bar** (`footerUsageBar`) controls quota bars beside known provider percentages.
+- **Effort** (`footerEffort`) appends the active thinking level to the model segment.
+- **Session cost** (`footerCost`, default on) adds provider-reported accumulated cost.
+- **Session time and prompts** (`footerSessionStats`, default on) adds elapsed time and submitted prompt count, seeded consistently from resumed history.
 
 ### Migration from 1.x
 
@@ -94,6 +110,8 @@ This package targets recent pi versions where tool renderers use:
 - `renderResult(result, { expanded, isPartial }, theme, context)`
 
 Unknown and custom tools do not have a public global renderer hook in pi, so this package patches container rendering to add top and bottom borders for all tool executions in border mode.
+
+Set `PI_CLAUDIFY_DEBUG=1` to print process-deduplicated diagnostics when a private host adapter fails closed and falls back to native rendering. Diagnostics are silent by default.
 
 ## Credits
 

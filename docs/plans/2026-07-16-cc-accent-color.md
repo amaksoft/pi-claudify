@@ -66,7 +66,7 @@ pi's dark theme resolves `mdCode` and `mdListBullet` from the same `accent` var,
 the override the transcript's inline code and bullets stayed teal (observed live: a file
 listing rendered `38;2;138;190;183`). The override now carries **every fgColors key whose
 loaded value aliased the accent** — recorded per theme instance alongside the original,
-restored exactly in `theme` mode. Caveat: Claude Code's exact inline-code color is
-UNCAPTURED (scratch CC sessions kept stalling); treating accent-aliased surfaces as
-accent-colored is the theme's own declared intent and visually matches CC's blue-family
-inline code, but a future capture may refine `mdCode` to its own CC value.
+restored exactly in `theme` mode. Fresh Claude Code v2.1.266 captures resolve the
+former inline-code uncertainty: dark mode uses xterm 153 and explicit Light mode uses
+xterm 105. Claudify's Claude Markdown palette now owns that semantic directly; explicit
+`accentColor` remains the advanced override, and `theme` mode restores Pi's alias values.

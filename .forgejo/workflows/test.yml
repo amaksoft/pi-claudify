@@ -1,0 +1,60 @@
+name: Test
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  test:
+    name: Pi ${{ matrix.pi-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        pi-version: ["0.74.0", "0.80.6", "0.85.1", "latest"]
+
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          cache: npm
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: "1.2.23"
+      - name: Install repository dependencies
+        run: npm ci
+      - name: Select Pi compatibility version
+        run: npm install --no-save "@earendil-works/pi-coding-agent@${{ matrix.pi-version }}" "@earendil-works/pi-tui@${{ matrix.pi-version }}"
+      - name: Test
+        run: bun run test
+      - name: Install tmux for real pointer dispatch
+        if: matrix.pi-version == '0.85.1'
+        run: command -v tmux >/dev/null || (sudo apt-get update && sudo apt-get install -y tmux)
+      - name: Test real fullscreen pointer dispatch
+        if: matrix.pi-version == '0.85.1'
+        run: bun run test:mouse-pty
+      - name: Test historical presentation across reload
+        if: matrix.pi-version == '0.85.1'
+        run: bun run test:reload-presentation-pty
+      - name: Strict TypeScript check
+        run: >-
+          npx tsc --noEmit --strict --skipLibCheck --allowImportingTsExtensions
+          --moduleResolution bundler --module esnext --target esnext --types node
+          extensions/index.ts extensions/claudify-screen.ts extensions/spinner.ts extensions/message-chrome.ts
+      - name: Verify packed runtime in a clean consumer
+        shell: bash
+        run: |
+          set -euo pipefail
+          tarball=$(npm pack --silent)
+          package_path="$PWD/$tarball"
+          consumer=$(mktemp -d)
+          cd "$consumer"
+          npm init -y >/dev/null
+          npm install --ignore-scripts "$package_path" \
+            "@earendil-works/pi-coding-agent@${{ matrix.pi-version }}" \
+            "@earendil-works/pi-tui@${{ matrix.pi-version }}" \
+            @sinclair/typebox >/dev/null
+          bun -e 'import { parseDiff, renderUnified } from "./node_modules/@owlburtoe/pi-claudify/extensions/index.ts"; const out = await renderUnified(parseDiff("const x = 1;\n", "const x = 2;\n"), "typescript", 20, undefined, 80); if (!out.includes("const")) process.exit(1)'
+          rm -f "$package_path"

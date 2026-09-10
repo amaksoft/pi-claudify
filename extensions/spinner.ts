@@ -1,7 +1,9 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Loader } from "@earendil-works/pi-tui";
 
+import { resolveSpinnerShimmer } from "./presentation-profile.ts";
 import { readSettings } from "./settings.ts";
+import { sanitizeToolContent } from "./terminal-sanitize.ts";
 
 // ---------------------------------------------------------------------------
 // Patch built-in Loader with Claude/OpenBrawd-style glyphs.
@@ -33,8 +35,7 @@ let _spinnerSettingsCache: { value: SpinnerSettings; expires: number } | null = 
 const SPINNER_SETTINGS_TTL_MS = 1_000;
 export const MAX_CUSTOM_SPINNER_VERBS = 200;
 export const MAX_SPINNER_VERB_LENGTH = 48;
-const ANSI_ESCAPE_SEQUENCE_RE = /\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\))/g;
-const CONTROL_CHARS_RE = /[\u0000-\u001F\u007F-\u009F]/g;
+const spinnerGraphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 // Cross-extension bust signal: the Claudify screen in index.ts bumps this
 // counter and we drop the cache when it changes.
 const SPINNER_BUST_KEY = Symbol.for("pi-claudify:spinner-settings-bust");
@@ -44,12 +45,10 @@ let _spinnerLastBust = 0;
 
 function sanitizeSpinnerVerb(value: unknown): string | null {
 	if (typeof value !== "string") return null;
-	const cleaned = value
-		.replace(ANSI_ESCAPE_SEQUENCE_RE, "")
-		.replace(CONTROL_CHARS_RE, "")
-		.trim();
+	const cleaned = sanitizeToolContent(value).trim();
 	if (!cleaned) return null;
-	return Array.from(cleaned).slice(0, MAX_SPINNER_VERB_LENGTH).join("");
+	const graphemes = Array.from(spinnerGraphemeSegmenter.segment(cleaned), ({ segment }) => segment);
+	return graphemes.slice(0, MAX_SPINNER_VERB_LENGTH).join("");
 }
 
 export function sanitizeSpinnerVerbs(value: unknown): string[] {
@@ -112,7 +111,7 @@ function readSpinnerSettings(): SpinnerSettings {
 	// CC's warm shimmer imposes its own fixed palette, so it only applies when the
 	// spinner is at its default color — a custom spinnerColor (or a live preview of
 	// one) means the user picked a static color and wins. Opt-out via spinnerShimmer.
-	const shimmer = raw.spinnerShimmer !== false && verbColor === "borderAccent";
+	const shimmer = resolveSpinnerShimmer(raw) && verbColor === "borderAccent";
 	const value: SpinnerSettings = {
 		adaptive,
 		verbColor,
@@ -170,8 +169,25 @@ const SHIMMER_STOPS: readonly ShimmerStop[] = [
 	{ atMs: 17_000, rgb: { r: 255, g: 175, b: 95 }, bold: true }, // + bold
 	{ atMs: 20_000, rgb: { r: 255, g: 215, b: 0 }, bold: true }, // #FFD700 gold
 ];
-// A bright warm cream highlight — more legible than CC's one-shade delta.
-const SHIMMER_SWEEP_RGB: Rgb = { r: 255, g: 215, b: 175 }; // #FFD7AF
+// The sweep highlight warms with the base rather than staying one fixed cream.
+// Stops are exact RGB equivalents of xterm colors observed in low/medium frames.
+const SHIMMER_HIGHLIGHT_STOPS: readonly Omit<ShimmerStop, "bold">[] = [
+	{ atMs: 0, rgb: { r: 255, g: 135, b: 135 } }, // xterm 216
+	{ atMs: 13_000, rgb: { r: 215, g: 175, b: 175 } }, // xterm 181
+	{ atMs: 14_000, rgb: { r: 215, g: 175, b: 135 } }, // xterm 180
+	{ atMs: 15_000, rgb: { r: 215, g: 215, b: 175 } }, // xterm 187
+	{ atMs: 17_000, rgb: { r: 215, g: 215, b: 135 } }, // xterm 186
+	{ atMs: 20_000, rgb: { r: 255, g: 215, b: 95 } }, // xterm 221
+];
+
+export function shimmerHighlightRgb(elapsedMs: number): Rgb {
+	let stop = SHIMMER_HIGHLIGHT_STOPS[0];
+	for (const candidate of SHIMMER_HIGHLIGHT_STOPS) {
+		if (elapsedMs >= candidate.atMs) stop = candidate;
+		else break;
+	}
+	return stop.rgb;
+}
 
 // One animation super-cycle: a sweep pass, then a breathing stretch, repeating.
 const SHIMMER_SWEEP_MS = 4_000;
@@ -227,13 +243,13 @@ export function shimmerSweep(verbLen: number, elapsedMs: number): { start: numbe
 
 /** Wrap the verb in the escalated base color (breathing when in that phase) with the sweep highlight. */
 export function colorizeShimmerVerb(verb: string, elapsedMs: number): string {
-	const chars = Array.from(verb);
+	const chars = Array.from(spinnerGraphemeSegmenter.segment(verb), ({ segment }) => segment);
 	const { rgb, bold } = shimmerBaseRgb(elapsedMs);
 	const boldSeq = bold ? SHIMMER_BOLD : "";
 	const baseAnsi = rgbAnsi(scaleRgb(rgb, shimmerBreatheFactor(elapsedMs)));
 	const sweep = shimmerSweep(chars.length, elapsedMs);
 	if (!sweep) return `${boldSeq}${baseAnsi}${verb}${RESET}`;
-	const hlAnsi = rgbAnsi(SHIMMER_SWEEP_RGB);
+	const hlAnsi = rgbAnsi(shimmerHighlightRgb(elapsedMs));
 	let out = boldSeq;
 	for (let i = 0; i < chars.length; i++) {
 		out += (i >= sweep.start && i <= sweep.end ? hlAnsi : baseAnsi) + chars[i];
@@ -584,22 +600,49 @@ function formatCount(value: number): string {
 	return new Intl.NumberFormat("en-US").format(value);
 }
 
-function estimateResponseLength(message: any): number {
-	if (!Array.isArray(message?.content)) return 0;
-	return message.content.reduce((sum: number, block: any) =>
-		sum + (block?.type === "text" && typeof block.text === "string" ? block.text.length : 0), 0);
+function outputTokens(value: any): number | null {
+	const output = value?.usage?.output;
+	return typeof output === "number" && Number.isFinite(output) && output >= 0 ? output : null;
 }
 
-function textBlockLengths(message: any): number[] {
-	if (!Array.isArray(message?.content)) return [];
-	const lengths: number[] = [];
-	for (let i = 0; i < message.content.length; i++) {
-		const block = message.content[i];
-		if (block?.type === "text" && typeof block.text === "string") {
-			lengths[i] = block.text.length;
-		}
+/** Provider-reported output tokens across all assistant messages in one request. */
+export class OutputTokenTracker {
+	private settled = 0;
+	private streaming = 0;
+	private turnFinished = false;
+
+	resetRequest(): void {
+		this.settled = 0;
+		this.streaming = 0;
+		this.turnFinished = false;
 	}
-	return lengths;
+
+	startTurn(): void {
+		this.streaming = 0;
+		this.turnFinished = false;
+	}
+
+	update(event: any): boolean {
+		if (this.turnFinished) return false;
+		const next = outputTokens(event?.partial ?? event?.message);
+		if (next === null || next <= this.streaming) return false;
+		this.streaming = next;
+		return true;
+	}
+
+	finish(message: any): boolean {
+		if (this.turnFinished) return false;
+		this.turnFinished = true;
+		const final = outputTokens(message) ?? 0;
+		const turnTotal = Math.max(this.streaming, final);
+		this.settled += turnTotal;
+		this.streaming = 0;
+		return turnTotal > 0;
+	}
+
+	total(): number {
+		return this.settled + this.streaming;
+	}
 }
 
 function statusText(text: string): string {
@@ -625,6 +668,17 @@ const WORKING_MESSAGE_INTERVAL_MS = 1_000;
 /** Completion message linger */
 const TURN_COMPLETION_MS = 2_500;
 
+export function thinkingProgressPhrase(elapsedMs: number): "thinking" | "still thinking" | "thinking more" | "thinking some more" | "almost done thinking" {
+	if (elapsedMs >= 47_000) return "almost done thinking";
+	if (elapsedMs >= 32_000) return "thinking some more";
+	if (elapsedMs >= 22_000) return "thinking more";
+	if (elapsedMs >= 12_000) return "still thinking";
+	return "thinking";
+}
+
+export function activeThinkingProgressPhrase(thinkingStartedAt: number, now: number): ReturnType<typeof thinkingProgressPhrase> {
+	return thinkingProgressPhrase(thinkingStartedAt > 0 ? Math.max(0, now - thinkingStartedAt) : 0);
+}
 
 export default function (pi: ExtensionAPI) {
 	let agentStartTime = 0;
@@ -633,8 +687,7 @@ export default function (pi: ExtensionAPI) {
 	let completionTimer: ReturnType<typeof setTimeout> | null = null;
 	let thoughtStatusTimer: ReturnType<typeof setTimeout> | null = null;
 	let currentVerb = "";
-	let responseLength = 0;
-	let responseTextBlockLengths: number[] = [];
+	const tokenTracker = new OutputTokenTracker();
 	let thinkingStatus: "thinking" | number /* duration ms */ | null = null;
 	let thinkingStartTime = 0;
 	let thoughtForSetAt = 0;
@@ -655,7 +708,7 @@ export default function (pi: ExtensionAPI) {
 
 	function buildWorkingMessage(): string {
 		const elapsed = Date.now() - (agentStartTime || turnStartTime);
-		const tokenCount = Math.max(0, Math.round(responseLength / 4));
+		const tokenCount = tokenTracker.total();
 		const statusParts: string[] = [];
 
 		// Claude Code orders the status list duration → tokens → thinking, e.g.
@@ -669,7 +722,7 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		if (thinkingStatus === "thinking") {
-			statusParts.push(`thinking${getEffortSuffix()}`);
+			statusParts.push(`${activeThinkingProgressPhrase(thinkingStartTime, Date.now())}${getEffortSuffix()}`);
 		} else if (typeof thinkingStatus === "number") {
 			statusParts.push(`thought for ${Math.max(1, Math.round(thinkingStatus / 1000))}s`);
 		}
@@ -681,17 +734,6 @@ export default function (pi: ExtensionAPI) {
 			message += statusText(` (${statusParts.join(" · ")})`);
 		}
 		return message;
-	}
-
-	function setResponseTextBlockLength(index: number, length: number): void {
-		const previous = responseTextBlockLengths[index] ?? 0;
-		responseTextBlockLengths[index] = Math.max(0, length);
-		responseLength = Math.max(0, responseLength + responseTextBlockLengths[index] - previous);
-	}
-
-	function resetResponseTracking(message?: any): void {
-		responseTextBlockLengths = message ? textBlockLengths(message) : [];
-		responseLength = message ? estimateResponseLength(message) : 0;
 	}
 
 	function syncWorkingMessage(force = false): void {
@@ -727,7 +769,7 @@ export default function (pi: ExtensionAPI) {
 		if (_shimmerEnabled && _shimmerAnchorMs > 0) {
 			return SHIMMER_REFRESH_MS;
 		}
-		const tokenCount = Math.max(0, Math.round(responseLength / 4));
+		const tokenCount = tokenTracker.total();
 		// Keep ticking once per second even when idle so Claudify screen changes
 		// take effect within ~1s and elapsed-time crossover into the timer-on
 		// state still fires close to 30s. syncWorkingMessage short-circuits
@@ -815,7 +857,7 @@ export default function (pi: ExtensionAPI) {
 		turnStartTime = 0;
 		thinkingStatus = null;
 		thoughtForSetAt = 0;
-		resetResponseTracking();
+		tokenTracker.resetRequest();
 		restoreDefaultWorkingMessage();
 	}
 
@@ -840,6 +882,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("agent_start", async () => {
 		if (!agentStartTime) agentStartTime = Date.now();
+		tokenTracker.resetRequest();
 	});
 
 	pi.on("turn_start", async (_event, ctx) => {
@@ -850,7 +893,7 @@ export default function (pi: ExtensionAPI) {
 		turnStartTime = Date.now();
 		if (!agentStartTime) agentStartTime = turnStartTime;
 		currentVerb = pickVerb();
-		resetResponseTracking();
+		tokenTracker.startTurn();
 		clearCompletionTimer();
 		if (typeof thinkingStatus !== "number" || Date.now() - thoughtForSetAt >= THOUGHT_DISPLAY_MS) {
 			thinkingStatus = null;
@@ -865,23 +908,7 @@ export default function (pi: ExtensionAPI) {
 		activeCtx = ctx;
 		applyThemeColors(ctx.ui?.theme);
 		const evt = event.assistantMessageEvent;
-		let statusChanged = false;
-		const previousTokenCount = Math.max(0, Math.round(responseLength / 4));
-
-		if (evt.type === "start") {
-			resetResponseTracking();
-		} else if (evt.type === "text_start") {
-			setResponseTextBlockLength(evt.contentIndex, 0);
-		} else if (evt.type === "text_delta") {
-			const previous = responseTextBlockLengths[evt.contentIndex] ?? 0;
-			setResponseTextBlockLength(evt.contentIndex, previous + (typeof evt.delta === "string" ? evt.delta.length : 0));
-		} else if (evt.type === "text_end") {
-			setResponseTextBlockLength(evt.contentIndex, typeof evt.content === "string" ? evt.content.length : 0);
-		} else if (evt.type === "done") {
-			resetResponseTracking(evt.message);
-		} else if (evt.type === "error") {
-			resetResponseTracking(evt.error);
-		}
+		let statusChanged = tokenTracker.update(evt);
 
 		if (evt.type === "thinking_start") {
 			clearThoughtStatusTimer();
@@ -897,13 +924,14 @@ export default function (pi: ExtensionAPI) {
 		if (statusChanged) {
 			syncWorkingMessage(true);
 			rescheduleRefreshLoop();
-			return;
 		}
+	});
 
-		const nextTokenCount = Math.max(0, Math.round(responseLength / 4));
-		if (previousTokenCount === 0 && nextTokenCount > 0) {
-			rescheduleRefreshLoop();
-		}
+	pi.on("message_end", async (event, ctx) => {
+		if (event.message?.role !== "assistant") return;
+		if (tokenTracker.finish(event.message) && ctx.hasUI) syncWorkingMessage(true);
+		// Abort/error streams do not always emit thinking_end.
+		onThinkingEnd();
 	});
 
 	pi.on("turn_end", async (_event, ctx) => {
@@ -937,8 +965,6 @@ export default function (pi: ExtensionAPI) {
 			restoreDefaultWorkingMessage();
 		}
 
-		responseLength = 0;
-		responseTextBlockLengths = [];
 	});
 
 	pi.on("agent_end", async () => {

@@ -159,20 +159,20 @@ Line structure: five columns of indent, then a ` N ` line-number gutter, then th
 column (`-`, `+`, or a space for context), then content. No box, no `▌`, no `│`, no
 horizontal rules.
 
-Colors (truecolor):
+Colors, refreshed from Claude Code v2.1.266's xterm capture (shown as exact RGB equivalents):
 
 | Element | SGR |
 |---------|-----|
-| Removed line background | `48;2;61;1;0` |
-| Removed changed token background | `48;2;92;2;0` |
-| Removed gutter + sign foreground | `38;2;220;90;90` |
-| Added line background | `48;2;2;40;0` |
-| Added changed token background | `48;2;4;71;0` |
-| Added gutter + sign foreground | `38;2;80;200;80` |
+| Removed line background | xterm 52 → `48;2;95;0;0` |
+| Removed changed token background | none; same background as the rest of the removed row |
+| Removed gutter + sign foreground | xterm 167 → `38;2;215;95;95` |
+| Added line background | xterm 22 → `48;2;0;95;0` |
+| Added changed token background | xterm 28 → `48;2;0;135;0` |
+| Added gutter + sign foreground | xterm 77 → `38;2;95;215;95` |
 | Context line number | dim (`2m`), default foreground |
-| Syntax highlighting | Monokai-ish: fg `248;248;242`, keyword `102;217;239`, number `190;132;255` |
+| Syntax highlighting | Monokai: fg xterm 231, keyword 81, function/property 148, string 186, number 141, boolean 197 |
 | Result `⎿` gutter | `38;2;153;153;153` |
-| Success bullet `⏺` | `38;2;78;186;101` |
+| Success bullet `⏺` | xterm 114 → `38;2;135;215;135` |
 
 Two details that are easy to miss:
 
