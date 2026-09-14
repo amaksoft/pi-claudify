@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 
-export const MAX_WRITE_SNAPSHOT_BYTES = 1024 * 1024;
-export const MAX_WRITE_DIFF_INPUT_BYTES = MAX_WRITE_SNAPSHOT_BYTES * 2;
+export { MAX_WRITE_DIFF_INPUT_BYTES, MAX_WRITE_SNAPSHOT_BYTES } from "./domain/limits.ts";
+import { MAX_WRITE_DIFF_INPUT_BYTES, MAX_WRITE_SNAPSHOT_BYTES } from "./domain/limits.ts";
 
 export type WriteSnapshot =
 	| { kind: "new" }
