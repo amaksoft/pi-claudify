@@ -11,6 +11,21 @@ const settingsPath = `${process.env.HOME}/.pi/settings.json`;
 const { clearSettingsCache } = await import("../extensions/settings.ts");
 const { default: claudify, DottedParagraph, ThinkingParagraph } = await import("../extensions/index.ts");
 
+class FakePi {
+	tools = new Map<string, any>();
+	commands = new Map<string, any>();
+	events = new Map<string, any[]>();
+	registerTool(definition: any): void { this.tools.set(definition.name, definition); }
+	registerCommand(name: string, command: any): void { this.commands.set(name, command); }
+	on(name: string, handler: any): void { this.events.set(name, [...(this.events.get(name) ?? []), handler]); }
+	getAllTools(): any[] { return [...this.tools.values()]; }
+	getThinkingLevel(): string { return "off"; }
+}
+// Wires DottedParagraph/ThinkingParagraph's Markdown/visibleWidth runtime (see
+// extensions/render/message-components.ts's configureMessageComponents) before
+// any paragraph is constructed below.
+claudify(new FakePi() as any);
+
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
 const OSC_RE = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
 const markdown = [
@@ -68,17 +83,6 @@ assert.match(literalGlyphs, /```/, "literal triple-backtick code content is not 
 assert.match(literalGlyphs, /────/, "literal rule glyph text is not rewritten as Markdown HR");
 assert.match(literalGlyphs, /│ value/, "literal single-pipe text is not rewritten as a quote");
 
-class FakePi {
-	tools = new Map<string, any>();
-	commands = new Map<string, any>();
-	events = new Map<string, any[]>();
-	registerTool(definition: any): void { this.tools.set(definition.name, definition); }
-	registerCommand(name: string, command: any): void { this.commands.set(name, command); }
-	on(name: string, handler: any): void { this.events.set(name, [...(this.events.get(name) ?? []), handler]); }
-	getAllTools(): any[] { return [...this.tools.values()]; }
-	getThinkingLevel(): string { return "off"; }
-}
-claudify(new FakePi() as any);
 const hostAssistant = new AssistantMessageComponent({
 	role: "assistant",
 	content: [{ type: "text", text: "> packed quote\n\n```ts\nconst packed = 1;\n```" }],
