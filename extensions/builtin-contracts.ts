@@ -21,18 +21,48 @@ export interface HostToolSettings {
 	autoResizeImages: boolean;
 }
 
+export interface HostToolSettingsContext {
+	/** Pi's effective global configuration directory. */
+	agentDir: string;
+	/** Project settings are executable configuration and require explicit trust. */
+	projectTrusted?: boolean;
+}
+
+/**
+ * Resolve Pi's global configuration directory through an optional namespace
+ * capability, keeping module loading compatible across supported Pi releases.
+ */
+export function effectiveAgentDir(getAgentDir?: unknown): string {
+	if (typeof getAgentDir === "function") {
+		try {
+			const value = getAgentDir();
+			if (typeof value === "string" && value.length > 0) return value;
+		} catch {
+			// Fall through to the same environment/default resolution used by Pi.
+		}
+	}
+	const home = process.env.HOME || homedir();
+	const configured = process.env.PI_CODING_AGENT_DIR;
+	if (!configured) return join(home, ".pi", "agent");
+	if (configured === "~") return home;
+	if (configured.startsWith("~/")) return join(home, configured.slice(2));
+	return configured;
+}
+
 /**
  * Mirror the settings Pi uses when constructing built-in tools. Extensions do
  * not receive SettingsManager, so read global settings followed by the trusted
  * project override. This affects execution only; claudify's own settings remain
  * user-scope by design.
  */
-export function hostToolSettings(cwd: string): HostToolSettings {
+export function hostToolSettings(cwd: string, context: HostToolSettingsContext): HostToolSettings {
 	const home = process.env.HOME || homedir();
 	let shellPath: string | undefined;
 	let commandPrefix: string | undefined;
 	let autoResize: boolean | undefined;
-	for (const path of [join(home, ".pi", "agent", "settings.json"), join(cwd, ".pi", "settings.json")]) {
+	const paths = [join(context.agentDir, "settings.json")];
+	if (context.projectTrusted === true) paths.push(join(cwd, ".pi", "settings.json"));
+	for (const path of paths) {
 		try {
 			if (!existsSync(path)) continue;
 			const raw = JSON.parse(readFileSync(path, "utf8")) as {
@@ -47,7 +77,8 @@ export function hostToolSettings(cwd: string): HostToolSettings {
 			// Host also degrades to defaults for unreadable settings.
 		}
 	}
-	if (shellPath?.startsWith("~")) shellPath = join(home, shellPath.slice(1));
+	if (shellPath === "~") shellPath = home;
+	else if (shellPath?.startsWith("~/")) shellPath = join(home, shellPath.slice(2));
 	return { shellPath, commandPrefix, autoResizeImages: autoResize ?? true };
 }
 

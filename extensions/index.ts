@@ -1,7 +1,9 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { readFile as readFileAsync } from "node:fs/promises";
 import { extname, relative, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
+import * as PiCodingAgent from "@earendil-works/pi-coding-agent";
 import type {
 	BashToolDetails,
 	EditToolDetails,
@@ -76,11 +78,19 @@ import monokaiTheme from "@shikijs/themes/monokai";
 import { registerBanner } from "./banner.ts";
 import { bashHeaderCommand } from "./bash-preview.ts";
 import { CLAUDE_PALETTE } from "./claude-palette.ts";
-import { forwardedToolContract, hostToolSettings, skippedToolOverrides } from "./builtin-contracts.ts";
+import { effectiveAgentDir, forwardedToolContract, hostToolSettings, skippedToolOverrides } from "./builtin-contracts.ts";
 import { ClaudifyScreen } from "./claudify-screen.ts";
-import { diffCard } from "./diff-card.ts";
+import { debugDiagnostic } from "./debug.ts";
+import { bumpDiffPresentationEpoch, diffCard } from "./diff-card.ts";
+import { deferGenerationRelease } from "./lifecycle/generation-handoff.ts";
+import {
+	clearPointerExpandedMembers,
+	handlePointerExpansionInput,
+	markPointerExpandedMembers,
+} from "./expansion-coordinator.ts";
 import { installClaudeFooter, normalizeHexColor, patchEditorBorderColor } from "./footer.ts";
 import {
+	HOST_CONTAINER_RENDER,
 	InspectionGroupComponent,
 	isInspectionGroupComponent,
 	reconcileInspectionGroups,
@@ -108,10 +118,17 @@ import {
 import { applyPromptPointer, registerPromptPointer } from "./prompt-editor.ts";
 import { resolveColorSource, resolveMarkdownStyle, resolveSurfaceColorSource } from "./presentation-profile.ts";
 import { registerSessionMetrics } from "./session-metrics.ts";
-import { getSettingsRevision, readSettings } from "./settings.ts";
-import { sanitizeToolText, WRAP_MARK } from "./terminal-sanitize.ts";
+import { DEFAULT_EXPANDED_PREVIEW_MAX_LINES, getSettingsRevision, readSettings } from "./settings.ts";
+import { sanitizeToolContent, sanitizeToolOutput, sanitizeToolText, WRAP_MARK } from "./terminal-sanitize.ts";
+import {
+	compatibleInspectionToolName,
+	presentationAdapterFromDefinition,
+	supportsInspectionCall,
+	supportsInspectionResult,
+	type ToolPresentationAdapter,
+} from "./tool-presentation.ts";
 import { selectVisualItems, selectVisualPreview, widthAwareText, type VisualPreviewMode } from "./visual-preview.ts";
-import { captureWriteSnapshot, writeDiffOmissionReason } from "./write-snapshot.ts";
+import { MAX_WRITE_DIFF_INPUT_BYTES, captureWriteSnapshot, writeDiffOmissionReason } from "./write-snapshot.ts";
 
 export { anchorFramedHeights } from "./mouse-layout.ts";
 export { sanitizeToolText } from "./terminal-sanitize.ts";
@@ -152,7 +169,10 @@ const ANSI_PRESENT_RE = /\x1b\[[0-9;]*m/;
 const PATCH_FLAG = Symbol.for("pi-claudify:patched-container-render");
 const TOOL_RENDER_CACHE = Symbol.for("pi-claudify:tool-render-cache");
 const TOOL_RENDER_SETTINGS_REVISION = Symbol.for("pi-claudify:tool-render-settings-revision");
+const TOOL_PRESENTATION_REVISION = Symbol.for("pi-claudify:tool-presentation-revision");
+const TOOL_COMPONENT_PRESENTATION_REVISION = Symbol.for("pi-claudify:tool-component-presentation-revision");
 const TOOL_CACHE_PATCH_FLAG = Symbol.for("pi-claudify:patched-tool-cache-invalidation");
+const TOOL_FALLBACK_SANITIZE_FLAG = Symbol.for("pi-claudify:patched-tool-fallback-sanitize");
 const TOOL_IMAGE_EXPAND_PATCH_FLAG = Symbol.for("pi-claudify:patched-read-image-expansion");
 const CUSTOM_MESSAGE_PATCH_FLAG = Symbol.for("pi-claudify:patched-custom-message-render");
 const COMPACTION_MESSAGE_PATCH_FLAG = Symbol.for("pi-claudify:patched-compaction-message-render");
@@ -171,12 +191,12 @@ const CLAUDE_COLLAPSED_INDENT = "  ";
 
 // Status colors read off Claude Code's raw TTY stream. The bullet is the trust
 // signal: gray while the tool runs, green once it actually succeeded.
-const CC_DOT_PENDING = CLAUDE_PALETTE.status.pending;
+let CC_DOT_PENDING: string = CLAUDE_PALETTE.status.pending;
 // Fresh Claude Code v2.1.266 dark capture: xterm 114 (#87D787) success,
 // xterm 211 (#FF87AF) error. Diff-removal red is a separate semantic color.
-const CC_DOT_SUCCESS = CLAUDE_PALETTE.status.success;
-const CC_DOT_ERROR = CLAUDE_PALETTE.status.error;
-const CC_GUTTER_FG = CLAUDE_PALETTE.gutter;
+let CC_DOT_SUCCESS: string = CLAUDE_PALETTE.status.success;
+let CC_DOT_ERROR: string = CLAUDE_PALETTE.status.error;
+let CC_GUTTER_FG: string = CLAUDE_PALETTE.gutter;
 const D_BOLD_ON = "\x1b[1m";
 const D_BOLD_OFF = "\x1b[22m";
 const FG_DEFAULT = "\x1b[39m";
@@ -187,9 +207,18 @@ const FG_DEFAULT = "\x1b[39m";
  * emphasis comes from bold, not hue.
  */
 function osc8Link(target: string, label: string): string {
-	if (!target) return label;
-	const uri = `file://${encodeURI(target)}`;
-	return `\x1b]8;;${uri}\x07${label}\x1b]8;;\x07`;
+	const safeLabel = sanitizeToolText(label);
+	if (!target) return safeLabel;
+	try {
+		const wellFormedTarget = typeof target.toWellFormed === "function"
+			? target.toWellFormed()
+			: target.replace(/[\uD800-\uDFFF]/g, "\ufffd");
+		const uri = pathToFileURL(wellFormedTarget).href;
+		return `\x1b]8;;${uri}\x07${safeLabel}\x1b]8;;\x07`;
+	} catch (error) {
+		debugDiagnostic("osc8-path", error);
+		return safeLabel;
+	}
 }
 
 /** Absolute path for the link target; the label stays the short display path. */
@@ -217,6 +246,14 @@ export const COMMON_COLOR_KEYS: readonly string[] = [
 function bustSpinnerSettingsCache(): void {
 	const current = ((globalThis as any)[SPINNER_BUST_KEY] as number | undefined) ?? 0;
 	(globalThis as any)[SPINNER_BUST_KEY] = current + 1;
+}
+
+function currentToolPresentationRevision(): number {
+	return ((globalThis as any)[TOOL_PRESENTATION_REVISION] as number | undefined) ?? 0;
+}
+
+function bumpToolPresentationRevision(): void {
+	(globalThis as any)[TOOL_PRESENTATION_REVISION] = currentToolPresentationRevision() + 1;
 }
 
 function getMessageChromeSettings(): MessageChromeSettings {
@@ -535,12 +572,18 @@ function ansiFromHex(theme: unknown, hex: CustomHexColor, layer: "foreground" | 
 	return `\x1b[${prefix};2;${rgb.r};${rgb.g};${rgb.b}m`;
 }
 
-function isDarkTheme(theme: unknown): boolean {
+export function themePolarity(theme: unknown): "dark" | "light" | "unknown" {
 	const rgb = colorToRgb(getThemeFg(theme, "text") ?? "");
-	if (!rgb) return true;
-	// Light text means a dark background.
-	return 0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b > 128;
+	if (rgb) {
+		// Light text means a dark background.
+		return 0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b > 128 ? "dark" : "light";
+	}
+	const name = typeof (theme as any)?.name === "string" ? (theme as any).name.toLowerCase() : "";
+	if (name.includes("light")) return "light";
+	if (name.includes("dark")) return "dark";
+	return "unknown";
 }
+
 
 export function applyAccentOverride(theme: unknown): void {
 	// `themeColors: false` also covers the manual re-apply calls the Claudify
@@ -564,15 +607,16 @@ export function applyAccentOverride(theme: unknown): void {
 	const accentColor = resolveSurfaceColorSource(settings, "accentColor");
 	const customAccent = storedHexColor(accentColor);
 	const colorMode = (theme as any).mode === "256color" ? "ansi256" : "truecolor";
-	// `theme` restores the active Pi theme's original accent; otherwise the
-	// explicit custom/Claude accent is the renderer-owned override.
-	const themeOwnsAccent = accentColor === "theme";
+	const polarity = themePolarity(theme);
+	// Unknown/default foregrounds are not evidence of a dark terminal. Preserve
+	// the theme's semantic accent unless polarity is known or a custom hex wins.
+	const themeOwnsAccent = accentColor === "theme" || (!customAccent && polarity === "unknown");
 	const target = themeOwnsAccent
 		? snapshot?.original ?? current
 		: customAccent
 			? ansiFromHex(theme, customAccent, "foreground")
-				?? CC_ACCENT_ANSI[isDarkTheme(theme) ? "dark" : "light"][colorMode]
-			: CC_ACCENT_ANSI[isDarkTheme(theme) ? "dark" : "light"][colorMode];
+				?? CC_ACCENT_ANSI[polarity === "light" ? "light" : "dark"][colorMode]
+			: CC_ACCENT_ANSI[polarity === "light" ? "light" : "dark"][colorMode];
 	// Register only values we impose, never a restored original: a theme whose own
 	// accent happens to equal some other theme's custom color must still snapshot.
 	if (!themeOwnsAccent) appliedAccentValues.add(target);
@@ -640,31 +684,11 @@ function stripAnsi(text: string): string {
 	return text.replace(ANSI_RE, "");
 }
 
-function stripRenderedHeadingMarkers(line: string): string {
-	return line.replace(/^((?:\x1b\[[0-9;]*m|[ \t])*)#{3,6}[ \t]*((?:\x1b\[[0-9;]*m)*)/, "$1$2");
-}
-
-export function sanitizeRenderedTextBlockLines(lines: string[], style: "claude" | "pi" = "claude"): string[] {
-	if (style === "pi") return lines;
-	let inFence = false;
-	return lines.map((line) => {
-		const plain = stripAnsi(line).trimStart();
-		if (plain.startsWith("```")) {
-			inFence = !inFence;
-			// Claude hides language/opening and closing fence rows.
-			return "";
-		}
-		if (inFence) {
-			// Pi's Markdown adds code indentation before message chrome adds its own
-			// continuation indent. Claude's fenced body starts at two columns total.
-			return line.replace(/^ {2}/, "");
-		}
-		if (/^─{3,}$/.test(plain.trim())) return "---";
-		// Pi tables also use │ at the left edge; a blockquote has exactly one pipe.
-		const pipeCount = (plain.match(/│/g) ?? []).length;
-		const quoted = pipeCount === 1 ? line.replace("│", "▎") : line;
-		return stripRenderedHeadingMarkers(quoted).replace(/###/g, "");
-	});
+export function sanitizeRenderedTextBlockLines(lines: string[], _style: "claude" | "pi" = "claude"): string[] {
+	// Structural Markdown differences are expressed through parser callbacks in
+	// DottedParagraph/ThinkingParagraph. Rendered glyphs have no provenance: a
+	// literal ` ``` `, `────`, or single `│` must never be mistaken for syntax.
+	return lines;
 }
 
 function isBlankLine(text: string): boolean {
@@ -709,10 +733,8 @@ function readOnlyToolGroupLimit(): number {
 function isInspectionGroupCandidate(value: unknown): boolean {
 	if (!readOnlyToolGroupingEnabled() || !isToolExecutionLike(value)) return false;
 	const rec = toolComponentRecord(value);
-	if (rec.expanded === true) return false;
-	// A disabled tool (compatibility.tools / legacy skipToolOverrides) never
-	// joins an aggregate group — no Claudify grouping for it, period.
 	if (presentationOverrideSkipped(rec.toolName)) return false;
+	if (rec.expanded === true) return false;
 	if (rec.toolName === "read" || rec.toolName === "grep" || rec.toolName === "find" || rec.toolName === "ls") return true;
 	// Every MCP call aggregates, whatever it does. Claude Code renders a mutating
 	// or failing MCP tool exactly like a read-only one — there is no separate row.
@@ -879,6 +901,7 @@ const inspectionGroupPolicy: InspectionGroupPolicy = {
 	isEligible: isInspectionGroupCandidate,
 	isSettled: isSettledInspectionTool,
 	setExpanded: setToolExpanded,
+	onPointerExpand: markPointerExpandedMembers,
 	renderActive: renderActiveInspectionGroup,
 	renderSettled: renderSettledInspectionGroup,
 };
@@ -947,18 +970,55 @@ function splitRenderedImageBlock(lines: string[]): { textLines: string[]; imageL
 	return { textLines, imageLines: lines.slice(imageStart) };
 }
 
-function patchGlobalToolBorders(): void {
-	const proto = Container.prototype as any;
-	if (proto[PATCH_FLAG]) return;
+interface GlobalRenderPatchRegistry {
+	originalRender: (width: number) => string[];
+}
+interface ActiveGlobalRenderState {
+	owner?: object;
+	delegate?: (this: unknown, width: number) => string[];
+}
+function activeGlobalRenderState(): ActiveGlobalRenderState {
+	const root = globalThis as Record<PropertyKey, unknown>;
+	let state = root[GLOBAL_RENDER_STATE_KEY] as ActiveGlobalRenderState | undefined;
+	if (!state) {
+		state = {};
+		root[GLOBAL_RENDER_STATE_KEY] = state;
+	}
+	return state;
+}
 
-	const originalRender = proto.render;
-	proto.render = function patchedContainerRender(width: number): string[] {
+function hostContainerPrototype(): any {
+	const candidate = Object.getPrototypeOf(ToolExecutionComponent.prototype);
+	return candidate && typeof candidate.render === "function" ? candidate : Container.prototype;
+}
+
+function patchGlobalToolBordersOn(proto: any, owner: object): void {
+	const legacyPatch = proto[PATCH_FLAG] === true;
+	let registry = legacyPatch ? undefined : proto[PATCH_FLAG] as GlobalRenderPatchRegistry | undefined;
+	if (!registry) {
+		// Migrate the old boolean-guard generation by recovering the process-level
+		// pristine host renderer captured before any claudify patch was installed.
+		registry = { originalRender: legacyPatch ? HOST_CONTAINER_RENDER : proto.render };
+		proto[PATCH_FLAG] = registry;
+		proto.render = function stableClaudifyContainerRender(this: unknown, width: number): string[] {
+			const active = activeGlobalRenderState().delegate;
+			return active ? active.call(this, width) : registry!.originalRender.call(this, width);
+		};
+	}
+	const originalRender = registry.originalRender;
+	const delegate = function patchedContainerRender(this: unknown, width: number): string[] {
+		if (isToolExecutionLike(this) && presentationOverrideSkipped(toolComponentRecord(this).toolName)) {
+			return originalRender.call(this, width);
+		}
 		if (!isToolExecutionLike(this)) {
 			const children = Array.isArray((this as any).children) ? (this as any).children as unknown[] : [];
 			// The prototype patch reaches every Container; only transcript containers
 			// with a candidate/group need tree reconciliation.
 			if (children.some((child) => isInspectionGroupComponent(child) || isInspectionGroupCandidate(child))) {
-				try { ensureInspectionGroups(this); } catch { /* native rows are the fallback */ }
+				try { ensureInspectionGroups(this); } catch (error) {
+					debugDiagnostic("inspection-reconcile", error);
+					// Native rows are the fallback.
+				}
 			}
 			// The host's original render owns parent mouseLayout; wrappers own only
 			// the geometry of the aggregate lines they paint.
@@ -974,6 +1034,13 @@ function patchGlobalToolBorders(): void {
 
 		const settingsRevision = isToolExecutionLike(this) ? getSettingsRevision() : 0;
 		if (isToolExecutionLike(this)) {
+			const presentationRevision = currentToolPresentationRevision();
+			if ((this as any)[TOOL_COMPONENT_PRESENTATION_REVISION] !== presentationRevision) {
+				(this as any)[TOOL_COMPONENT_PRESENTATION_REVISION] = presentationRevision;
+				try { (this as any).updateDisplay?.(); }
+				catch (error) { debugDiagnostic("presentation-refresh", error); }
+				delete (this as any)[TOOL_RENDER_CACHE];
+			}
 			if ((this as any)[TOOL_RENDER_SETTINGS_REVISION] !== settingsRevision) {
 				(this as any)[TOOL_RENDER_SETTINGS_REVISION] = settingsRevision;
 				delete (this as any)[TOOL_RENDER_CACHE];
@@ -1036,8 +1103,21 @@ function patchGlobalToolBorders(): void {
 		(this as any)[TOOL_RENDER_CACHE] = { width, mode: effectiveToolBackgroundMode(), settingsRevision, lines: result };
 		return result;
 	};
+	const active = activeGlobalRenderState();
+	active.owner = owner;
+	active.delegate = delegate;
+}
 
-	proto[PATCH_FLAG] = true;
+function patchGlobalToolBorders(owner: object): void {
+	for (const proto of new Set([hostContainerPrototype(), Container.prototype])) patchGlobalToolBordersOn(proto, owner);
+}
+
+function releaseGlobalToolBorders(owner: object): void {
+	const active = activeGlobalRenderState();
+	if (active.owner === owner) {
+		active.owner = undefined;
+		active.delegate = undefined;
+	}
 }
 
 function summarizeText(text: string, max = 60): string {
@@ -1077,6 +1157,9 @@ function unrefTimer(timer: ReturnType<typeof setTimeout> | null | undefined): vo
 
 const ASSISTANT_PATCH_FLAG = Symbol.for("pi-claudify:patched-assistant-message");
 const TOOL_EXECUTION_PATCH_FLAG = Symbol.for("pi-claudify:patched-tool-execution");
+const TOOL_RENDERER_STATE_KEY = Symbol.for("pi-claudify:tool-renderer-state");
+const GLOBAL_RENDER_STATE_KEY = Symbol.for("pi-claudify:global-render-state");
+const TOOL_OWNERSHIP_SNAPSHOT_KEY = Symbol.for("pi-claudify:tool-ownership-snapshot");
 const TOOL_INDENT_PATCH_FLAG = Symbol.for("pi-claudify:patched-tool-row-indent");
 const OSC133_ZONE_START = "\x1b]133;A\x07";
 const OSC133_ZONE_END = "\x1b]133;B\x07";
@@ -1189,6 +1272,10 @@ export class DottedParagraph {
 			listBullet: defaultFg,
 			code: (value: string) => `${CLAUDE_PALETTE.inlineCode}${value}${FG_DEFAULT}`,
 			link: (value: string) => `${CLAUDE_PALETTE.link}${value}${FG_DEFAULT}`,
+			codeBlockIndent: "",
+			codeBlockBorder: () => "",
+			hr: () => "---",
+			quoteBorder: () => "▎ ",
 		};
 		const claudeAccentTheme: ConstructorParameters<typeof Markdown>[3] = {
 			...claudeTheme,
@@ -1249,16 +1336,17 @@ export class DottedParagraph {
 	}
 }
 
-class ThinkingParagraph {
-	private md: InstanceType<typeof Markdown>;
+export class ThinkingParagraph {
+	private claudeMd: InstanceType<typeof Markdown>;
+	private piMd: InstanceType<typeof Markdown>;
 	private cachedWidth?: number;
 	private cachedChromeKey?: string;
 	private cachedLines?: string[];
 
 	constructor(
 		text: string,
-		_markdownTheme: ConstructorParameters<typeof Markdown>[3],
-		_defaultTextStyle?: ConstructorParameters<typeof Markdown>[4],
+		markdownTheme: ConstructorParameters<typeof Markdown>[3],
+		defaultTextStyle?: ConstructorParameters<typeof Markdown>[4],
 	) {
 		// Use a plain theme that strips all color/formatting from thinking blocks.
 		// Every element gets the same dim italic treatment, tracking the active
@@ -1272,10 +1360,11 @@ class ThinkingParagraph {
 			linkUrl: wrap,
 			code: wrap,
 			codeBlock: wrap,
-			codeBlockBorder: wrap,
+			codeBlockIndent: "",
+			codeBlockBorder: () => "",
 			quote: wrap,
-			quoteBorder: wrap,
-			hr: wrap,
+			quoteBorder: () => `${DIM_FG}${ITALIC}▎ `,
+			hr: () => `${DIM_FG}${ITALIC}---`,
 			listBullet: wrap,
 			bold: wrap,
 			italic: wrap,
@@ -1289,19 +1378,22 @@ class ThinkingParagraph {
 			italic: true,
 			color: (s: string) => `${DIM_FG}${ITALIC}${s}`,
 		};
-		this.md = new Markdown(text, 0, 0, plainTheme, plainStyle);
+		this.claudeMd = new Markdown(text, 0, 0, plainTheme, plainStyle);
+		this.piMd = new Markdown(text, 0, 0, markdownTheme, defaultTextStyle);
 	}
 
 	invalidate(): void {
 		this.cachedWidth = undefined;
 		this.cachedChromeKey = undefined;
 		this.cachedLines = undefined;
-		this.md.invalidate();
+		this.claudeMd.invalidate();
+		this.piMd.invalidate();
 	}
 
 	render(width: number): string[] {
 		const settings = getMessageChromeSettings();
-		const chromeKey = messageChromeCacheKey(settings, "thinking");
+		const markdownStyle = resolveMarkdownStyle(readSettings().values);
+		const chromeKey = `${messageChromeCacheKey(settings, "thinking")}:${markdownStyle}`;
 		if (this.cachedLines && this.cachedWidth === width && this.cachedChromeKey === chromeKey) return this.cachedLines;
 		const isClassic = settings.messageStyle === "classic";
 		const prefixGlyph = isClassic ? "✻" : settings.thinkingPrefix;
@@ -1314,7 +1406,8 @@ class ThinkingParagraph {
 			this.cachedLines = [isClassic ? ` ${coloredPrefixGlyph} ` : `${coloredPrefixGlyph} `];
 			return this.cachedLines;
 		}
-		const lines = sanitizeRenderedTextBlockLines(this.md.render(width - prefixWidth));
+		const markdown = markdownStyle === "pi" ? this.piMd : this.claudeMd;
+		const lines = sanitizeRenderedTextBlockLines(markdown.render(width - prefixWidth), markdownStyle);
 		const rendered = settings.messageStyle === "classic"
 			? renderClassicPrefixedLines(lines, coloredPrefixGlyph, false)
 			: colorFirstTranscriptPrefix(
@@ -1522,6 +1615,15 @@ function patchUserMessageRender(): void {
 	proto[USER_MESSAGE_PATCH_FLAG] = true;
 }
 
+function isMarkdownComponent(value: unknown): value is InstanceType<typeof Markdown> {
+	if (!value || typeof value !== "object") return false;
+	const candidate = value as any;
+	return candidate.constructor?.name === "Markdown"
+		&& typeof candidate.text === "string"
+		&& typeof candidate.render === "function"
+		&& typeof candidate.invalidate === "function";
+}
+
 function patchAssistantMessages(): void {
 	const proto = AssistantMessageComponent.prototype as any;
 	if (proto[ASSISTANT_PATCH_FLAG]) return;
@@ -1542,7 +1644,7 @@ function patchAssistantMessages(): void {
 		const mdTheme = (this as any).markdownTheme;
 		for (let i = container.children.length - 1; i >= 0; i--) {
 			const child = container.children[i];
-			if (child instanceof Markdown) {
+			if (isMarkdownComponent(child)) {
 				const text = (child as any).text;
 				if (!text) continue;
 				const isThinking = !!(child as any).defaultTextStyle?.italic;
@@ -1570,6 +1672,61 @@ function patchAssistantMessages(): void {
 		}
 	};
 	proto[ASSISTANT_PATCH_FLAG] = true;
+}
+
+interface ToolFallbackPatchRegistry {
+	originalGetTextOutput?: Function;
+	originalCreateCallFallback?: Function;
+	originalFormatToolExecution?: Function;
+	owner?: object;
+	sanitize?: boolean;
+}
+let legacyToolFallbackPatchDetected = false;
+
+function patchToolFallbackSanitization(owner: object): void {
+	const proto = ToolExecutionComponent.prototype as any;
+	if (proto[TOOL_FALLBACK_SANITIZE_FLAG] === true) {
+		legacyToolFallbackPatchDetected = true;
+		return;
+	}
+	let registry = proto[TOOL_FALLBACK_SANITIZE_FLAG] as ToolFallbackPatchRegistry | undefined;
+	if (!registry) {
+		registry = {
+			originalGetTextOutput: proto.getTextOutput,
+			originalCreateCallFallback: proto.createCallFallback,
+			originalFormatToolExecution: proto.formatToolExecution,
+		};
+		proto[TOOL_FALLBACK_SANITIZE_FLAG] = registry;
+		if (typeof registry.originalGetTextOutput === "function") {
+			proto.getTextOutput = function stableGetTextOutput(this: any, ...args: any[]) {
+				const output = registry!.originalGetTextOutput!.apply(this, args);
+				return registry!.sanitize ? sanitizeToolOutput(output) : output;
+			};
+		}
+		for (const [method, original] of [
+			["createCallFallback", registry.originalCreateCallFallback],
+			["formatToolExecution", registry.originalFormatToolExecution],
+		] as const) {
+			if (typeof original !== "function") continue;
+			proto[method] = function stableFallbackCall(this: any, ...args: any[]) {
+				if (!registry!.sanitize) return original.apply(this, args);
+				const toolName = this.toolName;
+				if (typeof toolName === "string") this.toolName = sanitizeToolText(toolName);
+				try { return original.apply(this, args); }
+				finally { this.toolName = toolName; }
+			};
+		}
+	}
+	registry.owner = owner;
+	registry.sanitize = true;
+}
+
+export function releaseToolFallbackSanitization(owner?: object): void {
+	const registry = (ToolExecutionComponent.prototype as any)[TOOL_FALLBACK_SANITIZE_FLAG] as ToolFallbackPatchRegistry | undefined;
+	if (registry && (owner === undefined || registry.owner === owner)) {
+		registry.owner = undefined;
+		registry.sanitize = false;
+	}
 }
 
 function patchToolRenderCacheInvalidation(): void {
@@ -1647,39 +1804,125 @@ function patchToolRowIndent(): void {
 	const originalUpdateDisplay = proto.updateDisplay;
 	if (typeof originalUpdateDisplay !== "function") return;
 	proto.updateDisplay = function patchedToolIndentUpdateDisplay(...args: any[]) {
-		if (featureEnabled("toolBackground")) {
-			for (const box of [this.contentBox, this.contentText]) {
-				if (box && box.paddingX !== 0) {
-					box.paddingX = 0;
-					box.invalidate?.();
-				}
-			}
+		if (!featureEnabled("toolBackground")) return originalUpdateDisplay.apply(this, args);
+		for (const box of [this.contentBox, this.contentText]) {
+			if (!box) continue;
+			let changed = false;
+			if (box.paddingX !== 0) { box.paddingX = 0; changed = true; }
+			// The global tool frame removes Box's vertical padding from rendered
+			// rows. Leaving it in Box.handleMouse shifts the first visible header
+			// into the discarded padding row, so only the result body is clickable.
+			if (typeof box.paddingY === "number" && box.paddingY !== 0) { box.paddingY = 0; changed = true; }
+			if (changed) box.invalidate?.();
 		}
-		return originalUpdateDisplay.apply(this, args);
+		const result = originalUpdateDisplay.apply(this, args);
+		syncToolBackgroundMode();
+		if (effectiveToolBackgroundMode() !== "default") {
+			// Do not depend on extension ordering or theme mutation timing: reload may
+			// construct a settled row while Pi's success background is still green.
+			// Neutralize the row's own background functions after updateDisplay installs
+			// them, while diff rows retain their intentional add/remove backgrounds.
+			this.contentBox?.setBgFn?.((text: string) => text);
+			this.contentText?.setCustomBgFn?.((text: string) => text);
+		}
+		return result;
 	};
 	proto[TOOL_INDENT_PATCH_FLAG] = true;
 }
 
-function patchToolExecutionRenderers(): void {
+interface ToolRendererPatchRegistry {
+	originalHas?: Function;
+	originalCall?: Function;
+	originalResult?: Function;
+}
+interface ActiveToolRendererState {
+	owner?: object;
+	presentations?: Map<string, ToolPresentationAdapter>;
+	hasDelegate?: (this: any) => boolean | undefined;
+	callDelegate?: (this: any) => unknown;
+	resultDelegate?: (this: any) => unknown;
+}
+function activeToolRendererState(): ActiveToolRendererState {
+	const root = globalThis as Record<PropertyKey, unknown>;
+	let state = root[TOOL_RENDERER_STATE_KEY] as ActiveToolRendererState | undefined;
+	if (!state) {
+		state = {};
+		root[TOOL_RENDERER_STATE_KEY] = state;
+	}
+	return state;
+}
+let legacyToolRendererPatchDetected = false;
+
+function compatiblePresentation(
+	state: ActiveToolRendererState,
+	component: any,
+	phase: "call" | "result",
+): ToolPresentationAdapter | undefined {
+	const name = compatibleInspectionToolName(component?.toolName);
+	if (!name || toolPresentationSkipped(name)) return undefined;
+	if (component?.toolDefinition?.renderShell === "self") return undefined;
+	const adapter = state.presentations?.get(name);
+	if (!adapter) return undefined;
+	if (phase === "call") return adapter.renderCall && supportsInspectionCall(name, component?.args) ? adapter : undefined;
+	return adapter.renderResult && supportsInspectionResult(name, component?.result) ? adapter : undefined;
+}
+
+function patchToolExecutionRenderers(owner: object): void {
 	const proto = ToolExecutionComponent.prototype as any;
-	if (proto[TOOL_EXECUTION_PATCH_FLAG]) return;
-
-	const originalHasRendererDefinition = proto.hasRendererDefinition;
-	const originalGetCallRenderer = proto.getCallRenderer;
-	const originalGetResultRenderer = proto.getResultRenderer;
-
-	if (typeof originalHasRendererDefinition === "function") {
-		proto.hasRendererDefinition = function patchedHasRendererDefinition() {
-			const toolName = typeof this?.toolName === "string" ? this.toolName : "";
-			if (toolPresentationSkipped(toolName)) return originalHasRendererDefinition.call(this);
-			return originalHasRendererDefinition.call(this) || shouldUseGenericToolRenderer(toolName);
+	if (proto[TOOL_EXECUTION_PATCH_FLAG] === true) {
+		legacyToolRendererPatchDetected = true;
+		return;
+	}
+	let registry = proto[TOOL_EXECUTION_PATCH_FLAG] as ToolRendererPatchRegistry | undefined;
+	if (!registry) {
+		registry = {
+			originalHas: proto.hasRendererDefinition,
+			originalCall: proto.getCallRenderer,
+			originalResult: proto.getResultRenderer,
+		};
+		proto[TOOL_EXECUTION_PATCH_FLAG] = registry;
+		proto.hasRendererDefinition = function stableHasRendererDefinition(this: any) {
+			const delegated = activeToolRendererState().hasDelegate?.call(this);
+			if (delegated !== undefined) return delegated;
+			return typeof registry!.originalHas === "function" ? registry!.originalHas.call(this) : false;
+		};
+		proto.getCallRenderer = function stableGetCallRenderer(this: any) {
+			const delegated = activeToolRendererState().callDelegate?.call(this);
+			if (delegated !== undefined) return delegated;
+			return typeof registry!.originalCall === "function" ? registry!.originalCall.call(this) : undefined;
+		};
+		proto.getResultRenderer = function stableGetResultRenderer(this: any) {
+			const delegated = activeToolRendererState().resultDelegate?.call(this);
+			if (delegated !== undefined) return delegated;
+			return typeof registry!.originalResult === "function" ? registry!.originalResult.call(this) : undefined;
 		};
 	}
-
-	proto.getCallRenderer = function patchedGetCallRenderer() {
+	const state = activeToolRendererState();
+	state.owner = owner;
+	state.presentations = new Map();
+	state.hasDelegate = function () {
+		if (toolPresentationSkipped(this?.toolName)) return undefined;
+		return compatiblePresentation(state, this, "call")
+			|| compatiblePresentation(state, this, "result")
+			|| shouldUseGenericToolRenderer(this?.toolName)
+			? true
+			: undefined;
+	};
+	state.callDelegate = function () {
 		const toolName = typeof this?.toolName === "string" ? this.toolName : "";
-		if (toolPresentationSkipped(toolName)) {
-			return typeof originalGetCallRenderer === "function" ? originalGetCallRenderer.call(this) : undefined;
+		if (toolPresentationSkipped(toolName)) return undefined;
+		const compatible = compatiblePresentation(state, this, "call");
+		if (compatible?.renderCall) {
+			const custom = compatible.renderCall;
+			const native = typeof registry!.originalCall === "function" ? registry!.originalCall.call(this) : undefined;
+			return (...args: any[]) => {
+				try { return custom(...args); }
+				catch (error) {
+					debugDiagnostic(`presentation-call:${toolName}`, error);
+					if (typeof native === "function") return native(...args);
+					throw error;
+				}
+			};
 		}
 		if (toolName === "apply_patch") {
 			return (args: any, theme: Theme, ctx: any) =>
@@ -1688,13 +1931,23 @@ function patchToolExecutionRenderers(): void {
 		if (shouldUseGenericToolRenderer(toolName)) {
 			return (args: any, theme: Theme, ctx: any) => renderGenericToolCall(toolName, args, theme, ctx);
 		}
-		return typeof originalGetCallRenderer === "function" ? originalGetCallRenderer.call(this) : undefined;
+		return undefined;
 	};
-
-	proto.getResultRenderer = function patchedGetResultRenderer() {
+	state.resultDelegate = function () {
 		const toolName = typeof this?.toolName === "string" ? this.toolName : "";
-		if (toolPresentationSkipped(toolName)) {
-			return typeof originalGetResultRenderer === "function" ? originalGetResultRenderer.call(this) : undefined;
+		if (toolPresentationSkipped(toolName)) return undefined;
+		const compatible = compatiblePresentation(state, this, "result");
+		if (compatible?.renderResult) {
+			const custom = compatible.renderResult;
+			const native = typeof registry!.originalResult === "function" ? registry!.originalResult.call(this) : undefined;
+			return (...args: any[]) => {
+				try { return custom(...args); }
+				catch (error) {
+					debugDiagnostic(`presentation-result:${toolName}`, error);
+					if (typeof native === "function") return native(...args);
+					throw error;
+				}
+			};
 		}
 		if (toolName === "apply_patch") {
 			return (result: any, options: any, theme: Theme, ctx: any) =>
@@ -1704,18 +1957,35 @@ function patchToolExecutionRenderers(): void {
 			return (result: any, options: any, theme: Theme, ctx: any) =>
 				renderGenericToolResult(toolName, result, options, theme, ctx);
 		}
-		return typeof originalGetResultRenderer === "function" ? originalGetResultRenderer.call(this) : undefined;
+		return undefined;
 	};
+}
 
-	proto[TOOL_EXECUTION_PATCH_FLAG] = true;
+function installCompatibleToolPresentations(owner: object, adapters: Iterable<ToolPresentationAdapter>): void {
+	const state = activeToolRendererState();
+	if (state.owner !== owner) return;
+	state.presentations = new Map(Array.from(adapters, (adapter) => [adapter.name, adapter]));
+	bumpToolPresentationRevision();
+}
+
+function releaseToolExecutionRenderers(owner: object): void {
+	const state = activeToolRendererState();
+	if (state.owner === owner) {
+		state.owner = undefined;
+		state.presentations = undefined;
+		state.hasDelegate = undefined;
+		state.callDelegate = undefined;
+		state.resultDelegate = undefined;
+	}
 }
 
 function shortPath(cwd: string, filePath: string): string {
 	if (!filePath) return "";
 	const rel = relative(cwd, filePath);
-	if (!rel.startsWith("..") && !rel.startsWith("/")) return rel || ".";
-	const home = process.env.HOME ?? "";
-	return home ? filePath.replace(home, "~") : filePath;
+	const display = !rel.startsWith("..") && !rel.startsWith("/")
+		? rel || "."
+		: (process.env.HOME ?? "") ? filePath.replace(process.env.HOME ?? "", "~") : filePath;
+	return sanitizeToolText(display);
 }
 
 // ---------------------------------------------------------------------------
@@ -1731,16 +2001,22 @@ function isBlinkOn(): boolean {
  * default foreground — the argument is emphasized by an OSC 8 hyperlink and the
  * name by bold, never by hue. Callers pass the argument already linked.
  */
+function toolLineBackgroundReset(): string {
+	syncToolBackgroundMode();
+	return toolBackgroundMode === "default" ? "" : TRANSPARENT_BG;
+}
+
 function toolHeader(tool: string, summary: string, theme: Theme, prefix = ""): string {
 	applyThemePaletteIfNeeded(theme);
+	const rowBg = toolLineBackgroundReset();
 	if (!claudeChromeEnabled()) {
 		const themed = theme.fg("toolTitle", theme.bold(tool));
-		if (!summary) return `${prefix}${themed}`;
-		return `${prefix}${themed}${theme.fg("muted", "(")}${WRAP_MARK}${theme.fg("accent", summary)}${theme.fg("muted", ")")}`;
+		if (!summary) return `${rowBg}${prefix}${themed}`;
+		return `${rowBg}${prefix}${themed}${theme.fg("muted", "(")}${WRAP_MARK}${theme.fg("accent", summary)}${theme.fg("muted", ")")}`;
 	}
 	const label = `${FG_DEFAULT}${D_BOLD_ON}${tool}${D_BOLD_OFF}`;
-	if (!summary) return `${prefix}${label}${RESET}`;
-	return `${prefix}${label}(${WRAP_MARK}${summary}${FG_DEFAULT})${RESET}`;
+	if (!summary) return `${rowBg}${prefix}${label}${RESET}`;
+	return `${rowBg}${prefix}${label}(${WRAP_MARK}${summary}${FG_DEFAULT})${RESET}`;
 }
 
 /** Claude Code bolds the counts and paths inside result rows. */
@@ -1807,6 +2083,7 @@ function fileExistsForTool(cwd: string, filePath: string): boolean {
 }
 
 function toolStatusDot(ctx: any, theme: Theme): string {
+	applyThemePaletteIfNeeded(theme);
 	const status = ctx.state?._toolStatus as "pending" | "success" | "error" | undefined;
 	if (!claudeChromeEnabled()) {
 		if (status === "error") return `${theme.fg("error", CLAUDE_TOOL_GLYPH)} `;
@@ -1824,12 +2101,12 @@ function toolStatusDot(ctx: any, theme: Theme): string {
 // ---------------------------------------------------------------------------
 
 function branchIndent(text: string, _continued = false): string {
-	return `${CLAUDE_RESULT_CONTINUATION}${WRAP_MARK}${text}`;
+	return `${toolLineBackgroundReset()}${CLAUDE_RESULT_CONTINUATION}${WRAP_MARK}${text}`;
 }
 
 function branchLead(text: string, _continued = false): string {
 	const gutter = claudeChromeEnabled() ? CC_GUTTER_FG : TOOL_RULE;
-	return `${gutter}${CLAUDE_RESULT_PREFIX}${TRANSPARENT_RESET}${WRAP_MARK}${text}`;
+	return `${toolLineBackgroundReset()}${gutter}${CLAUDE_RESULT_PREFIX}${TRANSPARENT_RESET}${WRAP_MARK}${text}`;
 }
 
 function withBranch(content: string, _theme: Theme, _isError = false, continued = false): string {
@@ -2131,7 +2408,7 @@ function previewLimit(): number {
 
 function expandedPreviewLimit(): number {
 	const value = readSettings().values.expandedPreviewMaxLines;
-	return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : 150;
+	return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : DEFAULT_EXPANDED_PREVIEW_MAX_LINES;
 }
 
 function bashCollapsedLimit(): number {
@@ -2320,6 +2597,15 @@ function classifyHeadTailRead(tokens: readonly string[]): BashDisplayInfo | null
 	const amount = count && /^\d+$/.test(count) ? count : "10";
 	const rangeLabel = `${command === "head" ? "first" : "last"} ${amount} lines`;
 	return { kind: "read", label: "Read", path: pathCandidates[0], rangeLabel, suppressCollapsedHint: true };
+}
+
+function emptyBashResultLabel(command: string): "Done" | "(No output)" {
+	const tokens = tokenizeShellCommand(command.trim());
+	// Captured from Claude Code v2.1.266. Pure/no-op commands report `(No
+	// output)`; these captured filesystem/cwd mutations report `Done`.
+	return tokens && ["cd", "touch", "mkdir", "rm"].includes(tokens[0] ?? "")
+		? "Done"
+		: "(No output)";
 }
 
 export function classifyBashCommandForDisplay(command: string): BashDisplayInfo | null {
@@ -2635,7 +2921,15 @@ const CC_BG_ADD_WORD = "\x1b[48;2;0;135;0m";
 const CC_BG_DEL_WORD = CC_BG_DEL;
 const CC_FG_ADD = "\x1b[38;2;95;215;95m";
 const CC_FG_DEL = "\x1b[38;2;215;95;95m";
-const CC_FG_DIFF_TEXT = "\x1b[38;2;255;255;255m";
+const CC_FG_DIFF_TEXT_DARK = "\x1b[38;2;255;255;255m";
+const CC_BG_ADD_LIGHT = "\x1b[48;2;215;255;215m";
+const CC_BG_DEL_LIGHT = "\x1b[48;2;255;215;215m";
+const CC_BG_ADD_WORD_LIGHT = "\x1b[48;2;175;255;175m";
+const CC_FG_ADD_LIGHT = "\x1b[38;2;0;135;95m";
+const CC_FG_DEL_LIGHT = "\x1b[38;2;215;0;0m";
+const CC_FG_DIFF_TEXT_LIGHT = "\x1b[38;2;48;48;48m";
+let CC_FG_DIFF_TEXT = CC_FG_DIFF_TEXT_DARK;
+let claudeDiffLightMode = false;
 
 // Diff backgrounds default to Claude Code's palette; autoDeriveBgFromTheme only
 // overrides them when the user opts out of the Claude palette.
@@ -2668,6 +2962,7 @@ interface DiffColors {
 let DEFAULT_DIFF_COLORS: DiffColors = { fgAdd: FG_ADD, fgDel: FG_DEL, fgCtx: FG_DIM };
 let autoDerivePending = true;
 let hasExplicitBgConfig = false;
+let explicitDiffLightMode: boolean | undefined;
 
 function mixBg(
 	base: { r: number; g: number; b: number },
@@ -2704,12 +2999,60 @@ function rgbToBgAnsi(c: { r: number; g: number; b: number }): string {
 	return `\x1b[48;2;${Math.round(c.r)};${Math.round(c.g)};${Math.round(c.b)}m`;
 }
 
+function applyClaudeDiffPalette(theme: any): boolean {
+	const polarity = themePolarity(theme);
+	if (polarity === "unknown") return false;
+	claudeDiffLightMode = polarity === "light";
+	if (claudeDiffLightMode) {
+		BG_ADD = CC_BG_ADD_LIGHT;
+		BG_DEL = CC_BG_DEL_LIGHT;
+		BG_ADD_W = CC_BG_ADD_WORD_LIGHT;
+		BG_DEL_W = CC_BG_DEL_LIGHT;
+		BG_GUTTER_ADD = CC_BG_ADD_LIGHT;
+		BG_GUTTER_DEL = CC_BG_DEL_LIGHT;
+		FG_ADD = CC_FG_ADD_LIGHT;
+		FG_DEL = CC_FG_DEL_LIGHT;
+		CC_FG_DIFF_TEXT = CC_FG_DIFF_TEXT_LIGHT;
+	} else {
+		BG_ADD = CC_BG_ADD;
+		BG_DEL = CC_BG_DEL;
+		BG_ADD_W = CC_BG_ADD_WORD;
+		BG_DEL_W = CC_BG_DEL_WORD;
+		BG_GUTTER_ADD = CC_BG_ADD;
+		BG_GUTTER_DEL = CC_BG_DEL;
+		FG_ADD = CC_FG_ADD;
+		FG_DEL = CC_FG_DEL;
+		CC_FG_DIFF_TEXT = CC_FG_DIFF_TEXT_DARK;
+	}
+	BG_EMPTY = TRANSPARENT_BG;
+	BG_BASE = TRANSPARENT_BG;
+	D_RST = TRANSPARENT_RESET;
+	DEFAULT_DIFF_COLORS = { fgAdd: FG_ADD, fgDel: FG_DEL, fgCtx: FG_DIM };
+	return true;
+}
+
+function applyUnknownPolarityDiffPalette(theme: any): void {
+	claudeDiffLightMode = false;
+	BG_ADD = BG_DEL = BG_ADD_W = BG_DEL_W = TRANSPARENT_BG;
+	BG_GUTTER_ADD = BG_GUTTER_DEL = TRANSPARENT_BG;
+	BG_EMPTY = BG_BASE = TRANSPARENT_BG;
+	FG_ADD = safeFgAnsi(theme, "toolDiffAdded") ?? safeFgAnsi(theme, "success") ?? FG_DEFAULT;
+	FG_DEL = safeFgAnsi(theme, "toolDiffRemoved") ?? safeFgAnsi(theme, "error") ?? FG_DEFAULT;
+	CC_FG_DIFF_TEXT = safeFgAnsi(theme, "text") ?? FG_DEFAULT;
+	D_RST = TRANSPARENT_RESET;
+	DEFAULT_DIFF_COLORS = { fgAdd: FG_ADD, fgDel: FG_DEL, fgCtx: safeFgAnsi(theme, "toolDiffContext") ?? FG_DEFAULT };
+}
+
 function autoDeriveBgFromTheme(theme: any): void {
-	// The Claude palette is fixed, not derived — bail before touching diff colors.
+	// Claude has dedicated dark and light semantic palettes; neither is derived
+	// from Pi success/error colors. Unknown polarity stays transparent and uses
+	// theme semantic foreground escapes without inventing a dark RGB base.
 	if (claudeDiffPaletteEnabled()) {
-		BG_EMPTY = TRANSPARENT_BG;
-		BG_BASE = TRANSPARENT_BG;
-		D_RST = TRANSPARENT_RESET;
+		if (!applyClaudeDiffPalette(theme)) applyUnknownPolarityDiffPalette(theme);
+		return;
+	}
+	if (themePolarity(theme) === "unknown") {
+		applyUnknownPolarityDiffPalette(theme);
 		return;
 	}
 	// Diff palette derivation.
@@ -2746,14 +3089,33 @@ function autoDeriveBgFromTheme(theme: any): void {
 // updates don't clobber their config.
 const _explicitFgFields = new Set<"fgAdd" | "fgDel" | "fgDim" | "fgLnum" | "fgRule" | "fgStripe" | "fgSafeMuted">();
 
-function applyThemePaletteIfNeeded(theme: any): void {
+export function applyThemePaletteIfNeeded(theme: any): void {
 	if (!theme || !featureEnabled("themeColors")) return;
-	// Runs before the adaptive/cache guards: the accent override applies even with
-	// adaptive colors off, and re-checks its setting on every call.
+	// Runs before the adaptive/cache guards: captured Claude dark/light palettes
+	// and accent overrides apply even when theme-derived colors are disabled.
 	applyAccentOverride(theme);
+	const polarity = themePolarity(theme);
+	if (polarity === "unknown") {
+		CC_DOT_PENDING = safeFgAnsi(theme, "muted") ?? CLAUDE_PALETTE.status.pending;
+		CC_DOT_SUCCESS = safeFgAnsi(theme, "success") ?? CLAUDE_PALETTE.status.success;
+		CC_DOT_ERROR = safeFgAnsi(theme, "error") ?? CLAUDE_PALETTE.status.error;
+		CC_GUTTER_FG = safeFgAnsi(theme, "muted") ?? CLAUDE_PALETTE.gutter;
+	} else {
+		const light = polarity === "light";
+		CC_DOT_PENDING = light ? CLAUDE_PALETTE.statusLight.pending : CLAUDE_PALETTE.status.pending;
+		CC_DOT_SUCCESS = light ? CLAUDE_PALETTE.statusLight.success : CLAUDE_PALETTE.status.success;
+		CC_DOT_ERROR = light ? CLAUDE_PALETTE.statusLight.error : CLAUDE_PALETTE.status.error;
+		CC_GUTTER_FG = light ? CLAUDE_PALETTE.gutterLight : CLAUDE_PALETTE.gutter;
+	}
+	if (claudeDiffPaletteEnabled() && !hasExplicitBgConfig) {
+		if (!applyClaudeDiffPalette(theme)) applyUnknownPolarityDiffPalette(theme);
+	} else {
+		claudeDiffLightMode = explicitDiffLightMode ?? polarity === "light";
+	}
 	if (!themeAdaptiveEnabled()) return;
 	if (_themePaletteCacheTheme === theme) return; // already applied for this theme instance
 	_themePaletteCacheTheme = theme;
+	bumpDiffPresentationEpoch();
 
 	// Borders (top/bottom outlines, user-message frame, branch rule).
 	const borderMuted = safeFgAnsi(theme, "borderMuted");
@@ -2785,7 +3147,7 @@ function applyThemePaletteIfNeeded(theme: any): void {
 	}
 }
 
-function applyDiffPalette(): void {
+export function applyDiffPalette(): void {
 	BG_ADD = CC_BG_ADD;
 	BG_DEL = CC_BG_DEL;
 	BG_ADD_W = CC_BG_ADD_WORD;
@@ -2803,6 +3165,7 @@ function applyDiffPalette(): void {
 	FG_SAFE_MUTED = "\x1b[38;2;139;148;158m";
 	DIFF_THEME = (process.env.DIFF_THEME as BundledTheme | undefined) ?? "monokai";
 	hasExplicitBgConfig = false;
+	explicitDiffLightMode = undefined;
 	_explicitFgFields.clear();
 
 	const config = loadDiffConfig();
@@ -2874,6 +3237,12 @@ function applyDiffPalette(): void {
 		FG_SAFE_MUTED = v;
 	});
 
+	const effectiveBackground = overrides.bgAdd ?? preset?.bgAdd;
+	const effectiveBackgroundRgb = effectiveBackground ? colorToRgb(effectiveBackground) : null;
+	if (effectiveBackgroundRgb) {
+		const luminance = 0.2126 * effectiveBackgroundRgb.r + 0.7152 * effectiveBackgroundRgb.g + 0.0722 * effectiveBackgroundRgb.b;
+		explicitDiffLightMode = luminance > 128;
+	}
 	const shiki = overrides.shikiTheme ?? preset?.shikiTheme;
 	if (shiki) DIFF_THEME = shiki as BundledTheme;
 
@@ -3240,10 +3609,21 @@ function tokenHasScope(token: ShikiAnsiToken, fragment: string): boolean {
 	return token.explanation?.some((part) => part.scopes?.some((scope) => scope.scopeName?.includes(fragment))) === true;
 }
 
-function shikiTokenAnsi(token: ShikiAnsiToken, colorOverride?: string): string {
+function shikiTokenAnsi(token: ShikiAnsiToken, colorOverride: string | undefined, lightMode: boolean): string {
 	let color = (colorOverride ?? token.color)?.slice(0, 7).toLowerCase();
 	const isMonokaiOperator = color === "#f92672" && /^[^\p{L}\p{N}_$]+$/u.test(token.content);
 	if (isMonokaiOperator || color === "#f8f8f2") color = "#ffffff";
+	if (lightMode) {
+		const lightColors: Record<string, string> = {
+			"#ffffff": "#303030",
+			"#66d9ef": "#af005f",
+			"#ae81ff": "#0087af",
+			"#e6db74": "#005f87",
+			"#a6e22e": "#875faf",
+			"#f92672": "#af005f",
+		};
+		color = color ? lightColors[color] ?? color : color;
+	}
 	const fg = color ? hexToFgAnsi(color) : "";
 	// Claude's edit capture uses Monokai token colors without Monokai's optional
 	// italic keyword font style. Reset only foreground: 0m/49m would punch holes
@@ -3251,7 +3631,7 @@ function shikiTokenAnsi(token: ShikiAnsiToken, colorOverride?: string): string {
 	return `${fg}${token.content}\x1b[39m`;
 }
 
-function shikiLineAnsi(tokens: ShikiAnsiToken[], language: BundledLanguage): string {
+function shikiLineAnsi(tokens: ShikiAnsiToken[], language: BundledLanguage, lightMode: boolean): string {
 	return tokens.map((token, index) => {
 		let color: string | undefined;
 		if (language === "json") {
@@ -3260,11 +3640,11 @@ function shikiLineAnsi(tokens: ShikiAnsiToken[], language: BundledLanguage): str
 			else if (/^(?:true|false|null)$/.test(token.content.trim())) color = "#f92672";
 		}
 		if (language === "python" && tokenHasScope(token, "support.function.builtin")) color = "#a6e22e";
-		return shikiTokenAnsi(token, color);
+		return shikiTokenAnsi(token, color, lightMode);
 	}).join("");
 }
 
-async function codeToAnsiLazy(code: string, language: BundledLanguage, theme: BundledTheme): Promise<string> {
+async function codeToAnsiLazy(code: string, language: BundledLanguage, theme: BundledTheme, lightMode: boolean): Promise<string> {
 	// Pi's extension sandbox cannot resolve Shiki's hidden dynamic theme/language
 	// imports. Statically declare registrations and initialize Shiki lazily. Shiki
 	// still owns parsing, scopes, and token colors; this function only serializes
@@ -3282,7 +3662,7 @@ async function codeToAnsiLazy(code: string, language: BundledLanguage, theme: Bu
 		theme: "monokai",
 		includeExplanation: language === "python",
 	});
-	return lines.map((line: ShikiAnsiToken[]) => shikiLineAnsi(line, language)).join("\n");
+	return lines.map((line: ShikiAnsiToken[]) => shikiLineAnsi(line, language, lightMode)).join("\n");
 }
 
 const hlCache = new Map<string, string[]>();
@@ -3306,20 +3686,25 @@ async function hlBlock(code: string, language: BundledLanguage | undefined): Pro
 	if (!code) return [""];
 	if (readSettings().values.diffSyntaxHighlighting === false) return code.split("\n");
 	if (!language || code.length > MAX_HL_CHARS) return code.split("\n");
-	const key = `${DIFF_THEME}\0${language}\0${code}`;
+	const lightMode = claudeDiffLightMode;
+	const themeName = DIFF_THEME;
+	const key = `${themeName}\0${lightMode ? "light" : "dark"}\0${language}\0${code}`;
 	const hit = hlCache.get(key);
 	if (hit) return touchCache(key, hit);
 	try {
-		const ansi = normalizeShikiContrast(await codeToAnsiLazy(code, language, DIFF_THEME));
+		const highlighted = await codeToAnsiLazy(code, language, themeName, lightMode);
+		const ansi = lightMode ? highlighted : normalizeShikiContrast(highlighted);
 		const out = (ansi.endsWith("\n") ? ansi.slice(0, -1) : ansi).split("\n");
 		return touchCache(key, out);
 	} catch (error) {
-		if (process.env.PI_CLAUDIFY_DEBUG === "1") console.error("[claudify syntax-highlight]", error);
+		debugDiagnostic("syntax-highlight", error, String(language));
 		return code.split("\n");
 	}
 }
 
 export function parseDiff(oldContent: string, newContent: string, ctxLines = 3): ParsedDiff {
+	oldContent = normalizeToLf(oldContent);
+	newContent = normalizeToLf(newContent);
 	const patch = Diff.structuredPatch("", "", oldContent, newContent, "", "", { context: ctxLines });
 	const lines: DiffLine[] = [];
 	let added = 0;
@@ -3336,7 +3721,7 @@ export function parseDiff(oldContent: string, newContent: string, ctxLines = 3):
 		for (const raw of hunk.lines) {
 			if (raw === "\\ No newline at end of file") continue;
 			const ch = raw[0];
-			const text = raw.slice(1);
+			const text = sanitizeToolContent(raw.slice(1));
 			if (ch === "+") {
 				lines.push({ type: "add", oldNum: null, newNum: newLine++, content: text });
 				added++;
@@ -3378,7 +3763,7 @@ function asParsedDiff(value: unknown): ParsedDiff | null {
 export function parsePersistedEditPatch(patch: unknown): ParsedDiff | null {
 	if (typeof patch !== "string" || !patch.trim()) return null;
 	try {
-		const files = Diff.parsePatch(patch) as any[];
+		const files = Diff.parsePatch(normalizeToLf(patch)) as any[];
 		const lines: DiffLine[] = [];
 		let added = 0;
 		let removed = 0;
@@ -3391,7 +3776,7 @@ export function parsePersistedEditPatch(patch: unknown): ParsedDiff | null {
 				for (const raw of hunk.lines ?? []) {
 					if (raw === "\\ No newline at end of file") continue;
 					const marker = raw[0];
-					const content = raw.slice(1);
+					const content = sanitizeToolContent(raw.slice(1));
 					chars += content.length;
 					if (marker === "+") {
 						lines.push({ type: "add", oldNum: null, newNum, content });
@@ -3413,6 +3798,37 @@ export function parsePersistedEditPatch(patch: unknown): ParsedDiff | null {
 	} catch {
 		return null;
 	}
+}
+
+export function parseLegacyEditDiff(value: unknown): ParsedDiff | null {
+	if (typeof value !== "string" || !value.trim() || Buffer.byteLength(value, "utf8") > MAX_WRITE_DIFF_INPUT_BYTES) return null;
+	const lines: DiffLine[] = [];
+	let added = 0;
+	let removed = 0;
+	let chars = 0;
+	for (const raw of normalizeToLf(value).split("\n")) {
+		if (/^\s*\.\.\.$/.test(raw)) {
+			lines.push({ type: "sep", oldNum: null, newNum: null, content: "" });
+			continue;
+		}
+		const match = /^([ +\-])\s*(\d+)\s(.*)$/.exec(raw);
+		if (!match) continue;
+		const marker = match[1];
+		const lineNumber = Number.parseInt(match[2], 10);
+		const content = sanitizeToolContent(match[3]);
+		chars += content.length;
+		if (marker === "+") { lines.push({ type: "add", oldNum: null, newNum: lineNumber, content }); added++; }
+		else if (marker === "-") { lines.push({ type: "del", oldNum: lineNumber, newNum: null, content }); removed++; }
+		else lines.push({ type: "ctx", oldNum: lineNumber, newNum: lineNumber, content });
+	}
+	return lines.length > 0 ? { lines, added, removed, chars } : null;
+}
+
+export function selectAuthoritativeEditDiff(patch: unknown, legacyDiff?: unknown): ParsedDiff | null {
+	// Pi >=0.80 persists a queue-owned unified patch. Pi 0.74 persists its own
+	// queue-produced numbered display diff. Both are authoritative per-call data;
+	// out-of-queue filesystem snapshots are never accepted.
+	return parsePersistedEditPatch(patch) ?? parseLegacyEditDiff(legacyDiff);
 }
 
 function diffContentWidth(width: number): number {
@@ -3533,14 +3949,15 @@ export async function renderFileListing(
 	max = MAX_RENDER_LINES,
 	width = termW(),
 ): Promise<string> {
-	const all = content.split("\n");
+	const all = content.split("\n").map(sanitizeToolContent);
 	if (all.length > 0 && all[all.length - 1] === "") all.pop();
 	if (all.length === 0) return "";
 	const vis = all.slice(0, max);
 	const nw = Math.max(1, String(vis.length).length);
 	const cw = Math.max(20, width - (nw + 2));
-	const canHL = content.length <= MAX_HL_CHARS && vis.length <= MAX_RENDER_LINES;
-	const highlighted = canHL ? await hlBlock(vis.join("\n"), language) : vis;
+	const visibleSource = vis.join("\n");
+	const canHL = visibleSource.length <= MAX_HL_CHARS && vis.length <= MAX_RENDER_LINES;
+	const highlighted = canHL ? await hlBlock(visibleSource, language) : vis;
 
 	const out: string[] = [];
 	for (let i = 0; i < vis.length; i++) {
@@ -3563,7 +3980,7 @@ export async function renderUnified(
 	width = termW(),
 ): Promise<string> {
 	if (!diff.lines.length) return "";
-	const vis = diff.lines.slice(0, max);
+	const vis = diff.lines.slice(0, max).map((line) => line.type === "sep" ? line : { ...line, content: sanitizeToolContent(line.content) });
 	const tw = width;
 	// Claude Code sizes the number column to the widest line number, minimum one.
 	const nw = claudeDiffPaletteEnabled()
@@ -3572,7 +3989,6 @@ export async function renderUnified(
 	// Claude gutter is " N " plus the sign column; the legacy one adds a border and divider.
 	const gw = claudeDiffPaletteEnabled() ? nw + 3 : nw + 5;
 	const cw = Math.max(20, tw - gw);
-	const canHL = diff.chars <= MAX_HL_CHARS && vis.length <= MAX_RENDER_LINES;
 
 	const oldSrc: string[] = [];
 	const newSrc: string[] = [];
@@ -3580,6 +3996,10 @@ export async function renderUnified(
 		if (line.type === "ctx" || line.type === "del") oldSrc.push(line.content);
 		if (line.type === "ctx" || line.type === "add") newSrc.push(line.content);
 	}
+	// Shiki receives only these visible hunk strings. Budgeting the entire source
+	// file made small edits in large files silently lose syntax highlighting.
+	const highlightChars = oldSrc.join("\n").length + newSrc.join("\n").length;
+	const canHL = highlightChars <= MAX_HL_CHARS && vis.length <= MAX_RENDER_LINES;
 	const [oldHL, newHL] = canHL
 		? await Promise.all([hlBlock(oldSrc.join("\n"), language), hlBlock(newSrc.join("\n"), language)])
 		: [oldSrc, newSrc];
@@ -3709,6 +4129,10 @@ async function renderSplit(
 	dc: DiffColors = DEFAULT_DIFF_COLORS,
 	width = termW(),
 ): Promise<string> {
+	diff = {
+		...diff,
+		lines: diff.lines.map((line) => line.type === "sep" ? line : { ...line, content: sanitizeToolContent(line.content) }),
+	};
 	const tw = width;
 	if (!shouldUseSplit(diff, tw, max)) return renderUnified(diff, language, max, dc, width);
 	if (!diff.lines.length) return "";
@@ -3736,7 +4160,6 @@ async function renderSplit(
 	const nw = Math.max(2, String(Math.max(...diff.lines.map((l) => l.oldNum ?? l.newNum ?? 0), 0)).length);
 	const gw = nw + 5;
 	const cw = Math.max(12, half - gw);
-	const canHL = diff.chars <= MAX_HL_CHARS && vis.length * 2 <= MAX_RENDER_LINES * 2;
 
 	const leftSrc: string[] = [];
 	const rightSrc: string[] = [];
@@ -3744,6 +4167,8 @@ async function renderSplit(
 		if (row.left && row.left.type !== "sep") leftSrc.push(row.left.content);
 		if (row.right && row.right.type !== "sep") rightSrc.push(row.right.content);
 	}
+	const highlightChars = leftSrc.join("\n").length + rightSrc.join("\n").length;
+	const canHL = highlightChars <= MAX_HL_CHARS && vis.length <= MAX_RENDER_LINES;
 	const [leftHL, rightHL] = canHL
 		? await Promise.all([hlBlock(leftSrc.join("\n"), language), hlBlock(rightSrc.join("\n"), language)])
 		: [leftSrc, rightSrc];
@@ -4327,7 +4752,7 @@ function shouldUseGenericToolRenderer(name: unknown): boolean {
 }
 
 function genericToolLabel(name: string): string {
-	return isMcpToolName(name) ? "MCP" : humanizeToolName(name);
+	return sanitizeToolText(isMcpToolName(name) ? "MCP" : humanizeToolName(name));
 }
 
 function renderGenericToolCall(name: string, args: any, theme: Theme, ctx: any): Text {
@@ -4364,7 +4789,7 @@ function getTextContent(result: any): string {
 		.join("\n");
 }
 
-function getStringArg(args: any, ...keys: string[]): string {
+function getRawStringArg(args: any, ...keys: string[]): string {
 	for (const key of keys) {
 		const value = args?.[key];
 		if (typeof value === "string" && value.trim()) return value.trim();
@@ -4372,11 +4797,17 @@ function getStringArg(args: any, ...keys: string[]): string {
 	return "";
 }
 
+function getStringArg(args: any, ...keys: string[]): string {
+	return sanitizeToolText(getRawStringArg(args, ...keys));
+}
+
 function getStringArrayArg(args: any, ...keys: string[]): string[] {
 	for (const key of keys) {
 		const value = args?.[key];
 		if (!Array.isArray(value)) continue;
-		const items = value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+		const items = value
+			.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+			.map((item) => sanitizeToolText(item.trim()));
 		if (items.length > 0) return items;
 	}
 	return [];
@@ -4596,7 +5027,7 @@ function parseApplyPatchUpdateDiff(lines: string[], sourceContent?: string): Par
 	};
 }
 
-function parseApplyPatchPreview(patchText: string, sp: (path: string) => string, cwd = process.cwd()): ApplyPatchPreview {
+function parseApplyPatchPreview(patchText: string, sp: (path: string) => string): ApplyPatchPreview {
 	const normalized = patchText.replace(/\r\n/g, "\n");
 	const lines = normalized.split("\n");
 	const changes: ApplyPatchChangePreview[] = [];
@@ -4635,19 +5066,14 @@ function parseApplyPatchPreview(patchText: string, sp: (path: string) => string,
 		}
 
 		const displayPath = moveTo ? `${sp(path)} ${BORDER_COLOR}→${TRANSPARENT_RESET} ${sp(moveTo)}` : sp(path);
-		let sourceContent: string | undefined;
-		if (kind === "update") {
-			try {
-				sourceContent = readFileSync(resolve(cwd, path), "utf8");
-			} catch {
-				sourceContent = undefined;
-			}
-		}
+		// Call previews must never read model-selected filesystem paths merely to
+		// infer line numbers. Explicit hunk coordinates are used when present;
+		// coordinate-free apply_patch hunks render with unknown line metadata.
 		const diff = kind === "add"
 			? parseDiff("", body.map((entry) => stripPatchLinePrefix(entry, "+")).join("\n"))
 			: kind === "delete"
 				? parseDiff(body.map((entry) => stripPatchLinePrefix(entry, "-")).join("\n"), "")
-				: parseApplyPatchUpdateDiff(body, sourceContent);
+				: parseApplyPatchUpdateDiff(body);
 		changes.push({
 			kind,
 			path,
@@ -4697,7 +5123,7 @@ function getCachedApplyPatchPreview(patchText: string, sp: (path: string) => str
 		return ctx.state._applyPatchPreview as ApplyPatchPreview;
 	}
 	try {
-		const preview = parseApplyPatchPreview(patchText, sp, ctx.cwd ?? process.cwd());
+		const preview = parseApplyPatchPreview(patchText, sp);
 		if (ctx.state) {
 			ctx.state._applyPatchMetaKey = key;
 			ctx.state._applyPatchPreview = preview;
@@ -4710,7 +5136,7 @@ function getCachedApplyPatchPreview(patchText: string, sp: (path: string) => str
 }
 
 function getApplyPatchResultMeta(args: any, ctx: any, sp: (path: string) => string): ApplyPatchResultMeta | null {
-	const patchText = getStringArg(args ?? ctx?.args, "patchText", "patch_text");
+	const patchText = getRawStringArg(args ?? ctx?.args, "patchText", "patch_text");
 	if (!patchText) return null;
 	const preview = getCachedApplyPatchPreview(patchText, sp, ctx);
 	return preview && ctx.state?._applyPatchMeta ? (ctx.state._applyPatchMeta as ApplyPatchResultMeta) : null;
@@ -4718,7 +5144,7 @@ function getApplyPatchResultMeta(args: any, ctx: any, sp: (path: string) => stri
 
 function renderApplyPatchCall(args: any, theme: Theme, ctx: any, sp: (path: string) => string): Text {
 	syncToolCallStatus(ctx);
-	const patchText = getStringArg(args, "patchText", "patch_text");
+	const patchText = getRawStringArg(args, "patchText", "patch_text");
 	const summary = stableCallSummary(ctx, "_callSummary", () => summarizeOpenAiToolCall("apply_patch", args, theme, sp));
 	const hdr = toolHeader("Apply Patch", summary, theme, toolStatusDot(ctx, theme));
 
@@ -4797,7 +5223,7 @@ function renderApplyPatchResult(result: any, isPartial: boolean, theme: Theme, c
 	setToolStatus(ctx, ctx.isError ? "error" : "success");
 
 	if (ctx.isError) {
-		const raw = getTextContent(result).trim();
+		const raw = sanitizeToolOutput(getTextContent(result)).trim();
 		const firstLine = raw ? raw.split("\n")[0] : "Apply patch failed";
 		return makeText(ctx.lastComponent, withBranch(theme.fg("error", firstLine), theme));
 	}
@@ -4891,7 +5317,7 @@ function mcpServerForComponent(value: unknown): string {
 	const rec = toolComponentRecord(value);
 	if (typeof rec._ccMcpServer === "string" && rec._ccMcpServer) return rec._ccMcpServer;
 	const stamped = rec.result?.details?.server;
-	const resolved = typeof stamped === "string" && stamped ? stamped : mcpServerName(rec.toolName, rec.args);
+	const resolved = sanitizeToolText(typeof stamped === "string" && stamped ? stamped : mcpServerName(rec.toolName, rec.args)).trim();
 	if (resolved) rec._ccMcpServer = resolved;
 	return resolved;
 }
@@ -4946,7 +5372,7 @@ function renderMcpToolResult(result: any, expanded: boolean, isPartial: boolean,
 	const mode = getMode(readSettings().values.mcpOutputMode, ["hidden", "summary", "preview"] as const, "hidden");
 	if (mode === "hidden") return makeText(ctx.lastComponent, "");
 
-	const raw = getTextContent(result).trim();
+	const raw = sanitizeToolOutput(getTextContent(result)).trim();
 	const lines = raw ? raw.split("\n") : [];
 	if (lines.length === 0) {
 		return makeText(ctx.lastComponent, withBranch(theme.fg(ctx.isError ? "error" : "success", ctx.isError ? "Failed" : "Done"), theme));
@@ -4972,7 +5398,7 @@ function renderMcpToolResult(result: any, expanded: boolean, isPartial: boolean,
 function summarizeOpenAiToolCall(name: string, args: any, theme: Theme, sp: (path: string) => string): string {
 	switch (name) {
 		case "apply_patch": {
-			const patchText = getStringArg(args, "patchText", "patch_text");
+			const patchText = getRawStringArg(args, "patchText", "patch_text");
 			const files = extractApplyPatchFiles(patchText);
 			if (files.length === 0) return theme.fg("muted", "patch");
 			if (files.length === 1) return sp(files[0]);
@@ -5168,7 +5594,7 @@ function getReadImageFallback(result: any, ctx: any): string {
 
 function renderReadImageResult(result: any, expanded: boolean, theme: Theme, ctx: any): Text {
 	const image = getFirstImageBlock(result);
-	const mimeType = image?.mimeType ?? "image";
+	const mimeType = sanitizeToolText(image?.mimeType ?? "image");
 	const summary = `${theme.fg("success", "Image loaded")} ${theme.fg("muted", `[${mimeType}]`)}`;
 	if (!expanded) {
 		return makeText(ctx.lastComponent, withBranch(summary, theme));
@@ -5176,12 +5602,12 @@ function renderReadImageResult(result: any, expanded: boolean, theme: Theme, ctx
 
 	const noteLines = getTextContent(result)
 		.split("\n")
-		.map((line) => line.trim())
+		.map((line) => sanitizeToolText(line.trim()))
 		.filter((line) => line && !/^Read image file\b/i.test(line));
 	const lines = [summary, ...noteLines.map((line) => theme.fg("dim", line))];
 	if (!getCapabilities().images || !ctx.showImages) {
 		const fallback = getReadImageFallback(result, ctx);
-		if (fallback) lines.push(theme.fg("toolOutput", fallback));
+		if (fallback) lines.push(theme.fg("toolOutput", sanitizeToolText(fallback)));
 	}
 	return makeText(ctx.lastComponent, withBranch(lines.join("\n"), theme));
 }
@@ -5210,7 +5636,7 @@ function renderOpenAiToolResult(name: string, result: any, expanded: boolean, is
 	clearBlinkTimer(ctx);
 	setToolStatus(ctx, ctx.isError ? "error" : "success");
 
-	const raw = getTextContent(result).trim();
+	const raw = sanitizeToolOutput(getTextContent(result)).trim();
 	const lines = raw ? raw.split("\n") : [];
 	const patchFiles = Array.isArray(ctx.state?._openAiPatchFiles) ? ctx.state._openAiPatchFiles : [];
 	const capturedResult = formatCapturedOpenAiResult(name, result, theme, ctx);
@@ -5220,7 +5646,7 @@ function renderOpenAiToolResult(name: string, result: any, expanded: boolean, is
 
 	if (lines.length === 0) {
 		if (patchFiles.length > 0) {
-			const suffix = patchFiles.length === 1 ? patchFiles[0] : `${patchFiles.length} files`;
+			const suffix = patchFiles.length === 1 ? sanitizeToolText(patchFiles[0]) : `${patchFiles.length} files`;
 			return makeText(ctx.lastComponent, withBranch(`${theme.fg(ctx.isError ? "error" : "success", ctx.isError ? "Failed" : "Applied")} ${theme.fg("muted", suffix)}`, theme));
 		}
 		return makeText(ctx.lastComponent, withBranch(theme.fg(ctx.isError ? "error" : "success", ctx.isError ? "Failed" : "Done"), theme));
@@ -5253,15 +5679,18 @@ function renderOpenAiToolResult(name: string, result: any, expanded: boolean, is
 
 export default function (pi: ExtensionAPI): void {
 	if (compatibilityGloballyDisabled()) return;
-	if (featureEnabled("toolPresentation")) patchToolRenderCacheInvalidation();
+	const fallbackSanitizerOwner = {};
+	const toolRendererOwner = {};
+	const globalRenderOwner = {};
+	if (featureEnabled("toolPresentation")) { patchToolFallbackSanitization(fallbackSanitizerOwner); patchToolRenderCacheInvalidation(); }
 	if (!presentationOverrideSkipped("read")) patchReadImageExpansion();
-	if (featureEnabled("toolBackground") || featureEnabled("inspectionGroups") || featureEnabled("bashStacking")) patchGlobalToolBorders();
+	if (featureEnabled("toolBackground") || featureEnabled("inspectionGroups") || featureEnabled("bashStacking")) patchGlobalToolBorders(globalRenderOwner);
 	if (featureEnabled("customMessages")) patchCustomMessageRender();
 	if (featureEnabled("compactionSummary")) patchCompactionSummaryMessages();
 	if (featureEnabled("userMessages")) patchUserMessageRender();
 	if (featureEnabled("assistantMessages")) patchAssistantMessages();
 	if (featureEnabled("toolBackground")) patchToolRowIndent();
-	if (featureEnabled("toolPresentation")) patchToolExecutionRenderers();
+	if (featureEnabled("toolPresentation")) patchToolExecutionRenderers(toolRendererOwner);
 	if (featureEnabled("footer")) patchEditorBorderColor();
 	if (featureEnabled("diffPresentation")) applyDiffPalette();
 	if (featureEnabled("assistantMessages")) registerThinkingLabels(pi);
@@ -5270,10 +5699,49 @@ export default function (pi: ExtensionAPI): void {
 	if (featureEnabled("banner")) registerBanner(pi);
 	if (featureEnabled("promptPointer")) registerPromptPointer(pi);
 
+	if (featureEnabled("inspectionGroups")) {
+	let removePointerExpansionInput: (() => void) | undefined;
+	let legacyPatchWarningShown = false;
+	pi.on("session_start", async (_event, ctx) => {
+		clearPointerExpandedMembers();
+		if ((legacyToolRendererPatchDetected || legacyToolFallbackPatchDetected) && !legacyPatchWarningShown && ctx.hasUI) {
+			legacyPatchWarningShown = true;
+			ctx.ui.notify("Restart Pi once to finish upgrading Claudify's renderer hooks", "warning");
+		}
+		try { removePointerExpansionInput?.(); } catch { /* stale host listener */ }
+		removePointerExpansionInput = typeof ctx.ui?.onTerminalInput === "function"
+			? ctx.ui.onTerminalInput((data) => {
+				const result = handlePointerExpansionInput(data);
+				if (result) {
+					// Raw terminal listeners do not automatically schedule a repaint.
+					// Pulse Pi's public global state synchronously; only the final collapsed
+					// frame is rendered, and the host boolean remains aligned with the UI.
+					const ui = ctx.ui as any;
+					if (ui.getToolsExpanded?.() === false && typeof ui.setToolsExpanded === "function") {
+						ui.setToolsExpanded(true);
+						ui.setToolsExpanded(false);
+					}
+				}
+				return result;
+			})
+			: undefined;
+	});
+	pi.on("session_shutdown", async () => {
+		try { removePointerExpansionInput?.(); } catch { /* host is already closing */ }
+		removePointerExpansionInput = undefined;
+		clearPointerExpandedMembers();
+	});
+	// Cancellable pre-events leave the current transcript intact. Advance the
+	// pointer epoch only after Pi commits a replacement tree/compaction.
+	pi.on("session_compact", async () => { clearPointerExpandedMembers(); });
+	pi.on("session_tree", async () => { clearPointerExpandedMembers(); });
+	}
+
 	if (featureEnabled("settingsCommand")) pi.registerCommand("claudify", {
 		description: "Open the Claudify settings screen",
 		async handler(_args, ctx) {
-			if (ctx.mode !== "tui" || !ctx.hasUI) {
+			const mode = (ctx as any).mode;
+			if ((mode !== undefined && mode !== "tui") || !ctx.hasUI) {
 				ctx.ui.notify("/claudify needs the interactive TUI", "info");
 				return;
 			}
@@ -5286,6 +5754,7 @@ export default function (pi: ExtensionAPI): void {
 						autoDerivePending = !hasExplicitBgConfig;
 						applyThemePaletteIfNeeded(ctx.ui.theme);
 						clearHighlightCache();
+						bumpDiffPresentationEpoch();
 						tui.requestRender();
 					};
 					return new ClaudifyScreen(
@@ -5307,6 +5776,7 @@ export default function (pi: ExtensionAPI): void {
 							if (key === "accentColor") applyAccentOverride(ctx.ui.theme);
 							if (key === "userMessageBox") applyToolBackgroundMode(ctx.ui.theme);
 							if (key === "promptPointer") applyPromptPointer(ctx);
+							if (key === "spinnerPlacement") applyPromptPointer(ctx, true);
 							if (key === "spinnerColor"
 								|| key === "spinnerStatusColor"
 								|| key === "spinnerShimmer"
@@ -5315,7 +5785,10 @@ export default function (pi: ExtensionAPI): void {
 								|| key === "themeAdaptive") {
 								bustSpinnerSettingsCache();
 							}
-							if (key === "diffSyntaxHighlighting") clearHighlightCache();
+							if (key === "diffSyntaxHighlighting") {
+								clearHighlightCache();
+								bumpDiffPresentationEpoch();
+							}
 							if (key === "diffTheme" || key === "diffPalette" || key === "themeAdaptive") refreshDiffPalette();
 							// footerStyle installs/uninstalls the footer; the other footer/border
 							// keys are read at render time, so the requestRender below suffices.
@@ -5350,6 +5823,11 @@ export default function (pi: ExtensionAPI): void {
 		if (!ctx.hasUI) return;
 		applyToolBackgroundMode(ctx.ui.theme);
 		applyThemePaletteIfNeeded(ctx.ui.theme);
+		// Reload can reconstruct settled rows once with Pi's default green success
+		// background before session_start reapplies transparent Claude chrome. Force
+		// those cached rows through one post-theme rebuild.
+		bumpToolPresentationRevision();
+		(ctx.ui as any).requestRender?.();
 		if (featureEnabled("assistantMessages")) applyHiddenThinkingLabel(ctx);
 		if (featureEnabled("footer")) installClaudeFooter(ctx, pi);
 	});
@@ -5362,43 +5840,110 @@ export default function (pi: ExtensionAPI): void {
 	});
 
 	const cwd = process.cwd();
-	const sp = (path: string) => shortPath(cwd, path);
-	/** Short display path, clickable via OSC 8 — how Claude Code surfaces the file it touched. */
-	const spl = (path: string) => {
-		if (!path || !claudeChromeEnabled()) return sp(path);
-		return linkedPath(cwd, sp(path), resolve(cwd, path));
+	const sp = (path: string, runtimeCwd = cwd) => sanitizeToolText(shortPath(runtimeCwd, path));
+	/** Short display path, clickable via OSC 8 — resolved against the tool's runtime cwd. */
+	const spl = (path: string, runtimeCwd = cwd) => {
+		if (!path || !claudeChromeEnabled()) return sp(path, runtimeCwd);
+		return linkedPath(runtimeCwd, sp(path, runtimeCwd), resolve(runtimeCwd, path));
 	};
 	const skippedOverrides = skippedToolOverrides(readSettings().values);
 	type RegisteredTool = Parameters<ExtensionAPI["registerTool"]>[0];
 	const pendingBuiltinOverrides: RegisteredTool[] = [];
+	const compatiblePresentationAdapters = new Map<string, ToolPresentationAdapter>();
 	const installedBuiltinOverrides = new Set<string>();
+	type ToolOwnerKind = "builtin" | "self" | "external" | "unknown";
+	const ownershipRoot = globalThis as Record<PropertyKey, unknown>;
+	const priorOwnership = ownershipRoot[TOOL_OWNERSHIP_SNAPSHOT_KEY] instanceof Map
+		? ownershipRoot[TOOL_OWNERSHIP_SNAPSHOT_KEY] as Map<string, ToolOwnerKind>
+		: new Map<string, ToolOwnerKind>();
+	ownershipRoot[TOOL_OWNERSHIP_SNAPSHOT_KEY] = priorOwnership;
+	const classifyOwner = (tool: any): ToolOwnerKind => {
+		const sourceInfo = tool?.sourceInfo;
+		if (!sourceInfo) return "unknown";
+		if (sourceInfo.source === "builtin") return "builtin";
+		const identity = `${sourceInfo.path ?? ""}\n${sourceInfo.source ?? ""}`.toLowerCase();
+		return identity.includes("pi-claudify") ? "self" : "external";
+	};
+	const currentToolOwners = (): Map<string, ToolOwnerKind> | null => {
+		try {
+			const tools = typeof (pi as any).getAllTools === "function" ? (pi as any).getAllTools() : null;
+			if (!Array.isArray(tools)) return null;
+			return new Map(tools.map((tool: any) => [String(tool?.name ?? "").toLowerCase(), classifyOwner(tool)]));
+		} catch (error) {
+			debugDiagnostic("tool-owner-snapshot", error);
+			return null;
+		}
+	};
 	let canRegisterBuiltinsDuringFactory = false;
 	try {
 		// The real loader does not expose getAllTools during factory evaluation;
 		// test harnesses do. Registering early in production triggers an
 		// uncatchable ownership conflict with Meta's core tools after return.
 		canRegisterBuiltinsDuringFactory = Array.isArray((pi as any).getAllTools?.());
-	} catch { /* defer to session_start */ }
+	} catch (error) {
+		debugDiagnostic("tool-registry-probe", error);
+		// Defer to session_start.
+	}
 	const registerBuiltinOverride = (definition: RegisteredTool): void => {
 		const name = String(definition?.name ?? "").toLowerCase();
-		if (!name || skippedOverrides.has(name) || toolPresentationSkipped(name)) {
-			if (name) shouldRegisterBuiltinToolOverride(pi, name); // restore a prior Claudify-owned builtin when disabled
+		if (!name) return;
+		pendingBuiltinOverrides.push(definition);
+		if (skippedOverrides.has(name) || toolPresentationSkipped(name)) {
+			shouldRegisterBuiltinToolOverride(pi, name); // restore a prior Claudify-owned builtin when disabled
 			return;
 		}
-		pendingBuiltinOverrides.push(definition);
-		if (canRegisterBuiltinsDuringFactory && shouldRegisterBuiltinToolOverride(pi, name)) {
+		const presentation = presentationAdapterFromDefinition(definition);
+		if (presentation) compatiblePresentationAdapters.set(presentation.name, presentation);
+		const priorOwner = priorOwnership.get(name);
+		const currentOwners = canRegisterBuiltinsDuringFactory ? currentToolOwners() : null;
+		const currentOwner = currentOwners?.get(name);
+		const currentAbsent = !!currentOwners && !currentOwners.has(name);
+		if ((canRegisterBuiltinsDuringFactory && (currentAbsent || currentOwner === "builtin" || currentOwner === "self"))
+			|| (!canRegisterBuiltinsDuringFactory && (priorOwner === "builtin" || priorOwner === "self"))) {
+			if (!shouldRegisterBuiltinToolOverride(pi, name)) return;
 			pi.registerTool(definition);
 			installedBuiltinOverrides.add(name);
 		}
 	};
-	const installDeferredBuiltinOverrides = (): void => {
+	let ownershipWarningShown = false;
+	const installDeferredBuiltinOverrides = (ctx?: any): void => {
+		const owners = currentToolOwners();
+		if (owners) {
+			for (const definition of pendingBuiltinOverrides) {
+				const name = String(definition?.name ?? "").toLowerCase();
+				if (name) priorOwnership.set(name, owners.get(name) ?? "unknown");
+			}
+		}
+		const unknownNames: string[] = [];
 		for (const definition of pendingBuiltinOverrides) {
 			const name = String(definition?.name ?? "").toLowerCase();
-			if (!name || installedBuiltinOverrides.has(name) || skippedOverrides.has(name) || toolPresentationSkipped(name)) continue;
+			const owner = owners?.get(name) ?? "unknown";
+			if (!name || installedBuiltinOverrides.has(name)) continue;
+			if (skippedOverrides.has(name) || toolPresentationSkipped(name)) { shouldRegisterBuiltinToolOverride(pi, name); continue; }
+			if (owner === "external") continue;
+			if (owner === "unknown") { unknownNames.push(name); continue; }
 			if (!shouldRegisterBuiltinToolOverride(pi, name)) continue;
 			pi.registerTool(definition);
 			installedBuiltinOverrides.add(name);
 		}
+		if (!ownershipWarningShown && unknownNames.length > 0 && ctx?.hasUI) {
+			ownershipWarningShown = true;
+			ctx.ui?.notify?.(
+				`Claudify preserved native ${unknownNames.join(", ")} tools because ownership could not be verified`,
+				"warning",
+			);
+		}
+	};
+
+	const getAgentDirCapability: unknown = (PiCodingAgent as any).getAgentDir;
+	const hostSettingsContext = (ctx: any) => {
+		let projectTrusted = false;
+		try {
+			projectTrusted = ctx?.isProjectTrusted?.() === true;
+		} catch {
+			// Missing or failing trust capabilities are untrusted.
+		}
+		return { agentDir: effectiveAgentDir(getAgentDirCapability), projectTrusted };
 	};
 
 	const readTool = createReadToolDefinition(cwd);
@@ -5410,17 +5955,17 @@ export default function (pi: ExtensionAPI): void {
 		...forwardedToolContract(readTool),
 		async execute(toolCallId: string, params: any, signal: AbortSignal | undefined, onUpdate: any, ctx: any) {
 			const runtimeCwd = ctx?.cwd ?? cwd;
-			const { autoResizeImages } = hostToolSettings(runtimeCwd);
+			const { autoResizeImages } = hostToolSettings(runtimeCwd, hostSettingsContext(ctx));
 			return createReadToolDefinition(runtimeCwd, { autoResizeImages }).execute(toolCallId, params, signal, onUpdate, ctx);
 		},
 		renderCall(args: any, theme: Theme, ctx: any) {
 			syncToolCallStatus(ctx);
 			const summary = stableCallSummary(ctx, "_callSummary", () => {
-				let value = spl(args.path ?? "");
+				let value = spl(args.path ?? "", ctx.cwd ?? cwd);
 				if (args.offset || args.limit) {
 					const parts: string[] = [];
-					if (args.offset) parts.push(`offset=${args.offset}`);
-					if (args.limit) parts.push(`limit=${args.limit}`);
+					if (args.offset) parts.push(`offset=${sanitizeToolText(args.offset)}`);
+					if (args.limit) parts.push(`limit=${sanitizeToolText(args.limit)}`);
 					value += ` ${theme.fg("muted", `(${parts.join(", ")})`)}`;
 				}
 				return value;
@@ -5475,8 +6020,10 @@ export default function (pi: ExtensionAPI): void {
 		...forwardedToolContract(bashTool),
 		async execute(toolCallId: string, params: any, signal: AbortSignal | undefined, onUpdate: any, ctx: any) {
 			const runtimeCwd = ctx?.cwd ?? cwd;
-			const { shellPath, commandPrefix } = hostToolSettings(runtimeCwd);
-			return createBashToolDefinition(runtimeCwd, { shellPath, commandPrefix }).execute(toolCallId, params, signal, onUpdate, ctx);
+			const { shellPath, commandPrefix } = hostToolSettings(runtimeCwd, hostSettingsContext(ctx));
+			const result = await createBashToolDefinition(runtimeCwd, { shellPath, commandPrefix }).execute(toolCallId, params, signal, onUpdate, ctx);
+			(result as any).details = { ...((result as any).details ?? {}), _claudifyPrefixApplied: !!commandPrefix };
+			return result;
 		},
 		renderCall(args: any, theme: Theme, ctx: any) {
 			syncToolCallStatus(ctx);
@@ -5491,16 +6038,24 @@ export default function (pi: ExtensionAPI): void {
 				// Expanding must still reach the command, or the semantic path would be
 				// the one place aggregation stays unrecoverable.
 				if (ctx.expanded === true) return bashHeaderCommand(args.command, true);
-				const path = sp(semantic.path);
+				const path = sp(semantic.path, ctx.cwd ?? cwd);
 				return semantic.rangeLabel ? `${path} ${theme.fg("muted", `(${semantic.rangeLabel})`)}` : path;
 			});
 			return makeText(ctx.lastComponent, toolHeader(semantic?.label ?? "Bash", summary, theme, toolStatusDot(ctx, theme)));
 		},
 		renderResult(result: any, { expanded, isPartial }: any, theme: Theme, ctx: any) {
 			const details = result.details as BashToolDetails | undefined;
-			const output: string = result.content[0]?.type === "text" ? result.content[0].text : "";
+			const rawOutput: string = result.content[0]?.type === "text" ? result.content[0].text : "";
+			// Pi represents successful zero-byte stdout with this sentinel. Normalize
+			// it before Claude's command-aware empty-result classification. A command
+			// that literally prints the same text is indistinguishable without a host
+			// empty-output flag and follows the native sentinel contract.
+			const output = !ctx.isError && rawOutput.trim() === "(no output)" ? "" : rawOutput;
 			const nonEmpty = output.split("\n").filter((line: string) => line.trim().length > 0);
 			const semantic = bashSemanticDisplayEnabled() ? classifyBashCommandForDisplay(ctx.args?.command ?? "") : null;
+			const prefixNote = (details as any)?._claudifyPrefixApplied
+				? theme.fg("muted", "Configured shell prefix applied")
+				: "";
 			if (isPartial) {
 				setupBlinkTimer(ctx);
 				const running = semantic?.kind === "read" ? "Reading" : "Running";
@@ -5540,7 +6095,8 @@ export default function (pi: ExtensionAPI): void {
 						expandHint: !expanded,
 						expandedCap: expanded,
 					});
-					return renderToolTextLines(withBranch(`${text}\n${preview}`, theme), width);
+					const body = expanded && prefixNote ? `${prefixNote}\n${text}\n${preview}` : `${text}\n${preview}`;
+					return renderToolTextLines(withBranch(body, theme), width);
 				}, getSettingsRevision);
 			}
 
@@ -5549,15 +6105,20 @@ export default function (pi: ExtensionAPI): void {
 				return makeText(ctx.lastComponent, withBranch(`${text}${hint}`, theme));
 			}
 			if (!expanded) return makeText(ctx.lastComponent, withBranch(text, theme));
+			if (nonEmpty.length === 0) {
+				const emptyLabel = theme.fg("muted", emptyBashResultLabel(ctx.args?.command ?? ""));
+				return makeText(ctx.lastComponent, withBranch(prefixNote ? `${prefixNote}\n${emptyLabel}` : emptyLabel, theme));
+			}
 			const key = `bash-expanded:${hashText(output)}`;
 			return widthAwareText(ctx.lastComponent, key, (width) => {
 				const rows = expandedPreviewLimit();
 				const preview = visualPreviewText(nonEmpty.join("\n"), width, rows, "head", theme, isError ? "claudeError" : "dim", { expandedCap: true });
 				// Claude's detailed transcript shows successful Bash output directly;
 				// it does not insert an extra "Done (N lines)" status row.
-				const body = isError || semantic?.kind === "read" || details?.truncation?.truncated
+				let body = isError || semantic?.kind === "read" || details?.truncation?.truncated
 					? `${text}\n${preview}`
 					: preview;
+				if (prefixNote) body = `${prefixNote}\n${body}`;
 				return renderToolTextLines(withBranch(body, theme), width);
 			}, getSettingsRevision);
 		},
@@ -5577,8 +6138,8 @@ export default function (pi: ExtensionAPI): void {
 		renderCall(args: any, theme: Theme, ctx: any) {
 			syncToolCallStatus(ctx);
 			const summary = stableCallSummary(ctx, "_callSummary", () => {
-				let value = `\"${summarizeText(args.pattern, 40)}\"`;
-				if (args.path) value += ` in ${args.path}`;
+				let value = `\"${summarizeText(sanitizeToolText(args.pattern), 40)}\"`;
+				if (args.path) value += ` in ${sp(args.path, ctx.cwd ?? cwd)}`;
 				return value;
 			});
 			return makeText(ctx.lastComponent, toolHeader("Grep", summary, theme, toolStatusDot(ctx, theme)));
@@ -5621,8 +6182,8 @@ export default function (pi: ExtensionAPI): void {
 		renderCall(args: any, theme: Theme, ctx: any) {
 			syncToolCallStatus(ctx);
 			const summary = stableCallSummary(ctx, "_callSummary", () => {
-				let value = `\"${summarizeText(args.pattern, 40)}\"`;
-				if (args.path) value += ` in ${args.path}`;
+				let value = `\"${summarizeText(sanitizeToolText(args.pattern), 40)}\"`;
+				if (args.path) value += ` in ${sp(args.path, ctx.cwd ?? cwd)}`;
 				return value;
 			});
 			return makeText(ctx.lastComponent, toolHeader("Find", summary, theme, toolStatusDot(ctx, theme)));
@@ -5666,7 +6227,7 @@ export default function (pi: ExtensionAPI): void {
 		},
 		renderCall(args: any, theme: Theme, ctx: any) {
 			syncToolCallStatus(ctx);
-			const summary = stableCallSummary(ctx, "_callSummary", () => sp(args.path ?? "."));
+			const summary = stableCallSummary(ctx, "_callSummary", () => sp(args.path ?? ".", ctx.cwd ?? cwd));
 			return makeText(ctx.lastComponent, toolHeader("List", summary, theme, toolStatusDot(ctx, theme)));
 		},
 		renderResult(result: any, { expanded, isPartial }: any, theme: Theme, ctx: any) {
@@ -5733,7 +6294,7 @@ export default function (pi: ExtensionAPI): void {
 			const revealSummary = shouldRevealCallArgs(ctx) || (!!fp && hasOwnArg(args, "content"));
 			syncToolCallStatus(ctx);
 			// Claude Code labels both new and existing files "Write" — no "Create".
-			const summary = stableCallSummary(ctx, "_callSummary", () => spl(fp), revealSummary);
+			const summary = stableCallSummary(ctx, "_callSummary", () => spl(fp, ctx.cwd ?? cwd), revealSummary);
 			const hdr = toolHeader("Write", summary, theme, toolStatusDot(ctx, theme));
 			return makeText(ctx.lastComponent, hdr);
 		},
@@ -5750,12 +6311,12 @@ export default function (pi: ExtensionAPI): void {
 						?.filter((c: any) => c.type === "text")
 						.map((c: any) => c.text || "")
 						.join("\n") ?? "Error";
-				return makeText(ctx.lastComponent, withBranch(theme.fg("error", e), theme));
+				return makeText(ctx.lastComponent, withBranch(theme.fg("error", sanitizeToolOutput(e)), theme));
 			}
 			const d = (result as any).details;
 			if (d?._type === "diff" && d.diff?.lines) {
 				const previewLines = ctx.expanded ? MAX_RENDER_LINES : diffCollapsedLimit();
-				const richSummary = resultSentence(theme, describeWrite(writtenLineCount(ctx.args?.content ?? ""), spl(ctx.args?.path ?? (ctx.args as any)?.file_path ?? ""), ccEmphasis()));
+				const richSummary = resultSentence(theme, describeWrite(writtenLineCount(ctx.args?.content ?? ""), spl(ctx.args?.path ?? (ctx.args as any)?.file_path ?? "", ctx.cwd ?? cwd), ccEmphasis()));
 				const key = `write:${hashText(JSON.stringify(d.diff))}:${d.language ?? ""}:${ctx.expanded ? 1 : 0}:${getSettingsRevision()}`;
 				return renderWidthAwareDiff(
 					ctx.lastComponent,
@@ -5771,7 +6332,7 @@ export default function (pi: ExtensionAPI): void {
 			}
 			if (d?._type === "noChange") return makeText(ctx.lastComponent, withBranch(theme.fg("muted", "✓ no changes"), theme));
 			if (d?._type === "diffOmitted") {
-				const summary = resultSentence(theme, describeWrite(writtenLineCount(ctx.args?.content ?? ""), spl(d.filePath ?? ""), ccEmphasis()));
+				const summary = resultSentence(theme, describeWrite(writtenLineCount(ctx.args?.content ?? ""), spl(d.filePath ?? "", ctx.cwd ?? cwd), ccEmphasis()));
 				const reason = d.reason === "oversized" ? "diff omitted: file too large" : "diff omitted: source unavailable";
 				return makeText(ctx.lastComponent, withBranch(`${summary} ${theme.fg("muted", `(${reason})`)}`, theme));
 			}
@@ -5780,7 +6341,7 @@ export default function (pi: ExtensionAPI): void {
 				const lineTotal = writtenLineCount(content);
 				const contentHash = hashText(content);
 				const syntheticDiff = getCachedParsedDiff(ctx, `nf-diff:${d.filePath}:${contentHash}`, "", content);
-				const richSummary = resultSentence(theme, describeWrite(lineTotal, spl(d.filePath ?? ""), ccEmphasis()));
+				const richSummary = resultSentence(theme, describeWrite(lineTotal, spl(d.filePath ?? "", ctx.cwd ?? cwd), ccEmphasis()));
 				const previewLines = ctx.expanded ? MAX_RENDER_LINES : diffCollapsedLimit();
 				const language = lang(d.filePath);
 				const key = `new-file:${d.filePath}:${contentHash}:${ctx.expanded ? 1 : 0}:${getSettingsRevision()}`;
@@ -5815,37 +6376,50 @@ export default function (pi: ExtensionAPI): void {
 			const runtimeCwd = ctx?.cwd ?? cwd;
 			const fp = params.path ?? (params as any).file_path ?? "";
 			const operations = getEditOperations(params);
-			const fullPath = fp ? resolve(runtimeCwd, fp) : "";
-			const before = fullPath ? captureWriteSnapshot(fullPath) : { kind: "unavailable" as const };
-			const localizedDiffs = operations.length === 1 ? await computeLocalizedEditDiffs(fp, operations, runtimeCwd) : null;
 			const result = await createEditToolDefinition(runtimeCwd).execute(toolCallId, params, signal, onUpdate, ctx);
 			if (operations.length === 0) return result;
-			const after = fullPath ? captureWriteSnapshot(fullPath) : { kind: "unavailable" as const };
-			const { diffs, summary, totalLines, totalHunks } = summarizeEditOperations(operations);
-			const baseDetails = (((result as any).details ?? {}) as Record<string, unknown>);
-			const snapshotDiff = before.kind === "content" && after.kind === "content" && before.content !== after.content
-				? parseDiff(before.content, after.content)
-				: null;
-			const aggregateDiff = snapshotDiff?.lines.length
-				? snapshotDiff
-				: parsePersistedEditPatch(baseDetails.patch);
+			const { summary } = summarizeEditOperations(operations);
+			const baseDetails = { ...(((result as any).details ?? {}) as Record<string, unknown>) };
+			const legacyDisplayDiff = baseDetails.diff;
+			// Keep the standard patch when available, or one bounded converted 0.74
+			// display model—not both representations.
+			delete baseDetails.diff;
+			const nativePatchDiff = parsePersistedEditPatch(baseDetails.patch);
+			const legacyDiff = nativePatchDiff ? null : parseLegacyEditDiff(legacyDisplayDiff);
+			const aggregateDiff = nativePatchDiff ?? legacyDiff;
+			const persistLegacyModel = !nativePatchDiff && !!legacyDiff;
 			if (operations.length === 1) {
-				const localized = localizedDiffs?.[0];
-				const diff = aggregateDiff ?? localized?.diff ?? diffs[0];
+				const diff = aggregateDiff;
+				if (!diff) {
+					(result as any).details = {
+						...baseDetails,
+						_type: "diffUnavailable",
+						summary,
+						language: lang(fp),
+					};
+					return result;
+				}
 				const editLine = getFirstChangedNewLine(diff)
-					|| localized?.line
 					|| (typeof baseDetails.firstChangedLine === "number" ? baseDetails.firstChangedLine : 0);
 				(result as any).details = {
 					...baseDetails,
 					_type: "editInfo",
 					summary,
 					editLine,
+					...(persistLegacyModel ? { parsedDiff: diff } : {}),
 					hunks: countDiffHunks(diff),
 					added: diff?.added ?? 0,
 					removed: diff?.removed ?? 0,
-					// Persist the full-file render model. ctx.state and the pre-edit
-					// filesystem are both gone after /reload or restart.
-					parsedDiff: diff,
+					language: lang(fp),
+				};
+				return result;
+			}
+			if (!aggregateDiff) {
+				(result as any).details = {
+					...baseDetails,
+					_type: "diffUnavailable",
+					summary,
+					editCount: operations.length,
 					language: lang(fp),
 				};
 				return result;
@@ -5855,15 +6429,11 @@ export default function (pi: ExtensionAPI): void {
 				_type: "multiEditInfo",
 				summary,
 				editCount: operations.length,
-				diffLineCount: aggregateDiff?.lines.length ?? totalLines,
-				hunks: aggregateDiff ? countDiffHunks(aggregateDiff) : totalHunks,
-				totalAdded: aggregateDiff?.added ?? diffs.reduce((sum, diff) => sum + diff.added, 0),
-				totalRemoved: aggregateDiff?.removed ?? diffs.reduce((sum, diff) => sum + diff.removed, 0),
-				aggregateDiff,
-				// Retain operation models solely as a bounded fallback for hosts where
-				// the source snapshot and standard patch are unavailable.
-				parsedDiffs: diffs,
-				editLines: diffs.map((diff) => getFirstChangedNewLine(diff)),
+				...(persistLegacyModel ? { aggregateDiff } : {}),
+				diffLineCount: aggregateDiff.lines.length,
+				hunks: countDiffHunks(aggregateDiff),
+				totalAdded: aggregateDiff.added,
+				totalRemoved: aggregateDiff.removed,
 				language: lang(fp),
 			};
 			return result;
@@ -5872,7 +6442,7 @@ export default function (pi: ExtensionAPI): void {
 			const fp = args?.path ?? (args as any)?.file_path ?? "";
 			const operations = getEditOperations(args);
 			const revealSummary = shouldRevealCallArgs(ctx) || (!!fp && hasOwnArg(args, "edits"));
-			const summary = stableCallSummary(ctx, "_callSummary", () => spl(fp), revealSummary);
+			const summary = stableCallSummary(ctx, "_callSummary", () => spl(fp, ctx.cwd ?? cwd), revealSummary);
 			syncToolCallStatus(ctx);
 			const hdr = toolHeader("Update", summary, theme, toolStatusDot(ctx, theme));
 			// Before/during execution the call owns the preview. Once settled, the
@@ -5916,9 +6486,15 @@ export default function (pi: ExtensionAPI): void {
 						?.filter((c: any) => c.type === "text")
 						.map((c: any) => c.text || "")
 						.join("\n") ?? "Error";
-				return makeText(ctx.lastComponent, indentBranchBlock(withBranch(theme.fg("error", e), theme)));
+				return makeText(ctx.lastComponent, indentBranchBlock(withBranch(theme.fg("error", sanitizeToolOutput(e)), theme)));
 			}
 			const details = ((result as any).details ?? {}) as Record<string, any>;
+			if (details._type === "diffUnavailable") {
+				return makeText(ctx.lastComponent, indentBranchBlock(withBranch(
+					`${resultSentence(theme, "Applied")} ${theme.fg("muted", "(diff unavailable: source provenance not captured)")}`,
+					theme,
+				)));
+			}
 			const operations = getEditOperations(ctx.args);
 			const fallback = operations.length > 0 ? summarizeEditOperations(operations) : null;
 			const aggregatePersisted = asParsedDiff(details.aggregateDiff)
@@ -5974,125 +6550,55 @@ export default function (pi: ExtensionAPI): void {
 		},
 	});
 
+	// Presentation is selected by the observable call/result contract, not by the
+	// package that owns execution. Externally-owned compatible tools therefore
+	// retain their execute/schema/policy while using Claudify's renderer.
+	installCompatibleToolPresentations(toolRendererOwner, compatiblePresentationAdapters.values());
+
 	// Normal package loading performs ownership checks after the extension factory
 	// returns. Registering core overrides during the factory conflicts with Meta's
 	// built-ins; session_start is past that loader gate. before_agent_start is an
 	// idempotent fallback for hosts that rebuild their tool registry per run.
-	pi.on("session_start", async () => installDeferredBuiltinOverrides());
-	pi.on("before_agent_start", async () => installDeferredBuiltinOverrides());
+	pi.on("session_start", async (_event, ctx) => installDeferredBuiltinOverrides(ctx));
+	pi.on("before_agent_start", async (_event, ctx) => installDeferredBuiltinOverrides(ctx));
 
-	const wrappedOpenAiTools = new Set<string>();
-	const registerOpenAiToolOverrides = (): void => {
+	const discoverPresentationTools = (): void => {
 		let allTools: unknown[] = [];
 		try {
 			allTools = typeof (pi as any).getAllTools === "function" ? (pi as any).getAllTools() : [];
-		} catch {
-			allTools = [];
+		} catch (error) {
+			debugDiagnostic("presentation-tool-discovery", error);
+			return;
 		}
 		for (const tool of allTools) {
-			if (!isOpenAiToolCandidate(tool)) continue;
-			const record = tool as Record<string, unknown>;
-			const name = typeof record.name === "string" ? record.name : "";
-			if (!name || wrappedOpenAiTools.has(name) || toolPresentationSkipped(name)) continue;
-			const execute = typeof record.execute === "function" ? (record.execute as any) : null;
-			if (!execute) continue;
-			const rawLabel = typeof record.label === "string" ? record.label.trim() : "";
-			const label = rawLabel && rawLabel !== name && !rawLabel.includes("_") ? rawLabel : humanizeToolName(name);
-			const description = typeof record.description === "string" ? record.description : label;
-			(pi as any).registerTool({
-				name,
-				label,
-				description,
-				parameters: record.parameters,
-				prepareArguments: typeof record.prepareArguments === "function" ? record.prepareArguments : undefined,
-				async execute(toolCallId: string, params: any, signal: AbortSignal | undefined, onUpdate: any, ctx: any) {
-					return await Promise.resolve(execute(toolCallId, params, signal, onUpdate, ctx));
-				},
-				renderCall(args: any, theme: Theme, ctx: any) {
-					if (name === "apply_patch") return renderApplyPatchCall(args, theme, ctx, sp);
-					syncToolCallStatus(ctx);
-					ctx.state._openAiPatchFiles = [];
-					const summary = stableCallSummary(ctx, "_callSummary", () => summarizeOpenAiToolCall(name, args, theme, sp));
-					return makeText(ctx.lastComponent, toolHeader(label, summary, theme, toolStatusDot(ctx, theme)));
-				},
-				renderResult(result: any, { expanded, isPartial }: any, theme: Theme, ctx: any) {
-					if (name === "apply_patch") return renderApplyPatchResult(result, isPartial, theme, ctx);
-					return renderOpenAiToolResult(name, result, expanded, isPartial, theme, ctx);
-				},
-			});
-			wrappedOpenAiTools.add(name);
-		}
-	};
-
-	const wrappedMcpTools = new Set<string>();
-	const registerMcpToolOverrides = (): void => {
-		let allTools: unknown[] = [];
-		try {
-			allTools = typeof (pi as any).getAllTools === "function" ? (pi as any).getAllTools() : [];
-		} catch {
-			allTools = [];
-		}
-		for (const tool of allTools) {
-			if (!isMcpToolCandidate(tool)) continue;
-			const record = tool as Record<string, unknown>;
-			const name = typeof record.name === "string" ? record.name : "";
-			if (!name || wrappedMcpTools.has(name) || toolPresentationSkipped(name)) continue;
-			// Record enabled MCP tools and their server before installing presentation.
-			noteMcpTool(tool);
-			const execute = typeof record.execute === "function" ? (record.execute as any) : null;
-			if (!execute) continue;
-			const label = typeof record.label === "string" ? record.label : name === "mcp" ? "MCP" : `MCP ${name}`;
-			const description = typeof record.description === "string" ? record.description : "MCP tool";
-			(pi as any).registerTool({
-				name,
-				label,
-				description,
-				parameters: record.parameters,
-				prepareArguments: typeof record.prepareArguments === "function" ? record.prepareArguments : undefined,
-				async execute(toolCallId: string, params: any, signal: AbortSignal | undefined, onUpdate: any, ctx: any) {
-					return await Promise.resolve(execute(toolCallId, params, signal, onUpdate, ctx));
-				},
-				renderCall(args: any, theme: Theme, ctx: any) {
-					return renderGenericToolCall(name, args, theme, ctx);
-				},
-				renderResult(result: any, { expanded, isPartial }: any, theme: Theme, ctx: any) {
-					return renderMcpToolResult(result, expanded, isPartial, theme, ctx);
-				},
-			});
-			wrappedMcpTools.add(name);
+			// Public ToolInfo is metadata-only. Record provable MCP identity for
+			// presentation, but never replace execution from private fields.
+			if (isMcpToolCandidate(tool)) noteMcpTool(tool);
 		}
 	};
 
 	pi.on("session_start", async () => {
-		registerOpenAiToolOverrides();
-		registerMcpToolOverrides();
+		discoverPresentationTools();
 	});
 	pi.on("before_agent_start", async () => {
-		registerOpenAiToolOverrides();
-		registerMcpToolOverrides();
+		discoverPresentationTools();
 	});
 
-	// Safety net: clear all blink timers on turn/session boundaries
+	// Safety net: clear all blink timers on turn/session boundaries.
 	pi.on("turn_end", async () => {
-		for (const entry of _blinkContexts.values()) {
-			entry.key._blinkActive = false;
-		}
+		for (const entry of _blinkContexts.values()) entry.key._blinkActive = false;
 		_blinkContexts.clear();
 		clearHighlightCache();
-		if (_globalBlinkTimer) {
-			clearTimeout(_globalBlinkTimer);
-			_globalBlinkTimer = null;
-		}
+		if (_globalBlinkTimer) { clearTimeout(_globalBlinkTimer); _globalBlinkTimer = null; }
 	});
 	pi.on("session_shutdown", async () => {
-		for (const entry of _blinkContexts.values()) {
-			entry.key._blinkActive = false;
-		}
+		deferGenerationRelease(() => releaseGlobalToolBorders(globalRenderOwner));
+		deferGenerationRelease(() => releaseToolExecutionRenderers(toolRendererOwner));
+		deferGenerationRelease(() => releaseToolFallbackSanitization(fallbackSanitizerOwner));
+		for (const entry of _blinkContexts.values()) entry.key._blinkActive = false;
 		_blinkContexts.clear();
 		clearHighlightCache();
-		if (_globalBlinkTimer) {
-			clearTimeout(_globalBlinkTimer);
-			_globalBlinkTimer = null;
-		}
+		if (_globalBlinkTimer) { clearTimeout(_globalBlinkTimer); _globalBlinkTimer = null; }
+
 	});
 }

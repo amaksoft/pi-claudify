@@ -18,7 +18,7 @@ table, fenced TypeScript/JSON/Bash, and a wrapping paragraph.
 
 | Surface | Claude Code | Current claudify | Delta |
 | --- | --- | --- | --- |
-| H1 | `⏺` + bold italic underline, default fg | `⏺` + bold underline, Pi `mdHeading` gold | remove heading color; add italic |
+| H1 | `⏺` + bold italic underline, default fg | `⏺` + Pi's native heading emphasis, default fg | italic remains a host-hook gap; never rewrite Markdown source |
 | H2/H3 | two-space indent, bold, default fg | correct indent/marker stripping, gold fg | remove heading color |
 | Bold/italic/strike | SGR 1 / 3 / 9 | same | none |
 | Inline code | xterm 153, no background/backticks | lavender accent, no background/backticks | effectively matched |
@@ -57,14 +57,16 @@ theme, not message-chrome spacing.
 Claude Markdown mode now hides fence rows, removes the two excess fenced-body
 indent columns, renders a literal `---`, uses `▎` for blockquotes without
 altering table pipes, and supplies captured heading/list/inline-code/link colors
-without mutating Pi's application theme. Pi mode bypasses these grammar changes.
+without mutating Pi's application theme. It deliberately does not rewrite H1
+source to force italic because that changes closing hashes, escapes, emphasis,
+links, and inline-code semantics. Pi mode bypasses these grammar changes. Current
+Pi already emits OSC-8 named links without a visible `(url)` suffix; a regression
+test pins that host behavior.
 
 ## Remaining parser-level work
 
-1. Add OSC-8 named-link rendering without the visible `(url)` suffix.
-2. Reproduce Claude's H1 italic treatment.
-3. Apply Claude's syntax-token palette without replacing Pi's parser/highlighter.
-4. Treat table alignment separately; it likely needs a Pi Markdown/parser fix
+1. Apply Claude's syntax-token palette without replacing Pi's parser/highlighter.
+2. Treat table alignment separately; it likely needs a Pi Markdown/parser fix
    rather than fragile rendered-string surgery.
 
 Every step needs fixture snapshots at narrow and wide widths. Do not replace

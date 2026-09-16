@@ -5,14 +5,20 @@
 export const CLAUDE_PALETTE = {
 	accent: {
 		dark: { truecolor: "\x1b[38;2;177;185;249m", ansi256: "\x1b[38;5;147m" },
-		light: { truecolor: "\x1b[38;2;87;105;247m", ansi256: "\x1b[38;5;63m" },
+		light: { truecolor: "\x1b[38;2;135;135;255m", ansi256: "\x1b[38;5;105m" },
 	},
 	status: {
 		pending: "\x1b[38;2;153;153;153m",
 		success: "\x1b[38;2;135;215;135m",
 		error: "\x1b[38;2;255;135;175m",
 	},
+	statusLight: {
+		pending: "\x1b[38;2;98;98;98m",
+		success: "\x1b[38;2;95;135;95m",
+		error: "\x1b[38;2;175;95;95m",
+	},
 	gutter: "\x1b[38;2;153;153;153m",
+	gutterLight: "\x1b[38;2;98;98;98m",
 	inlineCode: "\x1b[38;5;153m",
 	link: "\x1b[94m",
 	userMessage: {

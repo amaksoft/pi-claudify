@@ -21,7 +21,11 @@ export function captureWriteSnapshot(fullPath: string): WriteSnapshot {
 }
 
 export function writeDiffOmissionReason(snapshot: WriteSnapshot, newContent: string): "oversized" | "unavailable" | null {
+	const newBytes = Buffer.byteLength(newContent, "utf8");
+	// New files have no old snapshot, but building their synthetic listing/diff is
+	// still bounded by the same total-input ceiling.
+	if (newBytes > MAX_WRITE_DIFF_INPUT_BYTES) return "oversized";
 	if (snapshot.kind === "omitted") return snapshot.reason === "oversized" ? "oversized" : "unavailable";
 	if (snapshot.kind !== "content") return null;
-	return snapshot.bytes + Buffer.byteLength(newContent, "utf8") > MAX_WRITE_DIFF_INPUT_BYTES ? "oversized" : null;
+	return snapshot.bytes + newBytes > MAX_WRITE_DIFF_INPUT_BYTES ? "oversized" : null;
 }

@@ -4,6 +4,8 @@ import { join } from "node:path";
 import type { MessageSpacing, MessageStyle, WorkedVerbMode } from "./message-chrome.ts";
 import type { CompatibilityConfig } from "./domain/compatibility.ts";
 
+export const DEFAULT_EXPANDED_PREVIEW_MAX_LINES = 4_000;
+
 export type SettingsFileStatus = "ok" | "missing" | "invalid";
 export type SpinnerVerbMode = "append" | "replace";
 
@@ -42,6 +44,7 @@ export interface SettingsFile {
 	themeAdaptive?: boolean;
 	spinnerColor?: string;
 	spinnerStatusColor?: string;
+	spinnerPlacement?: "above" | "input";
 	spinnerShimmer?: boolean;
 	spinnerVerbs?: string[];
 	spinnerVerbMode?: SpinnerVerbMode;

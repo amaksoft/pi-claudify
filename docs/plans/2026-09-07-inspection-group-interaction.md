@@ -1,7 +1,7 @@
 # Read-only aggregation: settle detection and recoverable detail
 
 Date: 2026-09-07
-Status: implemented, except the open gaps listed at the end
+Status: implemented; capture-backed edge cases resolved
 
 This is a **host capture**, not a Claude Code pixel capture. The rendering
 grammar is unchanged and every existing capture-backed assertion still holds
@@ -91,6 +91,15 @@ if the user cannot tell that something was deleted.
   escapes in a command.
 - `scripts/test-mcp-display.ts` — parameters on expand in proxy and direct mode,
   empty envelope, routing keys, malformed JSON verbatim, hostile escapes.
+- `scripts/test-mouse-pty.ts` — a real tmux PTY running Pi 0.85's native
+  fullscreen renderer. Its fixture constructs actual settled Bash
+  `ToolExecutionComponent` rows, groups them with the production
+  `ensureInspectionGroups()` policy into literal `Ran 3 shell commands` and
+  `Ran 4 shell commands` summaries, then sends raw SGR press/release bytes
+  through Pi's terminal parser and hit map. It verifies one group expands without
+  its sibling, one-key `ctrl+o` collapse, concatenated reports, wheel input, no
+  `[<...M` editor leakage, `/reload` listener replacement, `/new` state reset,
+  and the real fullscreen teardown path.
 
 ## Capture: Claude Code v2.1.261, expansion model
 
@@ -152,8 +161,12 @@ transcript components. This extension deliberately uses that extra capability:
   as groupable and dissolves into the same native rows pi would have rendered.
   Links, output, status and ordinary per-tool behavior therefore remain native.
 - `ctrl+o` duck-types `setExpanded` on transcript children, so it reaches the
-  group component and follows exactly the same path. Clicking opens one group;
-  `ctrl+o` remains the global all-groups toggle.
+  group component and follows the same expansion path. A local click does not,
+  however, update Pi's private global expansion boolean. Without coordination,
+  the first `ctrl+o` after a click expands globally and only the second collapses.
+  Claudify tracks members opened by pointer and consumes exactly that first
+  `ctrl+o` to collapse the visibly-open groups; with no pointer-opened state, the
+  key falls through untouched to Pi's normal global toggle.
 - While the wrapper paints its own summary, it installs
   `mouseLayout = {width, children: []}`. Otherwise pi 0.85's
   `Container.handleMouse` fabricates hit regions by rendering the invisible
@@ -166,8 +179,11 @@ transcript components. This extension deliberately uses that extra capability:
 
 The pinned pi-tui 0.80.6 does not yet define `mouseLayout` or `handleMouse`.
 Assignment is therefore feature-tolerant and the wrapper's handler is tested
-directly there. The full contract was additionally verified live against pi
-0.85 in fullscreen using SGR mouse events:
+directly there. Pi 0.85's real dispatcher lives in its native
+`--tui-mode fullscreen` renderer; merely writing alternate-screen and mouse-mode
+escapes around the regular renderer does not create pointer dispatch. The 0.85
+CI lane now launches that native renderer in tmux and sends real SGR bytes. The
+same contract was verified live:
 
 ```
 before click:       Read 1 file
@@ -176,20 +192,30 @@ after click:      ⏺ Read(.../package.json)
 ```
 
 With two read groups separated by an ungrouped Bash row, clicking the first
-opened only it and left the second as `Read 1 file`; `ctrl+o` then expanded both,
-and a second `ctrl+o` collapsed both.
+opens only it and leaves the second as `Read 1 file`; one `ctrl+o` now collapses
+the pointer-opened group. The following `ctrl+o` uses Pi's ordinary global
+expand path.
+
+Shell-specific regression coverage exercises groups of 3, 4, and 5 settled
+commands through three repeated click/collapse cycles, two separated shell
+groups, a mixed settled/streaming/pending group, and restored rows. The real PTY
+test uses three- and four-command groups and verifies one-key collapse after
+pointer expansion.
 
 This resolves the partial-expansion question as an intentional pi enhancement:
 the state has no upstream Claude form, but its UX is defined—pointer targets one
-group, keyboard targets all groups.
+group, the immediately following `ctrl+o` closes pointer-opened detail, and
+keyboard toggles are global again once that partial state is gone.
 
-## Open gaps (not addressed here)
+## Resolved edge cases
 
-- **Sibling sinks.** The Bash output lines newly exposed by this feature's
-  running preview do pass through `sanitizeToolText`. Settled/native tool output
-  bodies and the per-tool `Read`/`Write`/`Update`/`Grep` headers still do not; a
-  BEL in a path can split an OSC 8 hyperlink. Those sinks are verified identical
-  on `master`, so they are pre-existing rather than a regression.
-- **No line cap on expanded detail.** A pathological 5,000-character command
-  wraps to ~97 rows. Recoverability argues for showing all of it; Claude Code's
-  behaviour here is uncaptured.
+The former sibling-sink gap is closed: built-in headers, generated OSC-8 labels,
+adapter-stamped MCP metadata, generic/MCP/error previews, persisted diff source,
+and Pi's native result fallback are sanitized before trusted renderer ANSI is
+applied. Regression tests cover BEL/OSC, CSI, charset shifts, NUL, forged rows,
+bidi/zero-width controls, `#`/`?` file URIs, and lone surrogates.
+
+Claude Code v2.1.266 renders a captured 5,000-character Bash command in full in
+detailed mode, without a cap, followed by `(No output)`. Claudify deliberately
+keeps the same recoverability-first behavior and pins it with a 5,000-character
+regression fixture.

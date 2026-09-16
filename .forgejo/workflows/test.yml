@@ -12,7 +12,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        pi-version: ["0.74.0", "0.80.6", "0.85.1"]
+        pi-version: ["0.74.0", "0.80.6", "0.85.1", "latest"]
 
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -29,6 +29,15 @@ jobs:
         run: npm install --no-save "@earendil-works/pi-coding-agent@${{ matrix.pi-version }}" "@earendil-works/pi-tui@${{ matrix.pi-version }}"
       - name: Test
         run: bun run test
+      - name: Install tmux for real pointer dispatch
+        if: matrix.pi-version == '0.85.1'
+        run: command -v tmux >/dev/null || (sudo apt-get update && sudo apt-get install -y tmux)
+      - name: Test real fullscreen pointer dispatch
+        if: matrix.pi-version == '0.85.1'
+        run: bun run test:mouse-pty
+      - name: Test historical presentation across reload
+        if: matrix.pi-version == '0.85.1'
+        run: bun run test:reload-presentation-pty
       - name: Strict TypeScript check
         run: >-
           npx tsc --noEmit --strict --skipLibCheck --allowImportingTsExtensions

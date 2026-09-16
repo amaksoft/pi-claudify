@@ -4,6 +4,7 @@ import { Loader } from "@earendil-works/pi-tui";
 import { parseCompatibilityConfig, resolveCompatibilityFeatureEnabled } from "./domain/compatibility.ts";
 import { resolveSpinnerShimmer } from "./presentation-profile.ts";
 import { readSettings } from "./settings.ts";
+import { sanitizeToolContent } from "./terminal-sanitize.ts";
 
 function spinnerFeatureEnabled(): boolean {
 	return resolveCompatibilityFeatureEnabled(parseCompatibilityConfig(readSettings().values.compatibility), "spinner");
@@ -39,8 +40,7 @@ let _spinnerSettingsCache: { value: SpinnerSettings; expires: number } | null = 
 const SPINNER_SETTINGS_TTL_MS = 1_000;
 export const MAX_CUSTOM_SPINNER_VERBS = 200;
 export const MAX_SPINNER_VERB_LENGTH = 48;
-const ANSI_ESCAPE_SEQUENCE_RE = /\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\))/g;
-const CONTROL_CHARS_RE = /[\u0000-\u001F\u007F-\u009F]/g;
+const spinnerGraphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 // Cross-extension bust signal: the Claudify screen in index.ts bumps this
 // counter and we drop the cache when it changes.
 const SPINNER_BUST_KEY = Symbol.for("pi-claudify:spinner-settings-bust");
@@ -50,12 +50,10 @@ let _spinnerLastBust = 0;
 
 function sanitizeSpinnerVerb(value: unknown): string | null {
 	if (typeof value !== "string") return null;
-	const cleaned = value
-		.replace(ANSI_ESCAPE_SEQUENCE_RE, "")
-		.replace(CONTROL_CHARS_RE, "")
-		.trim();
+	const cleaned = sanitizeToolContent(value).trim();
 	if (!cleaned) return null;
-	return Array.from(cleaned).slice(0, MAX_SPINNER_VERB_LENGTH).join("");
+	const graphemes = Array.from(spinnerGraphemeSegmenter.segment(cleaned), ({ segment }) => segment);
+	return graphemes.slice(0, MAX_SPINNER_VERB_LENGTH).join("");
 }
 
 export function sanitizeSpinnerVerbs(value: unknown): string[] {
@@ -176,8 +174,25 @@ const SHIMMER_STOPS: readonly ShimmerStop[] = [
 	{ atMs: 17_000, rgb: { r: 255, g: 175, b: 95 }, bold: true }, // + bold
 	{ atMs: 20_000, rgb: { r: 255, g: 215, b: 0 }, bold: true }, // #FFD700 gold
 ];
-// A bright warm cream highlight — more legible than CC's one-shade delta.
-const SHIMMER_SWEEP_RGB: Rgb = { r: 255, g: 215, b: 175 }; // #FFD7AF
+// The sweep highlight warms with the base rather than staying one fixed cream.
+// Stops are exact RGB equivalents of xterm colors observed in low/medium frames.
+const SHIMMER_HIGHLIGHT_STOPS: readonly Omit<ShimmerStop, "bold">[] = [
+	{ atMs: 0, rgb: { r: 255, g: 135, b: 135 } }, // xterm 216
+	{ atMs: 13_000, rgb: { r: 215, g: 175, b: 175 } }, // xterm 181
+	{ atMs: 14_000, rgb: { r: 215, g: 175, b: 135 } }, // xterm 180
+	{ atMs: 15_000, rgb: { r: 215, g: 215, b: 175 } }, // xterm 187
+	{ atMs: 17_000, rgb: { r: 215, g: 215, b: 135 } }, // xterm 186
+	{ atMs: 20_000, rgb: { r: 255, g: 215, b: 95 } }, // xterm 221
+];
+
+export function shimmerHighlightRgb(elapsedMs: number): Rgb {
+	let stop = SHIMMER_HIGHLIGHT_STOPS[0];
+	for (const candidate of SHIMMER_HIGHLIGHT_STOPS) {
+		if (elapsedMs >= candidate.atMs) stop = candidate;
+		else break;
+	}
+	return stop.rgb;
+}
 
 // One animation super-cycle: a sweep pass, then a breathing stretch, repeating.
 const SHIMMER_SWEEP_MS = 4_000;
@@ -233,13 +248,13 @@ export function shimmerSweep(verbLen: number, elapsedMs: number): { start: numbe
 
 /** Wrap the verb in the escalated base color (breathing when in that phase) with the sweep highlight. */
 export function colorizeShimmerVerb(verb: string, elapsedMs: number): string {
-	const chars = Array.from(verb);
+	const chars = Array.from(spinnerGraphemeSegmenter.segment(verb), ({ segment }) => segment);
 	const { rgb, bold } = shimmerBaseRgb(elapsedMs);
 	const boldSeq = bold ? SHIMMER_BOLD : "";
 	const baseAnsi = rgbAnsi(scaleRgb(rgb, shimmerBreatheFactor(elapsedMs)));
 	const sweep = shimmerSweep(chars.length, elapsedMs);
 	if (!sweep) return `${boldSeq}${baseAnsi}${verb}${RESET}`;
-	const hlAnsi = rgbAnsi(SHIMMER_SWEEP_RGB);
+	const hlAnsi = rgbAnsi(shimmerHighlightRgb(elapsedMs));
 	let out = boldSeq;
 	for (let i = 0; i < chars.length; i++) {
 		out += (i >= sweep.start && i <= sweep.end ? hlAnsi : baseAnsi) + chars[i];
@@ -633,29 +648,35 @@ function outputTokens(value: any): number | null {
 export class OutputTokenTracker {
 	private settled = 0;
 	private streaming = 0;
+	private turnFinished = false;
 
 	resetRequest(): void {
 		this.settled = 0;
 		this.streaming = 0;
+		this.turnFinished = false;
 	}
 
 	startTurn(): void {
 		this.streaming = 0;
+		this.turnFinished = false;
 	}
 
 	update(event: any): boolean {
+		if (this.turnFinished) return false;
 		const next = outputTokens(event?.partial ?? event?.message);
-		if (next === null || next === this.streaming) return false;
+		if (next === null || next <= this.streaming) return false;
 		this.streaming = next;
 		return true;
 	}
 
 	finish(message: any): boolean {
-		const final = outputTokens(message) ?? this.streaming;
-		const changed = final > 0 || this.streaming > 0;
-		this.settled += final;
+		if (this.turnFinished) return false;
+		this.turnFinished = true;
+		const final = outputTokens(message) ?? 0;
+		const turnTotal = Math.max(this.streaming, final);
+		this.settled += turnTotal;
 		this.streaming = 0;
-		return changed;
+		return turnTotal > 0;
 	}
 
 	total(): number {
@@ -686,6 +707,17 @@ const WORKING_MESSAGE_INTERVAL_MS = 1_000;
 /** Completion message linger */
 const TURN_COMPLETION_MS = 2_500;
 
+export function thinkingProgressPhrase(elapsedMs: number): "thinking" | "still thinking" | "thinking more" | "thinking some more" | "almost done thinking" {
+	if (elapsedMs >= 47_000) return "almost done thinking";
+	if (elapsedMs >= 32_000) return "thinking some more";
+	if (elapsedMs >= 22_000) return "thinking more";
+	if (elapsedMs >= 12_000) return "still thinking";
+	return "thinking";
+}
+
+export function activeThinkingProgressPhrase(thinkingStartedAt: number, now: number): ReturnType<typeof thinkingProgressPhrase> {
+	return thinkingProgressPhrase(thinkingStartedAt > 0 ? Math.max(0, now - thinkingStartedAt) : 0);
+}
 
 export default function (pi: ExtensionAPI) {
 	if (!spinnerFeatureEnabled()) return;
@@ -730,7 +762,7 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		if (thinkingStatus === "thinking") {
-			statusParts.push(`thinking${getEffortSuffix()}`);
+			statusParts.push(`${activeThinkingProgressPhrase(thinkingStartTime, Date.now())}${getEffortSuffix()}`);
 		} else if (typeof thinkingStatus === "number") {
 			statusParts.push(`thought for ${Math.max(1, Math.round(thinkingStatus / 1000))}s`);
 		}

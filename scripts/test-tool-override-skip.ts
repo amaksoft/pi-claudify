@@ -3,6 +3,12 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { ToolExecutionComponent, createGrepToolDefinition } from "@earendil-works/pi-coding-agent";
+import { Container, Text } from "@earendil-works/pi-tui";
+import { initTheme } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
+
+initTheme("dark");
+
 const root = mkdtempSync(join(tmpdir(), "cc-skip-tools-"));
 const home = join(root, "home");
 mkdirSync(join(home, ".pi"), { recursive: true });
@@ -30,9 +36,31 @@ assert.equal(Object.hasOwn(values, "ccSkipToolOverrides"), false, "legacy key do
 assert.deepEqual([...skippedToolOverrides(values)].sort(), ["bash", "find", "grep"], "config and env merge; unknown tools are ignored");
 
 const pi = new FakePi();
+const externalGrep = {
+	...createGrepToolDefinition(root),
+	renderCall: () => new Text("EXTERNAL_GREP", 0, 0),
+};
+pi.registerTool(externalGrep);
 extension(pi as any);
-for (const name of ["bash", "grep", "find"]) assert.equal(pi.tools.has(name), false, `${name} override is skipped`);
+for (const name of ["bash", "find"]) assert.equal(pi.tools.has(name), false, `${name} override is skipped`);
+assert.equal(pi.tools.get("grep"), externalGrep, "skipped grep keeps the pre-existing external definition");
 for (const name of ["read", "ls", "write", "edit"]) assert.equal(pi.tools.has(name), true, `${name} override remains registered`);
+const externalRow = new ToolExecutionComponent(
+	"grep",
+	"external-grep",
+	{ pattern: "needle", path: "." },
+	{ showImages: false },
+	externalGrep,
+	{ requestRender() {}, previousLines: [] } as any,
+	root,
+);
+externalRow.markExecutionStarted();
+externalRow.setArgsComplete();
+externalRow.updateResult({ content: [{ type: "text", text: "match" }], details: {}, isError: false } as any, false);
+const externalBox = new Container();
+externalBox.addChild(externalRow);
+assert.match(externalBox.render(100).join("\n"), /EXTERNAL_GREP/, "skipped tool keeps its external renderer");
+assert.equal((externalBox as any).children[0], externalRow, "skipped tool is not wrapped into an inspection group");
 
 delete process.env.PI_CLAUDIFY_SKIP_TOOL_OVERRIDES;
 console.log("tool override opt-out tests passed");

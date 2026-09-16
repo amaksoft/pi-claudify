@@ -405,6 +405,7 @@ export interface FooterLineData {
 	readonly contextPercent: number | null;
 	readonly usage: readonly UsageWindowData[];
 	readonly sessionCost?: number;
+	readonly sessionCostAvailable?: boolean;
 	readonly sessionElapsedMs?: number;
 	readonly promptCount?: number;
 }
@@ -562,7 +563,7 @@ export function buildFooterLine(data: FooterLineData, settings: FooterSettings, 
 		if (reset) text += ` → Reset: ${reset}`;
 		segments.push(paint(usageColor(palette, percent), text));
 	}
-	if (settings.cost && typeof data.sessionCost === "number" && data.sessionCost > 0) {
+	if (settings.cost && data.sessionCostAvailable === true && typeof data.sessionCost === "number") {
 		segments.push(paint(palette.separator, `$${data.sessionCost.toFixed(2)}`));
 	}
 	if (settings.sessionStats && typeof data.promptCount === "number" && data.promptCount > 0) {
@@ -646,11 +647,18 @@ export class ClaudeFooterComponent {
 	private readonly footerData: FooterDataLike;
 	private readonly sources: FooterSources;
 	private readonly theme: unknown;
+	private readonly repaintTimer?: ReturnType<typeof setInterval>;
 
-	constructor(footerData: FooterDataLike, sources: FooterSources, theme?: unknown) {
+	constructor(footerData: FooterDataLike, sources: FooterSources, theme?: unknown, requestRender?: () => void) {
 		this.footerData = footerData;
 		this.sources = sources;
 		this.theme = theme;
+		if (requestRender) {
+			this.repaintTimer = setInterval(() => {
+				if (resolveFooterSettings(readSettings().values).sessionStats) requestRender();
+			}, 1_000);
+			this.repaintTimer.unref?.();
+		}
 	}
 
 	// pi-tui's Component contract declares invalidate() as required even though
@@ -658,6 +666,7 @@ export class ClaudeFooterComponent {
 	invalidate(): void {}
 
 	dispose(): void {
+		if (this.repaintTimer) clearInterval(this.repaintTimer);
 		this.sources.dispose?.();
 	}
 
@@ -673,6 +682,7 @@ export class ClaudeFooterComponent {
 				contextPercent: this.sources.getContextPercent(),
 				usage: this.sources.getUsage(),
 				sessionCost: session.cost,
+				sessionCostAvailable: session.costAvailable,
 				sessionElapsedMs: Date.now() - session.startedAt,
 				promptCount: session.promptCount,
 			},
@@ -773,7 +783,7 @@ export function installClaudeFooter(ctx: any, pi?: any): void {
 				usageSource?.dispose();
 			},
 		};
-		return new ClaudeFooterComponent(footerData, sources, theme);
+		return new ClaudeFooterComponent(footerData, sources, theme, () => tui.requestRender());
 	});
 }
 

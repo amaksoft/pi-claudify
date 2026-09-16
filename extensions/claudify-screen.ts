@@ -18,8 +18,8 @@ import {
 	resolveMessageChromeSettings,
 	sanitizeWorkedVerbs,
 } from "./message-chrome.ts";
-import { resolveColorSource, resolveSurfaceColorSource } from "./presentation-profile.ts";
-import { readSettings, writeSettingsKey, type SettingsFile } from "./settings.ts";
+import { resolveColorSource, resolveSpinnerShimmer, resolveSurfaceColorSource } from "./presentation-profile.ts";
+import { DEFAULT_EXPANDED_PREVIEW_MAX_LINES, readSettings, writeSettingsKey, type SettingsFile } from "./settings.ts";
 import {
 	MAX_CUSTOM_SPINNER_VERBS,
 	MAX_SPINNER_VERB_LENGTH,
@@ -62,6 +62,7 @@ type EditableSettingsKey =
 	| "diffCollapsedLines"
 	| "spinnerColor"
 	| "spinnerStatusColor"
+	| "spinnerPlacement"
 	| "spinnerShimmer"
 	| "spinnerVerbs"
 	| "spinnerVerbMode"
@@ -119,6 +120,7 @@ interface EnumSettingRow extends SettingRowBase {
 interface BooleanSettingRow extends SettingRowBase {
 	readonly kind: "boolean";
 	readonly value: boolean;
+	readonly valueOrigin?: "explicit" | "inherited";
 }
 
 interface NumberSettingRow extends SettingRowBase {
@@ -291,7 +293,7 @@ const BANNER_ROWS: readonly ImmediateRowDefinition[] = [
 		label: "Startup banner",
 		description: "Shows the full banner on first project/version, always, or not at all.",
 		values: ["off", "onboarding", "always"],
-		defaultValue: "onboarding",
+		defaultValue: "off",
 	},
 	{
 		kind: "boolean",
@@ -429,7 +431,7 @@ const TOOL_OUTPUT_ROWS: readonly ImmediateRowDefinition[] = [
 		key: "expandedPreviewMaxLines",
 		label: "Expanded preview max lines",
 		description: "Caps lines in expanded output previews that can otherwise grow unbounded.",
-		defaultValue: 150,
+		defaultValue: DEFAULT_EXPANDED_PREVIEW_MAX_LINES,
 		min: 1,
 	},
 ];
@@ -667,6 +669,15 @@ function sectionRows(section: ClaudifySection, candidates: ClaudifyPickerCandida
 			: "muted";
 		return [
 			{
+				kind: "enum",
+				key: "spinnerPlacement",
+				label: "Spinner placement",
+				description: "Shows working status above the prompt like Claude, or inside Pi's input border.",
+				value: settings.spinnerPlacement === "input" ? "input" : "above",
+				values: ["above", "input"],
+				claudeValue: "above",
+			},
+			{
 				kind: "picker",
 				key: "spinnerColor",
 				label: "Spinner color",
@@ -711,7 +722,8 @@ function sectionRows(section: ClaudifySection, candidates: ClaudifyPickerCandida
 				key: "spinnerShimmer",
 				label: "Warm shimmer",
 				description: "Animates the Spinner: warms salmon→gold, then loops a sweep and a breathing pulse. Default Spinner color only.",
-				value: settings.spinnerShimmer !== false,
+				value: resolveSpinnerShimmer(settings),
+				valueOrigin: typeof settings.spinnerShimmer === "boolean" ? "explicit" : "inherited",
 			},
 		];
 	}
@@ -1209,11 +1221,19 @@ export class ClaudifyScreen extends Container implements Focusable {
 		const footer = [...new Text(this.footerLine, 3, 0).render(width), ...rule()];
 
 		const rows = this.tui.terminal?.rows;
-		const naturalHeight = head.length + body.length + footer.length;
-		const targetHeight = rows ? rows - PANEL_HEIGHT_RESERVE : 0;
-		const gap = Math.max(1, targetHeight - naturalHeight);
+		if (!rows) return [...head, ...body, "", ...footer];
+		const targetHeight = Math.max(head.length + footer.length, rows - PANEL_HEIGHT_RESERVE);
+		const bodyBudget = Math.max(0, targetHeight - head.length - footer.length);
+		let visibleBody = body;
+		if (body.length > bodyBudget) {
+			const selected = Math.max(0, body.findIndex((row) => row.includes("❯")));
+			const start = Math.max(0, Math.min(selected - Math.floor(bodyBudget / 2), body.length - bodyBudget));
+			visibleBody = body.slice(start, start + bodyBudget);
+		}
+		const naturalHeight = head.length + visibleBody.length + footer.length;
+		const gap = Math.max(0, targetHeight - naturalHeight);
 
-		return [...head, ...body, ...Array<string>(gap).fill(""), ...footer];
+		return [...head, ...visibleBody, ...Array<string>(gap).fill(""), ...footer];
 	}
 
 	private subtitle(): string {
@@ -1262,7 +1282,11 @@ export class ClaudifyScreen extends Container implements Focusable {
 			const label = themedText(this.theme, "text", row.label.padEnd(labelWidth));
 			const displayValue = row.kind === "verbs"
 				? `${row.value.length} custom · ${row.mode}`
-				: row.kind === "picker" && row.value === undefined ? "none" : String(row.value);
+				: row.kind === "picker" && row.value === undefined
+					? "none"
+					: row.kind === "boolean" && row.valueOrigin
+						? `${row.value} (${row.valueOrigin})`
+						: String(row.value);
 			const value = row.kind === "picker" && row.key !== "diffTheme"
 				? themedByKey(this.theme, String(row.value), displayValue)
 				: themedText(this.theme, "text", displayValue);

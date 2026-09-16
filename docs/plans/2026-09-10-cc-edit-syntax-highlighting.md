@@ -60,6 +60,6 @@ file listings.
 The normal-package recapture confirms TypeScript additions contain the same
 Monokai semantic colors as Claude and no runtime import error. Claude-mode edit
 rendering also uses one aggregate full-file diff with real line numbers/context,
-`Added N lines, removed N lines` grammar, normal-weight gutters, full-width fresh
+`Added N lines, removed N lines` grammar, normal-weight gutters, fresh
 xterm-equivalent row backgrounds, changed-word emphasis only on additions, and
 neutral punctuation/operator foregrounds.

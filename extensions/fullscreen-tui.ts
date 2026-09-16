@@ -353,7 +353,8 @@ export function registerFullscreenTui(pi: ExtensionAPI): void {
 	pi.registerCommand("tui", {
 		description: "Toggle Claude Code-style fullscreen layout",
 		handler: async (_args, ctx) => {
-			if (ctx.mode !== "tui" || !ctx.hasUI) {
+			const mode = (ctx as any).mode;
+			if ((mode !== undefined && mode !== "tui") || !ctx.hasUI) {
 				ctx.ui.notify("/tui needs the interactive TUI", "info");
 				return;
 			}

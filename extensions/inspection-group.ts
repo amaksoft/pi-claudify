@@ -1,9 +1,17 @@
 import { Container } from "@earendil-works/pi-tui";
 
+import { debugDiagnostic } from "./debug.ts";
 import { installMouseLayout } from "./mouse-layout.ts";
 
-/** Capture the unpatched host path before index.ts installs its global adapter. */
-const HOST_CONTAINER_RENDER = Container.prototype.render;
+/** Capture the unpatched host path once per process, surviving extension reloads. */
+const HOST_CONTAINER_RENDER_KEY = Symbol.for("pi-claudify:host-container-render");
+const renderRegistry = globalThis as Record<PropertyKey, unknown>;
+export const HOST_CONTAINER_RENDER = (
+	typeof renderRegistry[HOST_CONTAINER_RENDER_KEY] === "function"
+		? renderRegistry[HOST_CONTAINER_RENDER_KEY]
+		: Container.prototype.render
+) as typeof Container.prototype.render;
+if (!renderRegistry[HOST_CONTAINER_RENDER_KEY]) renderRegistry[HOST_CONTAINER_RENDER_KEY] = HOST_CONTAINER_RENDER;
 const GROUP_BRAND = Symbol.for("pi-claudify:inspection-group-component");
 
 export interface InteractiveRows {
@@ -21,6 +29,7 @@ export interface InspectionGroupPolicy {
 	isEligible(member: unknown): boolean;
 	isSettled(member: unknown): boolean;
 	setExpanded(member: unknown, expanded: boolean): void;
+	onPointerExpand?(members: unknown[]): void;
 	renderActive(members: unknown[], width: number): InspectionGroupFrame;
 	renderSettled(members: unknown[], width: number): InspectionGroupFrame;
 }
@@ -29,6 +38,13 @@ export interface InspectionGroupLike {
 	getMembers(): unknown[];
 	validates(): boolean;
 	release(): void;
+}
+
+/** Optional counters for deterministic reconciliation complexity tests. */
+export interface InspectionGroupReconciliationMetrics {
+	flattenedMembers: number;
+	indexedWrappers: number;
+	reuseCandidateChecks: number;
 }
 
 export function isInspectionGroupComponent(value: unknown): value is InspectionGroupLike {
@@ -48,7 +64,7 @@ export class InspectionGroupComponent extends Container implements InspectionGro
 	private summaryStart = 0;
 	private summaryEnd = 0;
 	private nativeFallback = false;
-	private readonly policy: InspectionGroupPolicy;
+	private policy: InspectionGroupPolicy;
 
 	constructor(members: unknown[], policy: InspectionGroupPolicy) {
 		super();
@@ -66,6 +82,11 @@ export class InspectionGroupComponent extends Container implements InspectionGro
 	validates(): boolean {
 		const members = this.getMembers();
 		return members.length > 0 && members.every(this.policy.isEligible);
+	}
+
+	/** Reused wrappers must observe the policy supplied by this reconciliation. */
+	refreshPolicy(policy: InspectionGroupPolicy): void {
+		this.policy = policy;
 	}
 
 	release(): void {
@@ -94,7 +115,8 @@ export class InspectionGroupComponent extends Container implements InspectionGro
 			// hit regions for invisible native rows.
 			installMouseLayout(this, { width, children: [] });
 			return frame.lines;
-		} catch {
+		} catch (error) {
+			debugDiagnostic("inspection-group-render", error);
 			this.nativeFallback = true;
 			this.summaryStart = 0;
 			this.summaryEnd = 0;
@@ -103,7 +125,7 @@ export class InspectionGroupComponent extends Container implements InspectionGro
 		}
 	}
 
-	handleMouse(event: any): unknown {
+	handleMouse(event: any): any {
 		if (this.nativeFallback) {
 			const nativeHandler = (Container.prototype as any).handleMouse;
 			return typeof nativeHandler === "function" ? nativeHandler.call(this, event) : undefined;
@@ -115,6 +137,8 @@ export class InspectionGroupComponent extends Container implements InspectionGro
 			&& typeof event?.y === "number"
 			&& event.y >= this.summaryStart && event.y < this.summaryEnd
 		) {
+			const members = this.getMembers();
+			try { this.policy.onPointerExpand?.(members); } catch { /* expansion still works */ }
 			this.setExpanded(true);
 			return { handled: true };
 		}
@@ -144,37 +168,61 @@ export class InspectionGroupComponent extends Container implements InspectionGro
  * Planning before mutation prevents a setting change from requiring two
  * renders and prevents discarded adjacent wrappers retaining member ownership.
  */
-export function reconcileInspectionGroups(container: unknown, policy: InspectionGroupPolicy): void {
+export function reconcileInspectionGroups(
+	container: unknown,
+	policy: InspectionGroupPolicy,
+	metrics?: InspectionGroupReconciliationMetrics,
+): void {
+	if (metrics) {
+		metrics.flattenedMembers = 0;
+		metrics.indexedWrappers = 0;
+		metrics.reuseCandidateChecks = 0;
+	}
 	const children = (container as { children?: unknown[] } | null)?.children;
 	if (!Array.isArray(children) || children.length === 0) return;
 
 	const original = [...children];
 	const wrappers: InspectionGroupLike[] = [];
 	const flattened: unknown[] = [];
+	const reusableByFirstMember = new Map<unknown, Array<{ group: InspectionGroupComponent; members: unknown[] }>>();
 	for (const child of original) {
 		if (isInspectionGroupComponent(child)) {
 			wrappers.push(child);
-			flattened.push(...child.getMembers());
+			const members = child.getMembers();
+			flattened.push(...members);
+			if (child instanceof InspectionGroupComponent && members.length > 0) {
+				const bucket = reusableByFirstMember.get(members[0]) ?? [];
+				bucket.push({ group: child, members });
+				reusableByFirstMember.set(members[0], bucket);
+				if (metrics) metrics.indexedWrappers++;
+			}
 		} else {
 			flattened.push(child);
 		}
 	}
+	if (metrics) metrics.flattenedMembers = flattened.length;
 
 	const used = new Set<InspectionGroupLike>();
 	const created: InspectionGroupComponent[] = [];
 	const next: unknown[] = [];
 	let run: unknown[] = [];
-	const sameMembers = (group: InspectionGroupLike, members: unknown[]): boolean => {
-		const current = group.getMembers();
-		return current.length === members.length && current.every((member, index) => member === members[index]);
-	};
+	const sameMembers = (current: unknown[], members: unknown[]): boolean =>
+		current.length === members.length && current.every((member, index) => member === members[index]);
 	const flush = () => {
 		if (!run.length) return;
 		const members = run;
 		run = [];
-		const reusable = wrappers.find(
-			(group) => group instanceof InspectionGroupComponent && !used.has(group) && sameMembers(group, members),
-		);
+		let reusable: InspectionGroupComponent | undefined;
+		// A member can belong to only one valid transcript wrapper, so this bucket
+		// is normally a singleton. Indexing by run identity avoids rescanning every
+		// earlier wrapper for every separated run.
+		for (const candidate of reusableByFirstMember.get(members[0]) ?? []) {
+			if (metrics) metrics.reuseCandidateChecks++;
+			if (!used.has(candidate.group) && sameMembers(candidate.members, members)) {
+				reusable = candidate.group;
+				break;
+			}
+		}
 		if (reusable) {
 			used.add(reusable);
 			next.push(reusable);
@@ -199,6 +247,11 @@ export function reconcileInspectionGroups(container: unknown, policy: Inspection
 		throw error;
 	}
 
+	// Policy objects may carry live render callbacks or settings snapshots. A
+	// membership-stable wrapper is still refreshed before it can render again.
+	for (const wrapper of used) {
+		if (wrapper instanceof InspectionGroupComponent) wrapper.refreshPolicy(policy);
+	}
 	const unchanged = original.length === next.length && original.every((child, index) => child === next[index]);
 	if (unchanged) return;
 	for (const wrapper of wrappers) {

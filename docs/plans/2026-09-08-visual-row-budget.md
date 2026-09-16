@@ -10,16 +10,17 @@ minified line; selecting the first ten logical lines still hands the entire line
 to the TUI, which wraps it into hundreds of rows. The same code-unit-based
 wrapping split emoji surrogate pairs and ZWJ sequences in narrow diff views.
 
-The reference implementation records the corresponding Claude terminal design:
-pre-limit input to `rows * wrapWidth * 4`, hard-wrap by display columns, and
-count the post-wrap visual rows. Streaming tail mode keeps the newest visual
-rows rather than the newest logical lines.
+The renderer hard-wraps by display columns and counts post-wrap visual rows.
+Streaming tail mode keeps the newest visual rows rather than the newest logical
+lines. Exact hidden-row counts require a linear scan of the sanitized input;
+retained row memory, rather than inspected input, is bounded.
 
 ## Design
 
 - `visual-preview.ts` sanitizes multiline tool output while preserving real line
-  boundaries, bounds the source before grapheme segmentation, and returns a
-  head/tail visual-row window plus an estimated hidden-row count.
+  boundaries, scans it once, and returns a head/tail visual-row window plus an
+  exact hidden-row count. The head stores only its budget and the tail uses a
+  fixed-size ring; processing is O(input), retained rows are O(budget).
 - Width-sensitive preview output is owned by `WidthAwareTextComponent`, whose
   cache key includes source/settings state and whose render cache is keyed by
   `render(width)`.

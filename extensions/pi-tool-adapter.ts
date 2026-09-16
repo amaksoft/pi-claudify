@@ -24,8 +24,18 @@ export function toolComponentRecord(value: unknown): PiToolRecord {
 
 export function isToolExecutionLike(value: unknown): value is PiToolRecord & { toolName: string; toolCallId: string } {
 	if (!value || typeof value !== "object") return false;
-	const candidate = value as PiToolRecord;
-	return typeof candidate.toolName === "string" && typeof candidate.toolCallId === "string";
+	const candidate = value as PiToolRecord & Record<string, unknown>;
+	// `instanceof` is not stable when Pi and an extension resolve separate peer
+	// package instances. Require the private identity fields plus the distinctive
+	// ToolExecution mutation/render surface instead; uncertain rows stay native.
+	const constructorName = (candidate as any).constructor?.name;
+	return constructorName === "ToolExecutionComponent"
+		&& typeof candidate.toolName === "string"
+		&& typeof candidate.toolCallId === "string"
+		&& typeof candidate.render === "function"
+		&& typeof candidate.updateResult === "function"
+		&& typeof candidate.setExpanded === "function"
+		&& typeof candidate.updateDisplay === "function";
 }
 
 export function toolComponentCwd(value: unknown): string {

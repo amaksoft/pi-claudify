@@ -24,11 +24,12 @@
  */
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, win32 } from "node:path";
 import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
 import { VERSION } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { readSettings } from "./settings.ts";
+import { sanitizeToolText } from "./terminal-sanitize.ts";
 
 const SKILLS_MAX_ROWS = 6;
 /** Below this render width the banner degrades to the centered compact box. */
@@ -52,8 +53,40 @@ function ccAccent(theme: Theme): (text: string) => string {
 export function tildeHome(cwd: string): string {
 	const home = process.env.HOME || homedir();
 	if (!home) return cwd;
+	const windowsPath = /^[A-Za-z]:[\\/]/.test(cwd) || cwd.startsWith("\\\\") || cwd.includes("\\");
+	if (windowsPath) {
+		const normalizedCwd = win32.normalize(cwd);
+		const normalizedHome = win32.normalize(home);
+		if (normalizedCwd.toLowerCase() === normalizedHome.toLowerCase()) return "~";
+		if (normalizedCwd.toLowerCase().startsWith(`${normalizedHome.toLowerCase()}\\`)) {
+			return `~${normalizedCwd.slice(normalizedHome.length)}`;
+		}
+		return normalizedCwd;
+	}
 	if (cwd === home) return "~";
 	return cwd.startsWith(`${home}/`) ? `~${cwd.slice(home.length)}` : cwd;
+}
+
+/**
+ * Banner metadata crosses a terminal boundary. Normalize malformed UTF-16 first
+ * (the TUI width helpers assume well-formed text), then remove terminal control
+ * envelopes, row-breaking controls, bidi controls, and invisible sentinels.
+ */
+export function sanitizeBannerMetadata(value: unknown): string {
+	const raw = typeof value === "string" ? value : String(value ?? "");
+	const wellFormed = typeof raw.toWellFormed === "function"
+		? raw.toWellFormed()
+		: raw.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "\ufffd");
+	return sanitizeToolText(wellFormed);
+}
+
+/** Pi's configurable agent resource root, including the historical default. */
+function codingAgentDir(): string {
+	const home = process.env.HOME || homedir();
+	const configured = process.env.PI_CODING_AGENT_DIR;
+	if (!configured) return join(home, ".pi", "agent");
+	if (configured === "~") return home;
+	return configured.startsWith("~/") ? join(home, configured.slice(2)) : configured;
 }
 
 // pi brand mark — the geometric P+i logo (pi.dev/logo-auto.svg), 6-row grid.
@@ -84,6 +117,29 @@ export interface BannerInfo {
 	visible?: () => boolean;
 }
 
+interface SanitizedBannerInfo {
+	model: string;
+	cwd: string;
+	resumed: string | undefined;
+	title: string;
+	welcome: string;
+	skills: readonly string[];
+	extensions: readonly string[];
+}
+
+function sanitizeInfo(info: BannerInfo): SanitizedBannerInfo {
+	const resumed = info.resumed === undefined ? undefined : sanitizeBannerMetadata(info.resumed);
+	return {
+		model: sanitizeBannerMetadata(info.model() ?? ""),
+		cwd: sanitizeBannerMetadata(info.cwd),
+		resumed,
+		title: sanitizeBannerMetadata(info.title() ?? ""),
+		welcome: sanitizeBannerMetadata(info.welcome ?? "Welcome back!"),
+		skills: (info.skills ?? []).map(sanitizeBannerMetadata),
+		extensions: (info.extensions ?? []).map(sanitizeBannerMetadata),
+	};
+}
+
 function center(text: string, width: number): string {
 	const w = visibleWidth(text);
 	if (w >= width) return truncateToWidth(text, width, "");
@@ -103,20 +159,22 @@ function padRight(text: string, width: number): string {
  * so `last` stays the real tail segment instead of "" (AUDIT §5 banner.ts:79). */
 export function truncatePath(path: string, maxLen: number): string {
 	if (visibleWidth(path) <= maxLen) return path;
-	const sep = "/";
+	const windowsPath = /^[A-Za-z]:[\\/]/.test(path) || path.startsWith("\\\\") || path.includes("\\");
+	const sep = windowsPath ? "\\" : "/";
 	const ellipsis = "…";
-	// Drop trailing separators so `last` is the real tail, not "" → `…/`.
-	const trimmed = path.length > 1 ? path.replace(/\/+$/, "") : path;
-	const parts = trimmed.split(sep);
+	const trimmed = path.length > 1
+		? windowsPath ? path.replace(/[\\/]+$/, "") : path.replace(/\/+$/, "")
+		: path;
+	const root = windowsPath ? win32.parse(trimmed).root : trimmed.startsWith("/") ? "/" : "";
+	const remainder = root ? trimmed.slice(root.length) : trimmed;
+	const parts = remainder.split(windowsPath ? /[\\/]+/ : /\/+/).filter(Boolean);
 	if (parts.length <= 1) return truncateToWidth(trimmed, maxLen, ellipsis);
-	const first = parts[0]; // "" when the path is absolute (leading slash)
+	const first = root || parts[0];
 	const last = parts[parts.length - 1] || "";
-	// `<first>/…/<last>`; for an absolute path first is "" so this is `/…/last`
-	// (one leading slash), and for `~/a/b` it is `~/…/b`.
-	const candidate = `${first}${sep}${ellipsis}${sep}${last}`;
+	const joiner = first.endsWith(sep) ? "" : sep;
+	const candidate = `${first}${joiner}${ellipsis}${sep}${last}`;
 	if (visibleWidth(candidate) <= maxLen) return candidate;
-	// Not enough room even for that: keep the head + a truncated tail.
-	const head = `${first}${sep}${ellipsis}${sep}`;
+	const head = `${first}${joiner}${ellipsis}${sep}`;
 	const lastMax = maxLen - visibleWidth(head);
 	if (lastMax > 0) return `${head}${truncateToWidth(last, lastMax, ellipsis)}`;
 	return truncateToWidth(trimmed, maxLen, ellipsis);
@@ -131,22 +189,23 @@ function safeReaddir(dir: string): string[] {
 }
 
 /** Discover skill names from user, agent, project, and package skill directories. */
-function discoverSkills(cwd: string): string[] {
-	const home = homedir();
+export function discoverSkills(cwd: string, projectTrusted = false): string[] {
+	const home = process.env.HOME || homedir();
+	const agentDir = codingAgentDir();
 	const names = new Set<string>();
 	const collect = (dir: string): void => {
 		if (!existsSync(dir)) return;
 		for (const entry of safeReaddir(dir)) {
-			if (existsSync(join(dir, entry, "SKILL.md"))) names.add(entry);
+			if (existsSync(join(dir, entry, "SKILL.md"))) names.add(sanitizeBannerMetadata(entry));
 		}
 	};
-	// User + agent + project skills (pi resource-loader scans agentDir/skills
-	// and <cwd>/.pi/skills).
-	collect(join(home, ".pi", "agent", "skills"));
+	// User and agent resources are always eligible. Project resources require an
+	// affirmative decision; missing trust APIs on old Pi versions fail closed.
+	collect(join(agentDir, "skills"));
 	collect(join(home, ".agents", "skills"));
-	collect(join(cwd, ".pi", "skills"));
+	if (projectTrusted) collect(join(cwd, ".pi", "skills"));
 	// Package skills: node_modules/<pkg>/skills/<skill>/ and @<scope>/<pkg>/skills/<skill>/
-	const nm = join(home, ".pi", "agent", "npm", "node_modules");
+	const nm = join(agentDir, "npm", "node_modules");
 	if (existsSync(nm)) {
 		for (const pkg of safeReaddir(nm)) {
 			if (pkg.startsWith(".")) continue;
@@ -169,8 +228,8 @@ const GENERIC_SEGMENTS = new Set(["index", "main", "extension", "extensions", "s
 /** Human name for a settings entry: `npm:pi-web-access` → pi-web-access,
  *  `/…/better-claude-code-ui/extension/index.ts` → better-claude-code-ui. */
 export function extensionDisplayName(entry: string): string {
-	const spec = entry.replace(/^(npm|git|file):/, "");
-	const segments = spec.split("/").filter(Boolean);
+	const spec = sanitizeBannerMetadata(entry).replace(/^(npm|git|file):/, "");
+	const segments = spec.split(/[\\/]+/).filter(Boolean);
 	for (let i = segments.length - 1; i >= 0; i--) {
 		const base = segments[i]!.replace(/\.(ts|js)$/, "");
 		if (!GENERIC_SEGMENTS.has(base)) return base;
@@ -196,18 +255,20 @@ function readSettingsArray(path: string, key: string): string[] {
  * settings.json. The old dir-only scan missed every path-configured extension
  * (this one included) and all package-provided ones.
  */
-function discoverExtensions(cwd: string): string[] {
+export function discoverExtensions(cwd: string, projectTrusted = false): string[] {
 	const names = new Set<string>();
-	const dir = join(homedir(), ".pi", "agent", "extensions");
+	const home = process.env.HOME || homedir();
+	const agentDir = codingAgentDir();
+	const dir = join(agentDir, "extensions");
 	if (existsSync(dir)) {
 		for (const f of safeReaddir(dir)) {
 			if (f.endsWith(".ts") || f.endsWith(".js")) names.add(f.replace(/\.(ts|js)$/, ""));
 		}
 	}
 	const settingsFiles = [
-		join(homedir(), ".pi", "settings.json"),
-		join(homedir(), ".pi", "agent", "settings.json"),
-		join(cwd, ".pi", "settings.json"),
+		join(home, ".pi", "settings.json"),
+		join(agentDir, "settings.json"),
+		...(projectTrusted ? [join(cwd, ".pi", "settings.json")] : []),
 	];
 	// Two passes: `-`/`!` entries are exclusion patterns that apply to OTHER
 	// entries (pi package-manager semantics), not just themselves — collect
@@ -289,18 +350,26 @@ export class BannerComponent {
 	render(width: number, theme: Theme): string[] {
 		const visible = this.info.visible?.() ?? true;
 		const full = typeof this.info.full === "function" ? this.info.full() : !!this.info.full;
-		// Key on every input the output depends on. model/title/resumed/settings
+		// Sanitize every metadata leaf before it reaches the cache key or any TUI
+		// width/style/layout helper. Keeping this boundary here also protects
+		// callers that construct BannerComponent directly.
+		const info = sanitizeInfo(this.info);
+		// Key on every sanitized input the output depends on. Metadata and settings
 		// are dynamic; a live change flips the key and recomputes.
-		const key = [
+		const key = JSON.stringify([
 			width,
 			visible ? 1 : 0,
 			full ? 1 : 0,
 			this.revealWidth ?? -1,
 			typeof theme.getColorMode === "function" ? theme.getColorMode() : "",
-			this.info.model() ?? "",
-			this.info.title() ?? "",
-			this.info.resumed ?? "",
-		].join("\0");
+			info.model,
+			info.title,
+			info.resumed ?? "",
+			info.welcome,
+			info.cwd,
+			info.extensions,
+			info.skills,
+		]);
 		if (this.cacheLines && this.cacheKey === key && this.cacheTheme === theme) {
 			return this.cacheLines;
 		}
@@ -313,12 +382,12 @@ export class BannerComponent {
 		// Default startup is the borderless condensed logo; the boxed banner is
 		// reserved for new-version / first-project starts when framing is enabled.
 		const rows = !full
-			? this.renderCondensed(width, theme)
+			? this.renderCondensed(width, theme, info)
 			: width >= FULL_MIN_WIDTH
-				? this.renderWide(width, theme)
+				? this.renderWide(width, theme, info)
 				: width >= MIN_BOXED_WIDTH
-					? this.renderBoxed(width, theme)
-					: this.renderCompact(width, theme);
+					? this.renderBoxed(width, theme, info)
+					: this.renderCompact(width, theme, info);
 		const reveal = this.revealWidth;
 		const out = reveal === undefined ? rows : rows.map((row) => truncateToWidth(row, reveal, ""));
 		this.cacheKey = key;
@@ -332,10 +401,9 @@ export class BannerComponent {
 	}
 
 	/** The `resumed <id8> · <title>` identity line, or undefined on a fresh session. */
-	private resumedLine(): string | undefined {
-		if (this.info.resumed === undefined) return undefined;
-		const title = this.info.title();
-		return `resumed ${this.info.resumed}` + (title ? ` · ${title}` : "");
+	private resumedLine(info: SanitizedBannerInfo): string | undefined {
+		if (info.resumed === undefined) return undefined;
+		return `resumed ${info.resumed}` + (info.title ? ` · ${info.title}` : "");
 	}
 
 	/**
@@ -344,7 +412,7 @@ export class BannerComponent {
 	 * when resuming. Mirrors CC CondensedLogo.tsx (row layout, gap 2, dim info,
 	 * bold name + dim version) — no box chrome (AUDIT §6 P1 CondensedLogo).
 	 */
-	private renderCondensed(width: number, theme: Theme): string[] {
+	private renderCondensed(width: number, theme: Theme, info: SanitizedBannerInfo): string[] {
 		const dim = (s: string): string => theme.fg("dim", s);
 		const accent = ccAccent(theme);
 		const bold = (s: string): string => theme.bold(s);
@@ -352,15 +420,15 @@ export class BannerComponent {
 		const logoWidth = Math.max(...PI_ART.map((row) => visibleWidth(row)));
 		// Too narrow to sit the info column beside the mark → borderless centered
 		// stack (same degradation as the compact box, no overflow).
-		if (width < logoWidth + 4 + 8) return this.renderCompactPlain(width, theme);
+		if (width < logoWidth + 4 + 8) return this.renderCompactPlain(width, theme, info);
 		// CC CondensedLogo.tsx:59 — text width accounts for mark + gap + padding.
 		const textWidth = Math.max(width - logoWidth - 4, 20);
-		const model = this.info.model() ?? "";
-		const cwd = truncatePath(this.info.cwd, textWidth);
-		const resumed = this.resumedLine();
+		const model = info.model;
+		const cwd = truncatePath(info.cwd, textWidth);
+		const resumed = this.resumedLine(info);
 
 		// Info column: name+version, model, cwd, (resumed).
-		const info: string[] = [
+		const identityLines: string[] = [
 			`${bold("pi agent")} ${dim(`v${VERSION}`)}`,
 			...(model ? [dim(truncateToWidth(model, textWidth, "…"))] : []),
 			dim(cwd),
@@ -368,26 +436,25 @@ export class BannerComponent {
 		];
 
 		// Lay the mark alongside the info column, top-aligned, gap of 2 spaces.
-		const height = Math.max(PI_ART.length, info.length);
+		const height = Math.max(PI_ART.length, identityLines.length);
 		const rows: string[] = [];
 		for (let i = 0; i < height; i++) {
 			const art = PI_ART[i] ?? " ".repeat(logoWidth);
-			const line = i < info.length ? info[i] : "";
+			const line = i < identityLines.length ? identityLines[i] : "";
 			rows.push(truncateToWidth(` ${accent(art)}  ${line}`, Math.max(1, width), ""));
 		}
 		return rows;
 	}
 
-	private renderWide(width: number, theme: Theme): string[] {
+	private renderWide(width: number, theme: Theme, info: SanitizedBannerInfo): string[] {
 		const dim = (s: string): string => theme.fg("dim", s);
 		const accent = ccAccent(theme);
 		const bold = (s: string): string => theme.bold(s);
 
-		const plainWelcome = this.info.welcome ?? "Welcome back!";
-		const welcome = plainWelcome;
-		const model = this.info.model() ?? "";
-		const cwd = truncatePath(this.info.cwd, MAX_LEFT_WIDTH - 4);
-		const resumed = this.resumedLine();
+		const welcome = info.welcome;
+		const model = info.model;
+		const cwd = truncatePath(info.cwd, MAX_LEFT_WIDTH - 4);
+		const resumed = this.resumedLine(info);
 
 		// Left panel width (CC: max(content, 20) + 4, capped at 50)
 		const leftWidth = Math.min(
@@ -398,7 +465,7 @@ export class BannerComponent {
 		// 7 = 2 borders + 2 paddingX + 1 divider + 2 gaps
 		const rightWidth = boxWidth - leftWidth - 7;
 		// dsh-tui transcript.ts:499-501 — fall back to renderBoxed, not compact.
-		if (rightWidth < RIGHT_MIN_WIDTH) return this.renderBoxed(width, theme);
+		if (rightWidth < RIGHT_MIN_WIDTH) return this.renderBoxed(width, theme, info);
 
 		// Identity lines share one left edge (dsh-tui transcript.ts:583-586):
 		// individually centering lines of very different length gives a ragged
@@ -424,8 +491,8 @@ export class BannerComponent {
 
 		// Right panel: Extensions + Skills feeds (live from disk)
 		const rightRows: string[] = [];
-		const exts = this.info.extensions ?? [];
-		const skills = this.info.skills ?? [];
+		const exts = info.extensions;
+		const skills = info.skills;
 		if (exts.length > 0) {
 			rightRows.push(bold(accent("Extensions")));
 			for (const line of packNames(exts, rightWidth, 2)) {
@@ -471,13 +538,13 @@ export class BannerComponent {
 	 * stack right — with the Extensions/Skills feeds as a borderless trailer
 	 * under the box.
 	 */
-	private renderBoxed(width: number, theme: Theme): string[] {
+	private renderBoxed(width: number, theme: Theme, info: SanitizedBannerInfo): string[] {
 		const dim = (s: string): string => theme.fg("dim", s);
 		const accent = ccAccent(theme);
 
-		const model = this.info.model() ?? "";
-		const cwd = truncatePath(this.info.cwd, MAX_LEFT_WIDTH - 4);
-		const resumed = this.resumedLine();
+		const model = info.model;
+		const cwd = truncatePath(info.cwd, MAX_LEFT_WIDTH - 4);
+		const resumed = this.resumedLine(info);
 
 		// Identity stack right of the logo; the wordmark leads (dsh-tui: wordmark
 		// is the first in-box line, not spliced into the border).
@@ -509,19 +576,19 @@ export class BannerComponent {
 			);
 		}
 		rows.push(this.border(theme, `╰${"─".repeat(boxWidth - 2)}╯`));
-		rows.push(...this.renderBoxedTrailer(width, theme));
+		rows.push(...this.renderBoxedTrailer(width, theme, info));
 		return rows;
 	}
 
 	/** Borderless welcome + Extensions/Skills feeds under the boxed banner, indented 1. */
-	private renderBoxedTrailer(width: number, theme: Theme): string[] {
+	private renderBoxedTrailer(width: number, theme: Theme, info: SanitizedBannerInfo): string[] {
 		const dim = (s: string): string => theme.fg("dim", s);
 		const accent = ccAccent(theme);
 		const bold = (s: string): string => theme.bold(s);
 		const usable = Math.max(1, width - 2);
 		// dsh-tui transcript.ts:702-714 — the trailer opens with the welcome
 		// line, same source as the wide/compact tiers.
-		const rows: string[] = [` ${dim(this.info.welcome ?? "Welcome back!")}`];
+		const rows: string[] = [` ${dim(info.welcome)}`];
 		const section = (label: string, names: readonly string[], maxRows: number): void => {
 			if (names.length === 0) return;
 			rows.push("");
@@ -530,20 +597,19 @@ export class BannerComponent {
 				rows.push(` ${dim(truncateToWidth(line, usable, ""))}`);
 			}
 		};
-		section("Extensions", this.info.extensions ?? [], 2);
-		section("Skills", this.info.skills ?? [], SKILLS_MAX_ROWS);
+		section("Extensions", info.extensions, 2);
+		section("Skills", info.skills, SKILLS_MAX_ROWS);
 		return rows;
 	}
 
-	private renderCompact(width: number, theme: Theme): string[] {
+	private renderCompact(width: number, theme: Theme, info: SanitizedBannerInfo): string[] {
 		const dim = (s: string): string => theme.fg("dim", s);
 		const accent = ccAccent(theme);
 		const bold = (s: string): string => theme.bold(s);
 
-		const plainWelcome = this.info.welcome ?? "Welcome back!";
-		const welcome = plainWelcome;
-		const model = this.info.model() ?? "";
-		const resumed = this.resumedLine();
+		const welcome = info.welcome;
+		const model = info.model;
+		const resumed = this.resumedLine(info);
 
 		const contentWidth = Math.max(
 			...PI_ART.map((row) => visibleWidth(row)),
@@ -559,9 +625,9 @@ export class BannerComponent {
 		// On a terminal too narrow to hold the box, degrade to a borderless
 		// centered stack (CC's progressive narrow-terminal degradation) rather
 		// than crash (AUDIT §5 banner.ts:392).
-		if (boxWidth < 14) return this.renderCompactPlain(width, theme);
+		if (boxWidth < 14) return this.renderCompactPlain(width, theme, info);
 		const inner = boxWidth - 4;
-		const cwd = truncatePath(this.info.cwd, inner);
+		const cwd = truncatePath(info.cwd, inner);
 
 		const rows: string[] = [];
 		// Top border with compact title: ╭── pi agent ──╮
@@ -589,16 +655,15 @@ export class BannerComponent {
 	 * title/welcome/cwd stack clamped to the available width — no box chrome,
 	 * so no `"─".repeat(负数)` (AUDIT §5 banner.ts:392).
 	 */
-	private renderCompactPlain(width: number, theme: Theme): string[] {
+	private renderCompactPlain(width: number, theme: Theme, info: SanitizedBannerInfo): string[] {
 		const dim = (s: string): string => theme.fg("dim", s);
 		const accent = ccAccent(theme);
 		const bold = (s: string): string => theme.bold(s);
 		const w = Math.max(1, width);
-		const plainWelcome = this.info.welcome ?? "Welcome back!";
-		const welcome = plainWelcome;
-		const model = this.info.model() ?? "";
-		const resumed = this.resumedLine();
-		const cwd = truncatePath(this.info.cwd, w);
+		const welcome = info.welcome;
+		const model = info.model;
+		const resumed = this.resumedLine(info);
+		const cwd = truncatePath(info.cwd, w);
 		const rows: string[] = [center(accent("pi agent"), w), center(bold(welcome), w)];
 		if (model) rows.push(center(dim(model), w));
 		rows.push(center(dim(cwd), w));
@@ -617,11 +682,12 @@ const SEEN_PROJECTS_MAX = 50;
  * version changed or this cwd hasn't been seen, condensed otherwise. Any
  * fs error degrades to condensed (never blocks startup).
  *
- * `ccBannerMode` (.pi/settings.json, ~/.pi/settings.json, or the
- * PI_CC_BANNER_MODE env var) overrides the gate:
+ * `bannerMode` (.pi/settings.json or ~/.pi/settings.json) and the
+ * PI_CLAUDIFY_BANNER_MODE / legacy PI_CC_BANNER_MODE env vars control the gate:
  *
- *   "onboarding" (default) — CC's behaviour described above.
- *   "always"               — full banner on every start.
+ *   "off" (default) — install no banner and never displace another header.
+ *   "onboarding"    — CC's first-project/new-version behavior above.
+ *   "always"        — full banner on every start.
  *
  * Why the override exists: the gate is a one-shot per (project, pi version)
  * and it is consumed by the very first start after install, including a start
@@ -632,11 +698,11 @@ function readBannerMode(): "off" | "onboarding" | "always" {
 	const fromEnv = process.env.PI_CLAUDIFY_BANNER_MODE ?? process.env.PI_CC_BANNER_MODE;
 	if (fromEnv === "off" || fromEnv === "always" || fromEnv === "onboarding") return fromEnv;
 	const value = readSettings().values.bannerMode;
-	return value === "off" || value === "always" ? value : "onboarding";
+	return value === "onboarding" || value === "always" ? value : "off";
 }
 
 function shouldShowOnboardingBanner(cwd: string): boolean {
-	const stateDir = join(homedir(), ".pi", "agent");
+	const stateDir = codingAgentDir();
 	const stateFile = join(stateDir, "claudify-banner.json");
 	let state: { version?: string; projects?: string[] } = {};
 	try {
@@ -658,14 +724,36 @@ function shouldShowOnboardingBanner(cwd: string): boolean {
 	return full;
 }
 
+interface HeaderOwner {
+	disposed: boolean;
+	releasing: boolean;
+}
+
+function affirmativelyTrusted(ctx: unknown): boolean {
+	const candidate = ctx as { isProjectTrusted?: () => unknown };
+	if (typeof candidate.isProjectTrusted !== "function") return false;
+	try {
+		return candidate.isProjectTrusted() === true;
+	} catch {
+		return false;
+	}
+}
+
 export function registerBanner(pi: ExtensionAPI): void {
-	pi.on("session_start", async (event, ctx) => {
-		if (ctx.mode !== "tui") return;
+	let owner: HeaderOwner | undefined;
+	let displaced = false;
+	let disposalSupported = false;
+	let poll: ReturnType<typeof setInterval> | undefined;
+
+	const install = (event: unknown, ctx: any): void => {
+		if (owner || displaced || readBannerMode() === "off" || (ctx.mode !== undefined && ctx.mode !== "tui")) return;
 		let onboardingFull: boolean | undefined;
+		const reason = (event as { reason?: unknown } | undefined)?.reason;
 		const resumed =
-			event.reason === "resume" || event.reason === "fork"
+			reason === "resume" || reason === "fork"
 				? (ctx.sessionManager.getSessionId() ?? "").slice(0, 8) || undefined
 				: undefined;
+		const trusted = affirmativelyTrusted(ctx);
 		const info: BannerInfo = {
 			model: () => ctx.model?.id,
 			// tildeHome guards the HOME-unset / non-prefix cases (§5 status-line.ts:66
@@ -673,8 +761,8 @@ export function registerBanner(pi: ExtensionAPI): void {
 			cwd: tildeHome(ctx.cwd),
 			resumed,
 			title: () => ctx.sessionManager.getSessionName(),
-			skills: discoverSkills(ctx.cwd),
-			extensions: discoverExtensions(ctx.cwd),
+			skills: discoverSkills(ctx.cwd, trusted),
+			extensions: discoverExtensions(ctx.cwd, trusted),
 			visible: () => readBannerMode() !== "off",
 			full: () => {
 				if (readSettings().values.bannerFrame === false) return false;
@@ -686,13 +774,71 @@ export function registerBanner(pi: ExtensionAPI): void {
 			},
 		};
 		const banner = new BannerComponent(info);
-		ctx.ui.setHeader((_tui, theme) => ({
+		const factory = (token: HeaderOwner) => (_tui: unknown, theme: Theme) => ({
 			render(width: number): string[] {
+				// Rendering is the fastest signal after a live settings edit. Defer the
+				// container mutation until the current render stack has unwound.
+				if (readBannerMode() === "off") queueMicrotask(() => sync(event, ctx));
 				return banner.render(width, theme);
 			},
 			invalidate() {
 				banner.invalidate();
 			},
-		}));
+			dispose() {
+				token.disposed = true;
+				if (owner !== token) return;
+				owner = undefined;
+				if (!token.releasing) displaced = true;
+			},
+		});
+
+		// setHeader has no getter or ownership token in Pi 0.74–0.85. Probe its
+		// documented component disposal behavior by replacing our own component
+		// synchronously. We only clear a header later when that capability was
+		// observed; older/non-conforming hosts therefore fail closed rather than
+		// clearing a header installed by somebody else.
+		const probe: HeaderOwner = { disposed: false, releasing: false };
+		ctx.ui.setHeader(factory(probe));
+		const actual: HeaderOwner = { disposed: false, releasing: false };
+		owner = actual;
+		ctx.ui.setHeader(factory(actual));
+		disposalSupported = probe.disposed;
+	};
+
+	const sync = (event: unknown, ctx: any): void => {
+		if (ctx.mode !== undefined && ctx.mode !== "tui") return;
+		if (readBannerMode() !== "off") {
+			install(event, ctx);
+			return;
+		}
+		if (!owner || owner.disposed || !disposalSupported) return;
+		const releasing = owner;
+		releasing.releasing = true;
+		ctx.ui.setHeader(undefined);
+		// A host which passed the probe should dispose synchronously. If it stops
+		// doing so, forget ownership and never attempt another destructive clear.
+		if (!releasing.disposed) {
+			owner = undefined;
+			displaced = true;
+		}
+	};
+
+	pi.on("session_start", async (event, ctx) => {
+		const mode = (ctx as any).mode;
+		if ((mode !== undefined && mode !== "tui") || !ctx.hasUI) return;
+		sync(event, ctx);
+		if (poll) clearInterval(poll);
+		poll = setInterval(() => sync(event, ctx), 250);
+		poll.unref?.();
+	});
+	// These hooks make env/config transitions deterministic without waiting for
+	// the poll, while the poll covers edits made in the interactive settings UI.
+	pi.on("turn_start", async (event, ctx) => sync(event, ctx));
+	pi.on("model_select", async (event, ctx) => sync(event, ctx));
+	pi.on("session_shutdown", async () => {
+		if (poll) clearInterval(poll);
+		poll = undefined;
+		// Pi owns teardown and will dispose/replace the mounted header. Calling
+		// setHeader(undefined) here could erase a later extension's header.
 	});
 }

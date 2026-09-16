@@ -11,8 +11,11 @@ preserves SGR). Three thinking spells prompted; frames polled with wall-clock ti
 Both sampling rates sit far above the animation rates below, so nothing here is an
 aliasing artifact (the CLFY-8 trap — sampling interval is recorded alongside every claim).
 
-Effort was **only** exercised at `high`. Whether the palette or phrasing differs at
-low/medium effort is **uncaptured** — see Open questions.
+The original animation cadence below was exercised at `high`. A later frame-by-frame
+Claude Code v2.1.266 capture exercised low and medium effort at 1 Hz through 47s.
+Both use the same color/bold escalation and phrase thresholds as high; only the
+status suffix changes (`with low effort` / `with medium effort`). Neither adds a
+thinking body/label in detailed mode.
 
 ---
 
@@ -181,19 +184,17 @@ user-overridable setting; only the default string changed.
 
 ---
 
-## Open questions / uncaptured dimensions
-1. **Effort levels other than `high`** — palette, bold onset, and phrase-escalation timing
-   were captured at `high` only. Low/medium may differ.
-2. **The base-hue escalation timing** (12s → "still", 17s → bold, 20s → gold) is likely
-   wall-clock-thresholded; exact thresholds captured at `high` effort on 2.1.212 and may
-   shift across versions. A reading from one CC version is not evidence about another.
-3. **Whether the sweep highlight color tracks the base drift** — it was gone by the gold
-   phase, so this could not be observed; the sweep may simply be an early-phase effect.
+## Version caveat
+
+Current v2.1.266 low/medium frames confirm the phrase/base thresholds and show that
+the sweep highlight tracks the warm drift, including xterm 221 over the gold plateau.
+These remain implementation details rather than a stable Claude API and should be
+recaptured when a future Claude release visibly changes its spinner.
 
 ## Decisions (resolved 2026-07-17)
 - **A — spinner shimmer: IMPLEMENTED (CLFY-27).** `extensions/spinner.ts` now applies the
   warm hue escalation (salmon→gold, bold at the plateau) to the verb *and* glyph, plus the
-  right→left sweep highlight in the first ~15s, keyed to the spell's elapsed time. It is
+  right→left sweep highlight with its own captured warm drift, keyed to elapsed time. It is
   gated behind a `spinnerShimmer` setting (default on) and suppressed when a custom
   `spinnerColor` is set (the user's static color wins), since the shimmer imposes CC's fixed
   palette. **The capture's open question — "can pi's render loop repaint mid-stream at that
@@ -201,8 +202,8 @@ user-overridable setting; only the default string changed.
   → `requestRender` synchronously (pi-tui `components/loader.js`), so refreshing the working
   message at ~5 Hz repaints the spinner immediately, independent of the 500 ms glyph timer.
   Live-smoked: salmon base + the moving sweep highlight render cleanly with no overflow (the
-  many per-char SGR codes were the main 2.3.0-class risk); the >13 s gold/bold plateau is
-  unit-tested but was not caught live (thinking spells stayed under 13 s).
+  many per-char SGR codes were the main 2.3.0-class risk); low/medium live captures now cover
+  the warm drift, bold onset, gold plateau, and effort-specific status suffix through 47s.
 
   **Deliberate divergence (Berto, on live review):** CC's sweep runs once and then freezes at
   gold. Claudify does *not* freeze — after the one-way salmon→gold escalation, the animation

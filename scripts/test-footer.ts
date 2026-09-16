@@ -149,14 +149,24 @@ assert.doesNotMatch(
 	"the suffix never renders without a model name to attach it to",
 );
 const withSessionMetrics = buildFooterLine(
-	{ ...fullData, sessionCost: 1.25, sessionElapsedMs: 65_000, promptCount: 2 },
+	{ ...fullData, sessionCost: 1.25, sessionCostAvailable: true, sessionElapsedMs: 65_000, promptCount: 2 },
 	{ ...colored, cost: true, sessionStats: true },
 );
 assert.match(withSessionMetrics, /\$1\.25/, "session cost is additive and opt-in");
 assert.match(withSessionMetrics, /1m 5s · 2 prompts/, "elapsed time and prompt count share one segment");
+assert.match(
+	buildFooterLine({ ...fullData, sessionCost: 0, sessionCostAvailable: true }, { ...colored, cost: true }),
+	/\$0\.00/,
+	"an available zero cost remains distinguishable from unavailable cost",
+);
+assert.doesNotMatch(
+	buildFooterLine({ ...fullData, sessionCost: 0, sessionCostAvailable: false }, { ...colored, cost: true }),
+	/\$0\.00/,
+	"unavailable cost stays hidden",
+);
 assert.doesNotMatch(
 	buildFooterLine(
-		{ ...fullData, sessionCost: 1.25, sessionElapsedMs: 65_000, promptCount: 2 },
+		{ ...fullData, sessionCost: 1.25, sessionCostAvailable: true, sessionElapsedMs: 65_000, promptCount: 2 },
 		{ ...colored, cost: false, sessionStats: false },
 	),
 	/\$1\.25|2 prompts/,
@@ -413,6 +423,21 @@ const rendered = component.render(200);
 assert.equal(rendered[0], "  project │ ⎇ main │ Fable 5 │ Ctx: 25% │ Week: 50% ▓▓▓▓▓░░░░░ → Reset: 08:00 PM");
 assert.deepEqual(rendered.slice(1), ["  a status line", "  MCP: 0/8 servers", "  z status"], "extension statuses render sorted, sanitized, and stripped of baked colors");
 assert.ok(component.render(20)[0].replace(/\x1b\[[0-9;]*m/g, "").length <= 20, "lines truncate to the viewport");
+let idleRepaints = 0;
+const timedComponent = new ClaudeFooterComponent(fakeFooterData, {
+	getDirectory: () => "project",
+	getBranch: () => null,
+	getModelName: () => "Fable 5",
+	getEffort: () => null,
+	getContextPercent: () => 0,
+	getUsage: () => [],
+}, undefined, () => { idleRepaints++; });
+await new Promise((resolve) => setTimeout(resolve, 1_050));
+assert.ok(idleRepaints >= 1, "idle session clock schedules its own repaint");
+timedComponent.dispose();
+const repaintsAfterDispose = idleRepaints;
+await new Promise((resolve) => setTimeout(resolve, 1_050));
+assert.equal(idleRepaints, repaintsAfterDispose, "disposing the footer stops idle repainting");
 
 // --- installClaudeFooter ------------------------------------------------------
 

@@ -6,6 +6,7 @@ import { initTheme } from "../node_modules/@earendil-works/pi-coding-agent/dist/
 
 import extension, { classifyBashCommandForDisplay } from "../extensions/index.ts";
 import { clearSettingsCache, writeSettingsKey } from "../extensions/settings.ts";
+import { decodeCommandAuditText, encodeCommandAuditText } from "../extensions/terminal-sanitize.ts";
 
 import { useSandboxHome } from "./sandbox-home.ts";
 
@@ -249,6 +250,19 @@ assert.ok(squash(opened).includes(squash(LONG_COMMAND)), "expanding reveals the 
 assert.match(opened, /--force\)/, "the command's tail is present, not clipped away");
 assert.doesNotMatch(opened, /rm -rf .*\.\.\./, "expanded header is not clipped");
 
+// Claude Code v2.1.266 shows a captured 5,000-character command in full in
+// detailed transcript mode, followed by `(No output)`; it applies no row cap.
+const longPrefix = "printf '%s' '";
+const longSuffix = "' >/dev/null";
+const command5000 = `${longPrefix}${"x".repeat(5000 - longPrefix.length - longSuffix.length)}${longSuffix}`;
+assert.equal(command5000.length, 5000);
+const hugeCommandTool = completedTool(pi, "bash", "command-5000", { command: command5000 }, "");
+hugeCommandTool.setExpanded(true);
+const hugeCommandRender = renderOne(hugeCommandTool, 120);
+assert.ok(squash(hugeCommandRender).includes(squash(command5000)), "5,000-character expanded command remains fully recoverable");
+assert.match(hugeCommandRender, /\(No output\)/, "empty result follows Claude's detailed wording");
+assert.doesNotMatch(hugeCommandRender, /display capped|truncated|\.\.\./i, "expanded command has no uncaptured row cap");
+
 // "Full command" means exact argument whitespace, not merely all tokens. Two
 // spaces inside a quoted argument are shell-significant and must survive.
 const SPACED_COMMAND = `printf 'a  b'`;
@@ -259,7 +273,7 @@ const TRAILING_SPACE_COMMAND = String.raw`printf %s foo\ `;
 const trailingSpaceTool = completedTool(pi, "bash", "space-2", { command: TRAILING_SPACE_COMMAND }, "foo ");
 trailingSpaceTool.setExpanded(true);
 assert.ok(
-	renderOne(trailingSpaceTool).includes(`Bash(${TRAILING_SPACE_COMMAND})`),
+	renderOne(trailingSpaceTool).includes(`Bash(${encodeCommandAuditText(TRAILING_SPACE_COMMAND)})`),
 	"expanded command preserves a significant escaped trailing space",
 );
 
@@ -290,10 +304,31 @@ hostile.setExpanded(true);
 const hostileOut = new Container();
 hostileOut.addChild(hostile);
 const rawHostile = hostileOut.render(120).join("\n");
-assert.doesNotMatch(rawHostile, /\u001b\(0/, "charset shift stripped");
-assert.doesNotMatch(rawHostile, /evil\.invalid/, "OSC 8 envelope stripped");
-assert.doesNotMatch(rawHostile, /\u0000/, "NUL stripped");
-assert.match(rawHostile, /echo .*red/, "the readable text survives");
+assert.doesNotMatch(rawHostile, /\u001b\(0|\u001b\]8;;http:\/\/evil\.invalid|\u0000/, "raw hostile controls never reach the terminal");
+assert.match(rawHostile, /\\x\{ESC\}\[31mred\\x\{ESC\}\[0m/, "expanded audit visibly encodes SGR bytes");
+assert.match(rawHostile, /\\x\{ESC\}\]8;;http:\/\/evil\.invalid\\x\{BEL\}link\\x\{BEL\}/, "expanded audit preserves printable OSC payload and metacharacters");
+assert.match(rawHostile, /\\x\{NUL\}done/, "expanded audit visibly preserves NUL position");
+
+const executableOsc = completedTool(
+	pi,
+	"bash",
+	"esc-executable",
+	{ command: "true \u001b]0; printf PWN \u0007" },
+	"",
+);
+executableOsc.setExpanded(true);
+const executableAudit = renderOne(executableOsc);
+assert.match(executableAudit, /true \\x\{ESC\}\]0; printf PWN \\x\{BEL\}/, "audit encoding never erases printable executable syntax inside a terminated envelope");
+const literalToken = completedTool(pi, "bash", "literal-audit-token", { command: String.raw`printf '\x{ESC}'` }, "");
+literalToken.setExpanded(true);
+assert.match(renderOne(literalToken), /printf '\\\\x\{ESC\}'/, "literal audit-token text remains distinguishable through escaped backslash");
+const roundTripAudit = String.raw`literal \\x{ESC}` + "\x1b]0; printf PWN \x07\n\u202e\u061c\u2060";
+assert.equal(decodeCommandAuditText(encodeCommandAuditText(roundTripAudit)), roundTripAudit, "audit representation round-trips controls and literal token syntax without collision");
+
+const c1AuditTool = completedTool(pi, "bash", "c1-executable", { command: "true \u009d0; printf C1 \u009c" }, "");
+c1AuditTool.setExpanded(true);
+const c1Audit = renderOne(c1AuditTool);
+assert.match(c1Audit, /true \\u\{009D\}0; printf C1 \\u\{009C\}/, "C1 OSC/ST controls are visible while printable shell syntax remains ordered");
 
 // A read-like command renders as its target (`f (lines 1-200)`), which hides
 // what actually ran. Expanding must still reach the command, or the semantic
@@ -494,8 +529,18 @@ streamingTool.updateResult({ content: [{ type: "text", text: "done" }], details:
 streamingTool3.updateResult({ content: [{ type: "text", text: "done" }], details: {} } as any, false);
 writeSettingsKey("bashRunningPreview", "head");
 
-// Settled expansion has a separate, explicit visual-row cap. Users who want a
-// different expanded ceiling use Expanded preview max lines, not Bash preview lines.
+// Settled expansion defaults to Claude's capture-backed 4,000-row recovery
+// budget; ordinary 151-row output must not hit the old implementation default.
+writeSettingsKey("expandedPreviewMaxLines", undefined);
+clearSettingsCache();
+const defaultExpandedLines = Array.from({ length: 151 }, (_, index) => `default-expanded-${index + 1}`).join("\n");
+const defaultExpanded = completedTool(pi, "bash", "settled-default-cap", { command: "printf default-expanded" }, defaultExpandedLines);
+defaultExpanded.setExpanded(true);
+const defaultExpandedOut = renderOne(defaultExpanded, 100);
+assert.match(defaultExpandedOut, /default-expanded-151/, "default expanded budget exceeds 150 rows");
+assert.doesNotMatch(defaultExpandedOut, /display capped/, "ordinary expanded output is fully recoverable by default");
+
+// Users can still select a lower explicit visual-row ceiling.
 writeSettingsKey("expandedPreviewMaxLines", 5);
 clearSettingsCache();
 const settledLines = Array.from({ length: 15 }, (_, index) => `settled${index + 1}`).join("\n");
@@ -512,7 +557,7 @@ for (const tick of ["settled1", "settled5"]) assert.ok(cappedLines.some((line) =
 assert.ok(!cappedLines.includes("settled6"), "settled cap hides line 6");
 assert.match(cappedOut, /… \+10 lines/, "settled cap states the hidden remainder");
 assert.match(cappedOut, /display capped at 5 lines/, "settled cap names the configured ceiling");
-writeSettingsKey("expandedPreviewMaxLines", 150);
+writeSettingsKey("expandedPreviewMaxLines", undefined);
 clearSettingsCache();
 
 // Budgets count VISUAL rows, not logical newlines. A minified 50KB line must

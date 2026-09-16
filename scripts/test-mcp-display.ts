@@ -6,6 +6,7 @@ import { initTheme } from "../node_modules/@earendil-works/pi-coding-agent/dist/
 
 import { describeInspectionsActive, describeInspectionsDone } from "../extensions/inspection-summary.ts";
 import extension, { mcpServerName } from "../extensions/index.ts";
+import { clearSettingsCache, writeSettingsKey } from "../extensions/settings.ts";
 
 import { useSandboxHome } from "./sandbox-home.ts";
 
@@ -103,6 +104,17 @@ class FakePi {
 	}
 }
 
+class PublicToolInfoPi extends FakePi {
+	override getAllTools(): any[] {
+		return [...this.tools.values()].map((definition) => ({
+			name: definition.name,
+			description: definition.description,
+			parameters: definition.parameters,
+			sourceInfo: { type: "extension", path: "fixture" },
+		}));
+	}
+}
+
 function tool(pi: FakePi, name: string, id: string, args: any, text: string, isError = false, settled = true): ToolExecutionComponent {
 	const definition = pi.tools.get(name);
 	assert.ok(definition, `${name} tool registered`);
@@ -133,6 +145,22 @@ function plain(lines: string[]): string {
 }
 
 initTheme("dark", false);
+
+// Real public ToolInfo is metadata-only. Provable mcp__ names still get MCP
+// presentation; ambiguous bare names remain native rather than replacing their
+// execution through unavailable private fields.
+const publicPi = new PublicToolInfoPi();
+publicPi.registerTool({ name: "mcp__plane__list", description: "List", execute: async () => ({}) });
+publicPi.registerTool({ name: "bare_list", description: "Bare", execute: async () => ({}) });
+extension(publicPi as any);
+await publicPi.fire("session_start");
+const publicPrefixed = new Container();
+publicPrefixed.addChild(tool(publicPi, "mcp__plane__list", "public-mcp", {}, "ok"));
+assert.match(plain(publicPrefixed.render(120)), /^ {2}Called plane$/m, "public mcp__ identity is sufficient for presentation");
+const publicBare = new Container();
+publicBare.addChild(tool(publicPi, "bare_list", "public-bare", {}, "ok"));
+assert.doesNotMatch(plain(publicBare.render(120)), /Called /, "ambiguous public bare tools fail closed to native/generic presentation");
+
 const pi = new FakePi();
 // pi-mcp-adapter exposes MCP two ways, and both must render the same.
 //   proxy mode:  one `mcp` tool, the real tool passed in its arguments
@@ -308,6 +336,38 @@ assert.match(hostileServerCollapsed, /Called plane FORGED/, "aggregate preserves
 const hostileServerRow = mcpRow("rec-server", hostileServerArgs, true);
 assert.doesNotMatch(hostileServerRow, /\u001b\(0|\nFORGED/, "expanded server labels cannot inject terminal state or rows");
 assert.match(hostileServerRow, /plane FORGED:plane_list/, "readable server and tool labels survive sanitization");
+
+const stampedHostile = new ToolExecutionComponent(
+	"tag_list",
+	"stamped-hostile",
+	{},
+	{ showImages: false },
+	pi.tools.get("tag_list"),
+	{ requestRender() {}, previousLines: [] } as any,
+	process.cwd(),
+);
+stampedHostile.markExecutionStarted();
+stampedHostile.setArgsComplete();
+stampedHostile.updateResult({ content: [{ type: "text", text: "ok" }], details: { server: "obsidian\x1b(0\nFORGED" }, isError: false } as any, false);
+const stampedBox = new Container();
+stampedBox.addChild(stampedHostile);
+const stampedText = plain(stampedBox.render(120));
+assert.match(stampedText, /Called obsidian FORGED/, "adapter-stamped server metadata is sanitized too");
+assert.doesNotMatch(stampedText, /\x1b\(0|\nFORGED/);
+
+writeSettingsKey("mcpOutputMode", "preview");
+clearSettingsCache();
+try {
+	const hostilePayload = tool(pi, "mcp", "hostile-payload", { tool: "plane_list", args: "{}" }, "line\x1b(0\nnext\x1b]8;;https://evil.test\x07bad\x1b]8;;\x07", true);
+	hostilePayload.setExpanded(true);
+	const payloadBox = new Container();
+	payloadBox.addChild(hostilePayload);
+	const payloadRaw = payloadBox.render(120).join("\n");
+	assert.doesNotMatch(payloadRaw, /\x1b\(0|https:\/\/evil\.test/, "MCP preview payload is sanitized before theme styling");
+} finally {
+	writeSettingsKey("mcpOutputMode", "hidden");
+	clearSettingsCache();
+}
 
 // Collapsing again returns to the aggregate rather than stranding parameters.
 const reCollapsed = tool(pi, "mcp", "rec-8", { tool: "plane_bulk_update_work_items", args: MUTATING_ARGS }, "done");

@@ -132,7 +132,7 @@ screen.handleInput("enter");
 const section = render(screen);
 assert.ok(section.includes("Spinner color"), "Enter drills into the highlighted Spinner Section");
 assert.ok(section.includes("Status color"), "Spinner renders both color Picker rows");
-assert.ok(section.includes("Enter to choose · Esc to back"), "a Picker row renders its Section footer");
+assert.ok(section.includes("Enter/Space to change · Esc to back"), "the default Spinner placement row renders its enum footer");
 assert.ok(!section.includes("Esc to close"), "a Section does not render the Hub footer");
 
 screen.handleInput("escape");
@@ -204,6 +204,27 @@ assert.match(filledSectionLines[0], /^─{5,}$/, "the filled Section opens with 
 assert.match(filledSectionLines.at(-1) ?? "", /^─{5,}$/, "the filled Section closes with the accent rule");
 assert.match(filledSectionLines.at(-2) ?? "", /Enter\/Space to change/, "the filled Section footer stays directly above the closing rule");
 assert.equal(filledSectionLines[filledSectionLines.length - 3], "", "the selected-row description reduces fill without displacing the footer");
+
+for (const terminal of [{ rows: 24, columns: 80 }, { rows: 12, columns: 40 }]) {
+	const viewportScreen = new ClaudifyScreen(
+		{ requestRender() {}, terminal } as any,
+		theme,
+		keybindings as any,
+		() => {},
+		undefined,
+		undefined,
+		pickerCandidates,
+	);
+	for (let index = 0; index < 4; index++) viewportScreen.handleInput("down");
+	viewportScreen.handleInput("enter");
+	for (let index = 0; index < 40; index++) viewportScreen.handleInput("down");
+	const viewport = stripAnsi(viewportScreen.render(terminal.columns).join("\n"));
+	const viewportLines = viewport.split("\n");
+	assert.ok(viewportLines.length <= terminal.rows - 5, `${terminal.columns}x${terminal.rows} section stays within its target height`);
+	assert.match(viewport, /^\s*❯ Expanded preview max lines/m, "selection-following body keeps the final row visible");
+	assert.match(viewport, /Enter\/Space|←\/→/, "primary footer actions remain visible in a short viewport");
+	assert.match(viewport, /Esc[\s\S]*back/, "back action remains visible in a short viewport even when the footer wraps");
+}
 
 settingsScreen.handleInput("down");
 const selectedMcpOutput = render(settingsScreen);
@@ -395,6 +416,7 @@ const spinnerScreen = new ClaudifyScreen(
 spinnerScreen.handleInput("down");
 spinnerScreen.handleInput("down");
 spinnerScreen.handleInput("enter");
+spinnerScreen.handleInput("down");
 assert.match(render(spinnerScreen), /^\s*❯ Spinner color\s+borderAccent/m, "Spinner uses borderAccent as its effective default");
 assert.doesNotMatch(render(spinnerScreen), /coming soon/, "Spinner no longer renders its placeholder");
 spinnerScreen.handleInput("enter");
@@ -415,6 +437,33 @@ spinnerScreen.handleInput("up");
 spinnerScreen.handleInput("enter");
 assert.equal(readWrittenSettings().spinnerStatusColor, "warning", "the status color Picker commits from the same candidate list");
 
+const shimmerScreen = new ClaudifyScreen(
+	{ requestRender(): void {} } as any,
+	theme,
+	keybindings as any,
+	() => {},
+	(key, value) => { pickerChanges.push([key, value]); },
+	undefined,
+	pickerCandidates,
+);
+shimmerScreen.handleInput("down");
+shimmerScreen.handleInput("down");
+shimmerScreen.handleInput("enter");
+for (let index = 0; index < 5; index++) shimmerScreen.handleInput("down");
+assert.match(
+	render(shimmerScreen),
+	/^\s*❯ Warm shimmer\s+false \(inherited\)/m,
+	"theme colors with no shimmer override display the effective inherited-off state",
+);
+shimmerScreen.handleInput("enter");
+assert.equal(readWrittenSettings().spinnerShimmer, true, "the first toggle from inherited off writes an active true override");
+assert.deepEqual(pickerChanges.at(-1), ["spinnerShimmer", true], "the explicit shimmer override reaches the host for live activation");
+assert.match(
+	render(shimmerScreen),
+	/^\s*❯ Warm shimmer\s+true \(explicit\)/m,
+	"after toggling, the shimmer row identifies the enabled value as explicit",
+);
+
 const failedPickerChanges: Array<[string, unknown]> = [];
 const failedPickerPreviews: Array<[string, unknown]> = [];
 const failedPickerNotices: Array<[string, string | undefined]> = [];
@@ -431,6 +480,7 @@ const failedPickerScreen = new ClaudifyScreen(
 failedPickerScreen.handleInput("down");
 failedPickerScreen.handleInput("down");
 failedPickerScreen.handleInput("enter");
+failedPickerScreen.handleInput("down");
 failedPickerScreen.handleInput("enter");
 failedPickerScreen.handleInput("down");
 const previewBeforeFailure = failedPickerPreviews.at(-1);
@@ -470,6 +520,7 @@ assert.ok(spinnerVerbRows.includes("Warm shimmer"), "Spinner renders the Warm sh
 assert.match(spinnerVerbRows, /While working\s+0 custom · append/, "Spinner verbs summarize their custom count and effective mode");
 assert.match(spinnerVerbRows, /After finishing\s+0 custom · append/, "Worked verbs summarize their custom count and effective mode");
 
+verbScreen.handleInput("down");
 verbScreen.handleInput("down");
 verbScreen.handleInput("down");
 verbScreen.handleInput("enter");
@@ -654,6 +705,7 @@ try {
 	capScreen.handleInput("enter");
 	capScreen.handleInput("down");
 	capScreen.handleInput("down");
+	capScreen.handleInput("down");
 	capScreen.handleInput("enter");
 	for (let index = 0; index <= MAX_CUSTOM_SPINNER_VERBS; index++) capScreen.handleInput("down");
 	capScreen.handleInput("enter");
@@ -740,6 +792,7 @@ await command.handler("", {
 				component.handleInput("down");
 				component.handleInput("down");
 				component.handleInput("enter");
+				component.handleInput("down");
 				component.handleInput("enter");
 				const beforeHostPreview = readFileSync(settingsPath, "utf8");
 				component.handleInput("down");
@@ -835,13 +888,14 @@ resilientScreen.handleInput("down");
 resilientScreen.handleInput("down");
 resilientScreen.handleInput("enter");
 assert.doesNotThrow(() => render(resilientScreen), "the Spinner Section paints even when the theme lacks a color key");
+resilientScreen.handleInput("down");
 resilientScreen.handleInput("enter");
 assert.doesNotThrow(() => render(resilientScreen), "a color Picker candidate list paints past a theme key it cannot resolve");
 assert.match(render(resilientScreen), new RegExp(missingKey), "the unresolved key still renders as plain text rather than crashing");
 
 // --- Claude accent override (docs/plans/2026-07-16-cc-accent-color.md) -------
 
-const { applyAccentOverride, applyToolBackgroundMode } = await import("../extensions/index.ts");
+const { applyAccentOverride, applyToolBackgroundMode, themePolarity } = await import("../extensions/index.ts");
 const { clearSettingsCache } = await import("../extensions/settings.ts");
 
 // Fakes mirror real pi themes: fgColors hold READY-MADE ANSI ESCAPES (theme.fg
@@ -906,7 +960,13 @@ assert.equal(fake256.fgColors.accent, "\x1b[38;5;147m", "256-color themes get th
 
 const lightFake = { mode: "truecolor", fgColors: new Map<string, string>([["accent", "\x1b[38;2;23;143;127m"], ["text", "\x1b[38;2;51;51;51m"]]) };
 applyAccentOverride(lightFake);
-assert.equal(lightFake.fgColors.get("accent"), "\x1b[38;2;87;105;247m", "light themes (dark text) get CC's darker blue-purple, via Map storage");
+assert.equal(lightFake.fgColors.get("accent"), "\x1b[38;2;135;135;255m", "light themes (dark text) get the fresh CC xterm-105 lavender, via Map storage");
+
+const unknownPolarity = { mode: "truecolor", fgColors: { accent: PI_TEAL, text: "\x1b[39m" } };
+assert.equal(themePolarity(unknownPolarity), "unknown", "default foreground without a named theme has unknown polarity");
+applyAccentOverride(unknownPolarity);
+assert.equal(unknownPolarity.fgColors.accent, PI_TEAL, "unknown polarity preserves theme semantic accent instead of assuming dark");
+assert.equal(themePolarity({ ...unknownPolarity, name: "custom-light" }), "light", "theme name supplies compatible polarity fallback");
 
 const accentScreen = new ClaudifyScreen(
 	{ requestRender: () => {} } as any,

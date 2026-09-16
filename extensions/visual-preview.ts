@@ -23,62 +23,73 @@ export interface VisualItemPreview<T> {
 
 const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
-function safeHeadSlice(text: string, length: number): string {
-	let out = text.slice(0, length);
-	if (/[\uD800-\uDBFF]$/.test(out)) out = out.slice(0, -1);
-	return out;
-}
-
-function safeTailSlice(text: string, length: number): string {
-	let start = Math.max(0, text.length - length);
-	if (/[\uDC00-\uDFFF]/.test(text[start] ?? "")) start++;
-	return text.slice(start);
-}
-
-function wrapPlainLine(line: string, width: number): string[] {
-	if (!line) return [""];
-	const rows: string[] = [];
+function scanWrappedLine(line: string, width: number, visit: (row: string) => void): void {
+	if (!line) {
+		visit("");
+		return;
+	}
 	let row = "";
 	let used = 0;
 	for (const { segment } of segmenter.segment(line)) {
 		const segmentWidth = visibleWidth(segment);
 		if (used > 0 && used + segmentWidth > width) {
-			rows.push(row.replace(/[ \t]+$/, ""));
+			visit(row.replace(/[ \t]+$/, ""));
 			row = "";
 			used = 0;
 		}
 		row += segment;
 		used += segmentWidth;
 	}
-	rows.push(row.replace(/[ \t]+$/, ""));
-	return rows;
+	visit(row.replace(/[ \t]+$/, ""));
 }
 
 /**
- * Bound work before grapheme wrapping. The ×4 slack mirrors Claude's terminal
- * utility and allows for wide characters/control bytes without processing the
- * whole 50 KB output merely to display a handful of rows.
+ * Select a head/tail window by rendered terminal rows, not logical lines.
+ *
+ * Counting must inspect the complete sanitized input: character-count estimates
+ * are wrong for blank lines, wide graphemes, and wrapping. Only the requested
+ * head rows or a fixed-size tail ring are retained, however, so a large output
+ * cannot create an equally large intermediate array of rendered rows.
  */
-function preWrapCharCap(rows: number, width: number): number {
-	return Math.max(1, rows) * Math.max(1, width) * 4;
-}
-
-/** Select a head/tail window by rendered terminal rows, not logical lines. */
 export function selectVisualPreview(text: string, width: number, rowBudget: number, mode: VisualPreviewMode): VisualPreview {
 	const safe = sanitizeToolOutput(text).replace(/\s+$/, "");
 	if (!safe) return { rows: [], hiddenRows: 0, hiddenPosition: null };
 	const wrapWidth = Math.max(1, Math.floor(width));
 	const budget = Math.max(0, Math.floor(rowBudget));
-	const cap = preWrapCharCap(Math.max(1, budget), wrapWidth);
-	const preTruncated = safe.length > cap;
-	const bounded = preTruncated
-		? mode === "tail" ? safeTailSlice(safe, cap) : safeHeadSlice(safe, cap)
-		: safe;
-	const wrapped = bounded.split("\n").flatMap((line) => wrapPlainLine(line, wrapWidth));
-	const rows = budget === 0 ? [] : mode === "tail" ? wrapped.slice(-budget) : wrapped.slice(0, budget);
-	const exactHidden = Math.max(0, wrapped.length - rows.length);
-	const estimatedTotal = preTruncated ? Math.ceil(safe.length / wrapWidth) : wrapped.length;
-	const hiddenRows = Math.max(exactHidden, estimatedTotal - rows.length);
+	const retained: string[] = [];
+	let tailStart = 0;
+	let totalRows = 0;
+
+	const visit = (row: string): void => {
+		totalRows++;
+		if (budget === 0) return;
+		if (mode === "head") {
+			if (retained.length < budget) retained.push(row);
+			return;
+		}
+		if (retained.length < budget) {
+			retained.push(row);
+			return;
+		}
+		retained[tailStart] = row;
+		tailStart = (tailStart + 1) % budget;
+	};
+
+	// Scan logical lines by index rather than split/flatMap, which would retain
+	// an array proportional to newline-dense output.
+	let lineStart = 0;
+	while (lineStart <= safe.length) {
+		const newline = safe.indexOf("\n", lineStart);
+		const lineEnd = newline === -1 ? safe.length : newline;
+		scanWrappedLine(safe.slice(lineStart, lineEnd), wrapWidth, visit);
+		if (newline === -1) break;
+		lineStart = newline + 1;
+	}
+
+	const rows = mode === "tail" && retained.length === budget && tailStart > 0
+		? retained.slice(tailStart).concat(retained.slice(0, tailStart))
+		: retained;
+	const hiddenRows = totalRows - rows.length;
 	return {
 		rows,
 		hiddenRows,
@@ -111,7 +122,9 @@ export function selectVisualItems<T>(
 			rows.push({ item, text: preview.rows[chunk], continuation: chunk > 0 });
 		}
 		if (preview.hiddenRows > 0) {
-			hiddenItems += 1 + (items.length - index - 1);
+			// The current item is partially visible, not hidden. Count only items
+			// for which no row was displayed.
+			hiddenItems += items.length - index - 1;
 			break;
 		}
 	}

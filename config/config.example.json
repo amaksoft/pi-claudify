@@ -40,7 +40,7 @@
   "searchOutputMode": "preview",
   "mcpOutputMode": "hidden",
   "previewLines": 8,
-  "expandedPreviewMaxLines": 150,
+  "expandedPreviewMaxLines": 4000,
   "bashOutputMode": "opencode",
   "bashCollapsedLines": 10,
   "bashRunningPreview": "head",
@@ -57,9 +57,9 @@
   "themeAdaptive": true,
   "diffPalette": "claude",
   "toolChrome": "claude",
-  "diffTheme": "monokai",
   "diffColors": {},
   "spinnerColor": "borderAccent",
+  "spinnerPlacement": "above",
   "spinnerVerbs": [
     "Reviewing",
     "Polishing"
@@ -76,7 +76,7 @@
   ],
   "workedVerbMode": "append",
   "skipToolOverrides": [],
-  "bannerMode": "onboarding",
+  "bannerMode": "off",
   "bannerFrame": true,
   "promptPointer": true,
   "footerCost": true,

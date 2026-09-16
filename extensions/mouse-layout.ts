@@ -1,3 +1,5 @@
+import { debugDiagnostic } from "./debug.ts";
+
 export interface MouseLayoutEntry {
 	component: unknown;
 	height: number;
@@ -12,8 +14,9 @@ export interface MouseLayout {
 export function installMouseLayout(component: unknown, layout: MouseLayout | undefined): void {
 	try {
 		(component as { mouseLayout?: MouseLayout }).mouseLayout = layout;
-	} catch {
+	} catch (error) {
 		// Older/read-only host: keyboard expansion still works.
+		debugDiagnostic("mouse-layout-install", error);
 	}
 }
 
