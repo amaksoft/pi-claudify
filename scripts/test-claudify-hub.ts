@@ -162,6 +162,7 @@ for (const label of [
 	"Stack consecutive Bash",
 	"Semantic Bash display",
 	"Group read-only tools",
+	"Group shell commands",
 	"Read-only group limit",
 	"Expanded preview max lines",
 ]) {

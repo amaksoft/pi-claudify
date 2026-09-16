@@ -87,6 +87,8 @@ interface CachedSettings extends SettingsSnapshot {
 
 const SETTINGS_CACHE_TTL_MS = 1_000;
 let settingsCache: CachedSettings | null = null;
+let settingsFingerprint: string | null = null;
+let settingsRevision = 0;
 
 function readSettingsFile(path: string): { data: Record<string, unknown>; status: SettingsFileStatus } {
 	if (!path || !existsSync(path)) return { data: {}, status: "missing" };
@@ -124,6 +126,17 @@ function cloneSnapshot(snapshot: SettingsSnapshot): SettingsSnapshot {
 
 export function clearSettingsCache(): void {
 	settingsCache = null;
+	settingsRevision++;
+}
+
+/**
+ * Monotonic version for render caches that consume settings. Calling this also
+ * refreshes an expired file snapshot, so edits made outside the Hub eventually
+ * invalidate mounted rows too.
+ */
+export function getSettingsRevision(): number {
+	readSettings();
+	return settingsRevision;
 }
 
 export function writeSettingsKey(key: string, value: unknown): SettingsWriteResult {
@@ -185,8 +198,14 @@ export function readSettings(): SettingsSnapshot {
 	}
 
 	const { data, status } = readSettingsFile(userPath);
+	const values = normalizeAliases(data);
+	const fingerprint = `${userPath}\u0000${status}\u0000${JSON.stringify(values)}`;
+	if (fingerprint !== settingsFingerprint) {
+		settingsFingerprint = fingerprint;
+		settingsRevision++;
+	}
 	settingsCache = {
-		values: normalizeAliases(data),
+		values,
 		file: { path: userPath, status },
 		cacheKey: userPath,
 		timestamp: now,

@@ -12,6 +12,7 @@ const {
 	shimmerSweep,
 	colorizeShimmerVerb,
 	shimmerGlyphAnsi,
+	OutputTokenTracker,
 } = await import("../extensions/spinner.ts");
 
 const ANSI_RE = /\x1b\[[0-9;]*m/g;
@@ -55,6 +56,26 @@ assert.equal(
 	"✻",
 	"`✻` is a live rotation frame (the mis-capture that pinned the glyph to `·` was a polling alias)",
 );
+
+// --- Provider-reported output tokens, cumulative across tool rounds. ---------
+const tokens = new OutputTokenTracker();
+tokens.resetRequest();
+assert.equal(tokens.total(), 0);
+assert.equal(tokens.update({ partial: { usage: { output: 12 } } }), true);
+assert.equal(tokens.total(), 12, "streaming usage is cumulative, not added per event");
+assert.equal(tokens.update({ partial: { usage: { output: 20 } } }), true);
+assert.equal(tokens.total(), 20);
+assert.equal(tokens.update({ partial: { usage: { output: 20 } } }), false, "duplicate cumulative usage is ignored");
+assert.equal(tokens.finish({ usage: { output: 20 } }), true);
+assert.equal(tokens.total(), 20, "message_end settles rather than double-counting stream usage");
+tokens.startTurn();
+assert.equal(tokens.update({ message: { usage: { output: 7 } } }), true);
+assert.equal(tokens.total(), 27, "next tool round adds to settled request usage");
+tokens.finish({});
+assert.equal(tokens.total(), 27, "missing final usage falls back to the last streamed value");
+tokens.resetRequest();
+assert.equal(tokens.update({ partial: {} }), false, "missing provider usage is omitted, never estimated from text");
+assert.equal(tokens.total(), 0);
 
 // --- CLFY-27: the thinking-spinner shimmer (continuous sweep ⇄ breathe) -------
 // Capture trajectory: docs/plans/2026-07-17-cc-thinking-surfaces.md. Claudify

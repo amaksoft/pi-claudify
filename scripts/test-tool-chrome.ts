@@ -199,4 +199,21 @@ const codeSearchPlain = plainRender(codeSearch);
 assert.match(codeSearchPlain, /^ {2}⎿ {2}2 lines returned$/m);
 assert.doesNotMatch(codeSearchPlain, /ctrl\+o to expand/);
 
+// Expanded previews budget VISUAL rows. One 50KB minified logical line must
+// not turn the transcript into hundreds of rows after wrapping.
+const hugeLine = "x".repeat(50 * 1024);
+for (const [name, args] of [
+	["read", { path: "dist/bundle.js" }],
+	["grep", { pattern: "needle", path: "dist" }],
+	["find", { pattern: "*", path: "dist" }],
+	["ls", { path: "dist" }],
+] as const) {
+	const huge = component(pi, name, `huge-${name}`, args);
+	huge.updateResult({ content: [{ type: "text", text: hugeLine }], details: {}, isError: false } as any, false);
+	huge.setExpanded(true);
+	const rows = huge.render(100);
+	assert.ok(rows.length <= 157, `${name} huge logical line stays within the 150-row body ceiling plus host chrome, got ${rows.length}`);
+	for (const line of rows) assert.ok(visibleWidth(line) <= 100, `${name} visual preview row fits width`);
+}
+
 console.log("tool chrome tests passed");

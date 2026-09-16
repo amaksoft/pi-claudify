@@ -185,11 +185,11 @@ group, keyboard targets all groups.
 
 ## Open gaps (not addressed here)
 
-- **Sibling sinks.** Tool *output* bodies and the per-tool `Read`/`Write`/
-  `Update`/`Grep` headers do not go through `sanitizeToolText`; a BEL in a path
-  can still split an OSC 8 hyperlink. Verified identical on `master`, so this is
-  pre-existing rather than a regression, but the sanitizer covers roughly half
-  the sinks that reach a row.
+- **Sibling sinks.** The Bash output lines newly exposed by this feature's
+  running preview do pass through `sanitizeToolText`. Settled/native tool output
+  bodies and the per-tool `Read`/`Write`/`Update`/`Grep` headers still do not; a
+  BEL in a path can split an OSC 8 hyperlink. Those sinks are verified identical
+  on `master`, so they are pre-existing rather than a regression.
 - **No line cap on expanded detail.** A pathological 5,000-character command
   wraps to ~97 rows. Recoverability argues for showing all of it; Claude Code's
   behaviour here is uncaptured.

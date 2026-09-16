@@ -252,6 +252,9 @@ assert.doesNotMatch(hiddenCall, /cancelled|project_id/);
 const openedCall = mcpRow("rec-2", { tool: "plane_bulk_update_work_items", args: MUTATING_ARGS }, true);
 assert.match(openedCall, /⏺ MCP\(plane:bulk_update_work_items/);
 assert.ok(squash(openedCall).includes(squash(MUTATING_ARGS)), "expanding reveals the MCP parameters");
+const SPACED_ARGS = '{"command":"printf a  b","note":"x  y"}';
+const spacedCall = mcpRow("rec-space", { tool: "plane_run", args: SPACED_ARGS }, true);
+assert.ok(spacedCall.includes(SPACED_ARGS), "expanded MCP parameters preserve spaces inside string values");
 
 // Expanded (direct mode): the argument object *is* the parameters.
 const openedDirect = mcpRow("rec-3", { work_item_id: "cafe-1234", state: "cancelled" }, true, "plane_get_me");
@@ -288,7 +291,23 @@ assert.doesNotMatch(hostileRaw, /\u001b\(0/, "charset shift stripped from parame
 assert.doesNotMatch(hostileRaw, /\u0000/, "NUL stripped from parameters");
 // Escapes leave nothing behind — not even the charset designator's final byte,
 // which an ESC-plus-intermediate strip would strand as a literal "0".
-assert.match(plain(hostileBox.render(120)), /MCP\(plane:do_thing x y\)/, "readable parameter text survives, escapes leave no residue");
+assert.match(
+	plain(hostileBox.render(120)),
+	/MCP\(plane:do_thing x {4}y\)/,
+	"readable parameter text and its ordinary spacing survive; escapes leave no residue",
+);
+
+// Server/routing labels can arrive in streamed model arguments too; sanitize
+// them before aggregate and expanded headers.
+const HOSTILE_SERVER = "plane\u001b(0\nFORGED";
+assert.equal(mcpServerName("mcp", { server: HOSTILE_SERVER }), "plane FORGED");
+const hostileServerArgs = { tool: "plane_list", server: HOSTILE_SERVER, args: "{}" };
+const hostileServerCollapsed = mcpRow("rec-server-collapsed", hostileServerArgs, false);
+assert.doesNotMatch(hostileServerCollapsed, /\u001b\(0|\nFORGED/, "aggregate server labels cannot inject terminal state or rows");
+assert.match(hostileServerCollapsed, /Called plane FORGED/, "aggregate preserves the readable server label");
+const hostileServerRow = mcpRow("rec-server", hostileServerArgs, true);
+assert.doesNotMatch(hostileServerRow, /\u001b\(0|\nFORGED/, "expanded server labels cannot inject terminal state or rows");
+assert.match(hostileServerRow, /plane FORGED:plane_list/, "readable server and tool labels survive sanitization");
 
 // Collapsing again returns to the aggregate rather than stranding parameters.
 const reCollapsed = tool(pi, "mcp", "rec-8", { tool: "plane_bulk_update_work_items", args: MUTATING_ARGS }, "done");

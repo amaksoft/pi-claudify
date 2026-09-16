@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 
 import { ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
-import { Container } from "@earendil-works/pi-tui";
+import { Container, visibleWidth } from "@earendil-works/pi-tui";
 import { initTheme } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 
 import extension, { classifyBashCommandForDisplay } from "../extensions/index.ts";
@@ -249,6 +249,20 @@ assert.ok(squash(opened).includes(squash(LONG_COMMAND)), "expanding reveals the 
 assert.match(opened, /--force\)/, "the command's tail is present, not clipped away");
 assert.doesNotMatch(opened, /rm -rf .*\.\.\./, "expanded header is not clipped");
 
+// "Full command" means exact argument whitespace, not merely all tokens. Two
+// spaces inside a quoted argument are shell-significant and must survive.
+const SPACED_COMMAND = `printf 'a  b'`;
+const spacedTool = completedTool(pi, "bash", "space-1", { command: SPACED_COMMAND }, "a  b");
+spacedTool.setExpanded(true);
+assert.match(renderOne(spacedTool), /Bash\(printf 'a  b'\)/, "expanded command preserves quoted double spaces");
+const TRAILING_SPACE_COMMAND = String.raw`printf %s foo\ `;
+const trailingSpaceTool = completedTool(pi, "bash", "space-2", { command: TRAILING_SPACE_COMMAND }, "foo ");
+trailingSpaceTool.setExpanded(true);
+assert.ok(
+	renderOne(trailingSpaceTool).includes(`Bash(${TRAILING_SPACE_COMMAND})`),
+	"expanded command preserves a significant escaped trailing space",
+);
+
 // The collapsed summary is cached under a separate key, so a row rendered
 // collapsed first still widens when opened (argsComplete latches the cache).
 const latched = completedTool(pi, "bash", "latch-1", { command: LONG_COMMAND }, "done");
@@ -327,17 +341,18 @@ const clickLines = clickTool.render(120);
 const installed = (clickTool as any).mouseLayout;
 assert.equal(installed.width, 120, "installed layout tracks the render width");
 assert.equal(installed.children.length, clickKids.length, "one entry per child region");
-const paintedTotal = clickLines.length;
+assert.ok(clickLines.length > 0, "the tool paints rows");
 const mappedTotal = installed.children.reduce((sum: number, entry: any) => sum + entry.height, 0);
 // The seeded heights here are measured standalone, while the parent composes
-// children at a padded width — so exact-equality with painted lines cannot hold
-// in this pinned test env (it holds in production, where the host wrote the
-// seed). Assert shape; assert the conservation math on the pure function below.
-assert.ok(mappedTotal >= 0, "installed heights are non-negative numbers");
+// children at a padded width — so exact equality cannot hold in this pinned
+// host. Assert a usable non-empty map; exact conservation is pinned below on
+// the pure function with known inputs.
+assert.ok(mappedTotal > 0, "installed layout owns at least one painted row");
 assert.ok(
-	installed.children.every((entry: any) => typeof entry.height === "number"),
-	"every region has a numeric height",
+	installed.children.every((entry: any) => Number.isInteger(entry.height) && entry.height >= 0),
+	"every region has a non-negative integer height",
 );
+assert.ok(installed.children[0].height > 0, "the header region remains clickable");
 
 // --- anchorFramedHeights: the conservation math, deterministically. -----------
 // Painted output is always framing + trimmed content, so mapped heights must
@@ -351,7 +366,16 @@ assert.equal(conserve([3, 3], 1, 1, 1, 0), 5, "trimmed blanks removed from the r
 assert.equal(conserve([4, 2, 5], 2, 3, 2, 1), 9, "outlines framing on both ends");
 assert.equal(conserve([2], 1, 1, 1, 1), 2, "single child takes both trims and both framings");
 assert.deepEqual(anchorFramedHeights([], 2, 2, 1, 1), [], "no children, no regions");
-assert.deepEqual(anchorFramedHeights([1, 4], 5, 0, 1, 0), [0, 4], "over-trim clamps instead of going negative");
+assert.deepEqual(
+	anchorFramedHeights([1, 4], 5, 0, 1, 0),
+	[1, 0],
+	"leading trim consumes across child boundaries; top framing remains mapped",
+);
+assert.deepEqual(
+	anchorFramedHeights([4, 1], 0, 5, 0, 1),
+	[0, 1],
+	"trailing trim consumes across child boundaries; bottom framing remains mapped",
+);
 assert.ok(conserve([1, 4], 0, 0, 1, 0) >= 1, "first region is non-empty, so the spacer maps into the block");
 
 // --- A running command shows where it is, not just a count. --------------------
@@ -385,26 +409,13 @@ for (const head of ["tick1", "tick10"]) assert.ok(runLines.includes(head), `runn
 for (const tail of ["tick11", "tick12", "tick13", "tick14", "tick15"])
 	assert.ok(!runLines.includes(tail), `running head hides ${tail} by default`);
 assert.match(runOut, /… \+5 more lines/, "running head says output is hidden, without promising expansion");
-// Tail mode keeps the latest progress visible instead. A fresh component: the
-// tool-row render cache is keyed width+mode, so re-rendering the same instance
-// would serve the head lines it already painted.
+// Tail mode must reflect live on the SAME mounted component. A fresh component
+// would hide a stale width/background-only render cache.
 writeSettingsKey("bashRunningPreview", "tail");
 clearSettingsCache();
-const streamingTool2 = new ToolExecutionComponent(
-	"bash",
-	"run-2",
-	{ command: "for i in 1 2 3; do echo tick$i; sleep 1; done" },
-	{ showImages: false },
-	bashTool,
-	{ requestRender() {}, previousLines: [] } as any,
-	process.cwd(),
-);
-streamingTool2.markExecutionStarted();
-streamingTool2.setArgsComplete();
-streamingTool2.updateResult({ content: [{ type: "text", text: ticks }], details: {} } as any, true);
-const tailBox = new Container();
-tailBox.addChild(streamingTool2);
-const tailOut = tailBox
+runBox.render(120); // schedules a non-reentrant renderer rebuild
+await new Promise((resolve) => setTimeout(resolve, 0));
+const tailOut = runBox
 	.render(120)
 	.map((line) => line.replace(/\x1b\]8;;[^\x07]*\x07/g, "").replace(/\x1b\[[0-9;]*m/g, "").replace(/\s+$/, ""))
 	.join("\n");
@@ -413,9 +424,47 @@ for (const tail of ["tick6", "tick15"]) assert.ok(tailLines.includes(tail), `run
 for (const head of ["tick1", "tick2", "tick3", "tick4", "tick5"])
 	assert.ok(!tailLines.includes(head), `running tail hides ${head}`);
 assert.match(tailOut, /… \+5 earlier lines/, "running tail says earlier output is hidden");
+
+// Zero is a valid collapsed-line setting. `slice(-0)` is `slice(0)`, so tail
+// mode needs an explicit zero path or it exposes every line.
+writeSettingsKey("bashCollapsedLines", 0);
+clearSettingsCache();
+runBox.render(120);
+await new Promise((resolve) => setTimeout(resolve, 0));
+const zeroTailOut = runBox
+	.render(120)
+	.map((line) => line.replace(/\x1b\]8;;[^\x07]*\x07/g, "").replace(/\x1b\[[0-9;]*m/g, "").replace(/\s+$/, ""))
+	.join("\n");
+assert.match(zeroTailOut, /Running\.\.\. \(15 lines\)/);
+for (const tick of ["tick1", "tick6", "tick15"]) assert.doesNotMatch(zeroTailOut, new RegExp(`^\\s*${tick}$`, "m"));
+assert.match(zeroTailOut, /… \+15 earlier lines/, "zero-line tail states that all output is hidden");
+writeSettingsKey("bashCollapsedLines", 10);
+
+// Streaming output is now rendered by claudify, so it must cross the same
+// terminal-safety boundary as commands and targets.
+const hostileStream = new ToolExecutionComponent(
+	"bash",
+	"run-hostile",
+	{ command: "printf hostile" },
+	{ showImages: false },
+	bashTool,
+	{ requestRender() {}, previousLines: [] } as any,
+	process.cwd(),
+);
+hostileStream.markExecutionStarted();
+hostileStream.setArgsComplete();
+hostileStream.updateResult({ content: [{ type: "text", text: "safe\u001b(0spoof\nokay\rFORGED" }], details: {} } as any, true);
+const hostileStreamBox = new Container();
+hostileStreamBox.addChild(hostileStream);
+const hostileStreamRaw = hostileStreamBox.render(120).join("\n");
+assert.doesNotMatch(hostileStreamRaw, /\u001b\(0/, "streaming preview strips charset shifts");
+assert.doesNotMatch(hostileStreamRaw, /\r/, "streaming preview cannot overwrite its row with CR");
+assert.match(hostileStreamRaw, /safespoof/, "readable streaming output survives sanitization");
+hostileStream.updateResult({ content: [{ type: "text", text: "done" }], details: {} } as any, false);
+clearSettingsCache();
+
 // An expanded running row stays capped: clicking changes aggregate -> native
-// row ownership, not the streaming-output budget. Fresh component, since the
-// row cache is keyed per instance.
+// row ownership, not the streaming-output budget.
 const streamingTool3 = new ToolExecutionComponent(
 	"bash",
 	"run-3",
@@ -441,11 +490,12 @@ for (const tick of ["tick1", "tick2", "tick3", "tick4", "tick5"])
 	assert.ok(!expandedLines.includes(tick), `expanded running row still caps ${tick}`);
 assert.match(expandedOut, /… \+5 earlier lines/, "expanded running row states what is hidden");
 assert.doesNotMatch(expandedOut, /ctrl\+o to expand/, "running truncation never promises the wrong ctrl+o action");
+streamingTool.updateResult({ content: [{ type: "text", text: "done" }], details: {} } as any, false);
+streamingTool3.updateResult({ content: [{ type: "text", text: "done" }], details: {} } as any, false);
 writeSettingsKey("bashRunningPreview", "head");
 
-// Settled expansion has a separate, explicit cap. A 100-line settled command
-// is intentionally full under the default 4000-line limit; users who want a
-// shorter expanded view use Expanded preview max lines, not Bash preview lines.
+// Settled expansion has a separate, explicit visual-row cap. Users who want a
+// different expanded ceiling use Expanded preview max lines, not Bash preview lines.
 writeSettingsKey("expandedPreviewMaxLines", 5);
 clearSettingsCache();
 const settledLines = Array.from({ length: 15 }, (_, index) => `settled${index + 1}`).join("\n");
@@ -462,7 +512,39 @@ for (const tick of ["settled1", "settled5"]) assert.ok(cappedLines.includes(tick
 assert.ok(!cappedLines.includes("settled6"), "settled cap hides line 6");
 assert.match(cappedOut, /… \+10 lines/, "settled cap states the hidden remainder");
 assert.match(cappedOut, /display capped at 5 lines/, "settled cap names the configured ceiling");
-writeSettingsKey("expandedPreviewMaxLines", 4000);
+writeSettingsKey("expandedPreviewMaxLines", 150);
+clearSettingsCache();
+
+// Budgets count VISUAL rows, not logical newlines. A minified 50KB line must
+// remain bounded after ToolText wraps it at the actual viewport width.
+writeSettingsKey("bashRunningPreview", "head");
+writeSettingsKey("bashCollapsedLines", 10);
+clearSettingsCache();
+const minifiedTool = new ToolExecutionComponent(
+	"bash",
+	"run-minified",
+	{ command: "cat bundle.js" },
+	{ showImages: false },
+	bashTool,
+	{ requestRender() {}, previousLines: [] } as any,
+	process.cwd(),
+);
+minifiedTool.markExecutionStarted();
+minifiedTool.setArgsComplete();
+minifiedTool.updateResult({ content: [{ type: "text", text: `BEGIN${"x".repeat(50 * 1024)}END` }], details: {} } as any, true);
+const minifiedRows = minifiedTool.render(100);
+assert.ok(minifiedRows.length <= 16, `50KB logical line stays within 10 preview rows plus host chrome, got ${minifiedRows.length} rows`);
+for (const line of minifiedRows) assert.ok(visibleWidth(line) <= 100, "minified preview row fits viewport");
+assert.match(minifiedRows.join("\n"), /BEGIN/, "head preview keeps the start");
+
+writeSettingsKey("bashRunningPreview", "tail");
+clearSettingsCache();
+minifiedTool.render(100);
+await new Promise((resolve) => setTimeout(resolve, 0));
+const minifiedTail = minifiedTool.render(100).join("\n");
+assert.match(minifiedTail, /END/, "tail preview keeps the end of one huge logical line");
+assert.doesNotMatch(minifiedTail, /BEGIN/, "tail preview drops the distant start");
+writeSettingsKey("bashRunningPreview", "head");
 clearSettingsCache();
 writeSettingsKey("groupShellCommands", true);
 clearSettingsCache();

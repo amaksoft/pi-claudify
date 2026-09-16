@@ -368,7 +368,7 @@ const TOOL_OUTPUT_ROWS: readonly ImmediateRowDefinition[] = [
 		key: "expandedPreviewMaxLines",
 		label: "Expanded preview max lines",
 		description: "Caps lines in expanded output previews that can otherwise grow unbounded.",
-		defaultValue: 4000,
+		defaultValue: 150,
 		min: 1,
 	},
 ];

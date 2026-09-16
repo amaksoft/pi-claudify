@@ -386,4 +386,91 @@ assert.equal(ignoreGroup.handleMouse({ type: "click", button: "right", y: ignore
 assert.deepEqual(ignoreGroup.handleMouse({ type: "click", button: "left", y: ignoreY, width: 119 }), { handled: true });
 assert.equal((ignoreMember as any).expanded, true);
 
+// A live turn appends tools one at a time. The reconciler must grow one group,
+// release the replaced wrapper, and then reuse the stable replacement rather
+// than nesting wrappers or allocating on every frame.
+const growthBox = new Container();
+const growthOne = tool(pi, "read", "growth-1", { path: "src/one.ts" }, "one", "settled");
+growthBox.addChild(growthOne);
+plainRows(growthBox);
+const firstGrowthGroup = (growthBox as any).children[0] as InspectionGroupComponent;
+const growthTwo = tool(pi, "read", "growth-2", { path: "src/two.ts" }, "two", "settled");
+growthBox.addChild(growthTwo);
+assert.match(plainRows(growthBox).join("\n"), /^ {2}Read 2 files$/m);
+const grownGroup = (growthBox as any).children[0] as InspectionGroupComponent;
+assert.ok(grownGroup instanceof InspectionGroupComponent);
+assert.notEqual(grownGroup, firstGrowthGroup, "membership change replaces the wrapper");
+assert.equal(firstGrowthGroup.getMembers().length, 0, "replaced wrapper releases its member references");
+assert.deepEqual(grownGroup.getMembers(), [growthOne, growthTwo], "new wrapper owns the complete run in order");
+plainRows(growthBox);
+assert.equal((growthBox as any).children[0], grownGroup, "identical membership reuses the wrapper");
+
+// Eligibility changes repartition the flattened member stream in ONE pass.
+// A mixed wrapper must not temporarily dissolve to all-native rows and wait for
+// a second repaint before eligible singletons are grouped again.
+const splitBox = new Container();
+const splitReadA = tool(pi, "read", "split-a", { path: "src/a.ts" }, "a", "settled");
+const splitBash = tool(pi, "bash", "split-b", { command: "echo split" }, "split", "settled");
+const splitReadC = tool(pi, "read", "split-c", { path: "src/c.ts" }, "c", "settled");
+splitBox.addChild(splitReadA);
+splitBox.addChild(splitBash);
+splitBox.addChild(splitReadC);
+assert.match(plainRows(splitBox).join("\n"), /Read 2 files, ran 1 shell command/);
+writeSettingsKey("groupShellCommands", false);
+clearSettingsCache();
+try {
+	const splitOnce = plainRows(splitBox).join("\n");
+	assert.equal((splitBox as any).children.length, 3, "one render partitions group/read, native bash, group/read");
+	assert.ok((splitBox as any).children[0] instanceof InspectionGroupComponent);
+	assert.equal((splitBox as any).children[1], splitBash);
+	assert.ok((splitBox as any).children[2] instanceof InspectionGroupComponent);
+	assert.equal((splitOnce.match(/^ {2}Read 1 file$/gm) ?? []).length, 2, "eligible runs are regrouped immediately");
+	assert.match(splitOnce, /⏺ Bash\(echo split\)/);
+} finally {
+	writeSettingsKey("groupShellCommands", true);
+	clearSettingsCache();
+}
+
+// If independently-created wrappers become adjacent, the merged replacement
+// must release ALL discarded wrappers, not just whichever one was considered
+// reusable first.
+const leftBox = new Container();
+const leftMember = tool(pi, "read", "merge-left", { path: "src/left.ts" }, "left", "settled");
+leftBox.addChild(leftMember);
+plainRows(leftBox);
+const leftGroup = (leftBox as any).children[0] as InspectionGroupComponent;
+const rightBox = new Container();
+const rightMember = tool(pi, "read", "merge-right", { path: "src/right.ts" }, "right", "settled");
+rightBox.addChild(rightMember);
+plainRows(rightBox);
+const rightGroup = (rightBox as any).children[0] as InspectionGroupComponent;
+const mergeBox = new Container();
+mergeBox.addChild(leftGroup);
+mergeBox.addChild(rightGroup);
+assert.match(plainRows(mergeBox).join("\n"), /^ {2}Read 2 files$/m);
+assert.equal(leftGroup.getMembers().length, 0, "first discarded wrapper releases ownership");
+assert.equal(rightGroup.getMembers().length, 0, "second discarded wrapper releases ownership");
+
+// At narrow widths the wrapper paints native member rows. Mouse handling must
+// delegate to Container too; visual fallback without interaction is not native.
+const narrowBox = new Container();
+const narrowMember = tool(pi, "read", "click-narrow", { path: "src/narrow.ts" }, "one", "settled");
+narrowBox.addChild(narrowMember);
+plainRows(narrowBox, 12);
+const narrowGroup = (narrowBox as any).children[0] as InspectionGroupComponent;
+const containerProto = Container.prototype as any;
+const previousHandleMouse = containerProto.handleMouse;
+const delegated = { handled: true as const, source: "container" };
+containerProto.handleMouse = function () { return delegated; };
+try {
+	assert.equal(
+		narrowGroup.handleMouse({ type: "click", button: "left", y: 1, width: 12 }),
+		delegated,
+		"native narrow fallback delegates pointer handling to the host container",
+	);
+} finally {
+	if (previousHandleMouse === undefined) delete containerProto.handleMouse;
+	else containerProto.handleMouse = previousHandleMouse;
+}
+
 console.log("inspection group tests passed");

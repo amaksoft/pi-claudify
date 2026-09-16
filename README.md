@@ -72,9 +72,9 @@ Each verb editor has a mode row for **append** versus **replace**, an **Add…**
 
 - **Tool background** (`toolBackground`) chooses standard pi backgrounds, transparent rows, or outlined rows.
 - **MCP output** (`mcpOutputMode`) and **Bash output** (`bashOutputMode`) control their collapsed presentation.
-- **Preview lines** (`previewLines`) and **Collapsed Bash lines** (`bashCollapsedLines`) set collapsed preview counts.
+- **Preview lines** (`previewLines`) and **Bash preview lines** (`bashCollapsedLines`) set collapsed visual-row budgets; **Running Bash preview** (`bashRunningPreview`) chooses the oldest (`head`) or newest (`tail`) live rows.
 - **Stack consecutive Bash** (`bashStackConsecutive`) and **Semantic Bash display** (`bashSemanticDisplay`) control Bash row layout and read-only command labeling.
-- **Group read-only tools** (`readOnlyToolGrouping`) and **Read-only group limit** (`readOnlyToolGroupLimit`) control inspection aggregation.
+- **Group read-only tools** (`readOnlyToolGrouping`) and **Read-only group limit** (`readOnlyToolGroupLimit`) control inspection aggregation. **Group shell commands** (`groupShellCommands`) can keep Bash calls as always-visible native rows while other inspection calls remain grouped.
 - **Expanded preview max lines** (`expandedPreviewMaxLines`) caps fully expanded output.
 
 ### Migration from 1.x

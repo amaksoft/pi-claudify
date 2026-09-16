@@ -623,22 +623,43 @@ function formatCount(value: number): string {
 	return new Intl.NumberFormat("en-US").format(value);
 }
 
-function estimateResponseLength(message: any): number {
-	if (!Array.isArray(message?.content)) return 0;
-	return message.content.reduce((sum: number, block: any) =>
-		sum + (block?.type === "text" && typeof block.text === "string" ? block.text.length : 0), 0);
+function outputTokens(value: any): number | null {
+	const output = value?.usage?.output;
+	return typeof output === "number" && Number.isFinite(output) && output >= 0 ? output : null;
 }
 
-function textBlockLengths(message: any): number[] {
-	if (!Array.isArray(message?.content)) return [];
-	const lengths: number[] = [];
-	for (let i = 0; i < message.content.length; i++) {
-		const block = message.content[i];
-		if (block?.type === "text" && typeof block.text === "string") {
-			lengths[i] = block.text.length;
-		}
+/** Provider-reported output tokens across all assistant messages in one request. */
+export class OutputTokenTracker {
+	private settled = 0;
+	private streaming = 0;
+
+	resetRequest(): void {
+		this.settled = 0;
+		this.streaming = 0;
 	}
-	return lengths;
+
+	startTurn(): void {
+		this.streaming = 0;
+	}
+
+	update(event: any): boolean {
+		const next = outputTokens(event?.partial ?? event?.message);
+		if (next === null || next === this.streaming) return false;
+		this.streaming = next;
+		return true;
+	}
+
+	finish(message: any): boolean {
+		const final = outputTokens(message) ?? this.streaming;
+		const changed = final > 0 || this.streaming > 0;
+		this.settled += final;
+		this.streaming = 0;
+		return changed;
+	}
+
+	total(): number {
+		return this.settled + this.streaming;
+	}
 }
 
 function statusText(text: string): string {
@@ -673,8 +694,7 @@ export default function (pi: ExtensionAPI) {
 	let completionTimer: ReturnType<typeof setTimeout> | null = null;
 	let thoughtStatusTimer: ReturnType<typeof setTimeout> | null = null;
 	let currentVerb = "";
-	let responseLength = 0;
-	let responseTextBlockLengths: number[] = [];
+	const tokenTracker = new OutputTokenTracker();
 	let thinkingStatus: "thinking" | number /* duration ms */ | null = null;
 	let thinkingStartTime = 0;
 	let thoughtForSetAt = 0;
@@ -695,7 +715,7 @@ export default function (pi: ExtensionAPI) {
 
 	function buildWorkingMessage(): string {
 		const elapsed = Date.now() - (agentStartTime || turnStartTime);
-		const tokenCount = Math.max(0, Math.round(responseLength / 4));
+		const tokenCount = tokenTracker.total();
 		const statusParts: string[] = [];
 
 		// Claude Code orders the status list duration → tokens → thinking, e.g.
@@ -721,17 +741,6 @@ export default function (pi: ExtensionAPI) {
 			message += statusText(` (${statusParts.join(" · ")})`);
 		}
 		return message;
-	}
-
-	function setResponseTextBlockLength(index: number, length: number): void {
-		const previous = responseTextBlockLengths[index] ?? 0;
-		responseTextBlockLengths[index] = Math.max(0, length);
-		responseLength = Math.max(0, responseLength + responseTextBlockLengths[index] - previous);
-	}
-
-	function resetResponseTracking(message?: any): void {
-		responseTextBlockLengths = message ? textBlockLengths(message) : [];
-		responseLength = message ? estimateResponseLength(message) : 0;
 	}
 
 	function syncWorkingMessage(force = false): void {
@@ -767,7 +776,7 @@ export default function (pi: ExtensionAPI) {
 		if (_shimmerEnabled && _shimmerAnchorMs > 0) {
 			return SHIMMER_REFRESH_MS;
 		}
-		const tokenCount = Math.max(0, Math.round(responseLength / 4));
+		const tokenCount = tokenTracker.total();
 		// Keep ticking once per second even when idle so Claudify screen changes
 		// take effect within ~1s and elapsed-time crossover into the timer-on
 		// state still fires close to 30s. syncWorkingMessage short-circuits
@@ -855,7 +864,7 @@ export default function (pi: ExtensionAPI) {
 		turnStartTime = 0;
 		thinkingStatus = null;
 		thoughtForSetAt = 0;
-		resetResponseTracking();
+		tokenTracker.resetRequest();
 		restoreDefaultWorkingMessage();
 	}
 
@@ -880,6 +889,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("agent_start", async () => {
 		if (!agentStartTime) agentStartTime = Date.now();
+		tokenTracker.resetRequest();
 	});
 
 	pi.on("turn_start", async (_event, ctx) => {
@@ -890,7 +900,7 @@ export default function (pi: ExtensionAPI) {
 		turnStartTime = Date.now();
 		if (!agentStartTime) agentStartTime = turnStartTime;
 		currentVerb = pickVerb();
-		resetResponseTracking();
+		tokenTracker.startTurn();
 		clearCompletionTimer();
 		if (typeof thinkingStatus !== "number" || Date.now() - thoughtForSetAt >= THOUGHT_DISPLAY_MS) {
 			thinkingStatus = null;
@@ -905,23 +915,7 @@ export default function (pi: ExtensionAPI) {
 		activeCtx = ctx;
 		applyThemeColors(ctx.ui?.theme);
 		const evt = event.assistantMessageEvent;
-		let statusChanged = false;
-		const previousTokenCount = Math.max(0, Math.round(responseLength / 4));
-
-		if (evt.type === "start") {
-			resetResponseTracking();
-		} else if (evt.type === "text_start") {
-			setResponseTextBlockLength(evt.contentIndex, 0);
-		} else if (evt.type === "text_delta") {
-			const previous = responseTextBlockLengths[evt.contentIndex] ?? 0;
-			setResponseTextBlockLength(evt.contentIndex, previous + (typeof evt.delta === "string" ? evt.delta.length : 0));
-		} else if (evt.type === "text_end") {
-			setResponseTextBlockLength(evt.contentIndex, typeof evt.content === "string" ? evt.content.length : 0);
-		} else if (evt.type === "done") {
-			resetResponseTracking(evt.message);
-		} else if (evt.type === "error") {
-			resetResponseTracking(evt.error);
-		}
+		let statusChanged = tokenTracker.update(evt);
 
 		if (evt.type === "thinking_start") {
 			clearThoughtStatusTimer();
@@ -937,13 +931,14 @@ export default function (pi: ExtensionAPI) {
 		if (statusChanged) {
 			syncWorkingMessage(true);
 			rescheduleRefreshLoop();
-			return;
 		}
+	});
 
-		const nextTokenCount = Math.max(0, Math.round(responseLength / 4));
-		if (previousTokenCount === 0 && nextTokenCount > 0) {
-			rescheduleRefreshLoop();
-		}
+	pi.on("message_end", async (event, ctx) => {
+		if (event.message?.role !== "assistant") return;
+		if (tokenTracker.finish(event.message) && ctx.hasUI) syncWorkingMessage(true);
+		// Abort/error streams do not always emit thinking_end.
+		onThinkingEnd();
 	});
 
 	pi.on("turn_end", async (_event, ctx) => {
@@ -977,8 +972,6 @@ export default function (pi: ExtensionAPI) {
 			restoreDefaultWorkingMessage();
 		}
 
-		responseLength = 0;
-		responseTextBlockLengths = [];
 	});
 
 	pi.on("agent_end", async () => {

@@ -14,16 +14,15 @@ import {
 	AssistantMessageComponent,
 	CompactionSummaryMessageComponent,
 	CustomMessageComponent,
-	Theme as PiTheme,
 	ToolExecutionComponent,
 	UserMessageComponent,
-	createBashTool,
-	createEditTool,
-	createFindTool,
-	createGrepTool,
-	createLsTool,
-	createReadTool,
-	createWriteTool,
+	createBashToolDefinition,
+	createEditToolDefinition,
+	createFindToolDefinition,
+	createGrepToolDefinition,
+	createLsToolDefinition,
+	createReadToolDefinition,
+	createWriteToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import {
 	Box,
@@ -43,8 +42,20 @@ import {
 import * as Diff from "diff";
 import type { BundledLanguage, BundledTheme } from "shiki";
 
+import { bashHeaderCommand } from "./bash-preview.ts";
+import { forwardedToolContract, hostToolSettings } from "./builtin-contracts.ts";
 import { ClaudifyScreen } from "./claudify-screen.ts";
+import { diffCard } from "./diff-card.ts";
 import { installClaudeFooter, normalizeHexColor, patchEditorBorderColor } from "./footer.ts";
+import {
+	InspectionGroupComponent,
+	isInspectionGroupComponent,
+	reconcileInspectionGroups,
+	type InspectionGroupFrame,
+	type InspectionGroupPolicy,
+} from "./inspection-group.ts";
+
+export { InspectionGroupComponent } from "./inspection-group.ts";
 import { registerFullscreenTui } from "./fullscreen-tui.ts";
 import {
 	describeInspectionsActive,
@@ -52,7 +63,22 @@ import {
 	type InspectionKind,
 } from "./inspection-summary.ts";
 import { describeEdit, describeWrite, type SummaryEmphasis } from "./mutation-summary.ts";
-import { readSettings } from "./settings.ts";
+import { mcpCallArgsText } from "./mcp-presentation.ts";
+import { anchorFramedHeights, installMouseLayout } from "./mouse-layout.ts";
+import {
+	isSettledToolExecution,
+	isToolExecutionLike,
+	setToolExpanded,
+	toolComponentCwd as componentCwd,
+	toolComponentRecord,
+} from "./pi-tool-adapter.ts";
+import { getSettingsRevision, readSettings } from "./settings.ts";
+import { sanitizeToolText, WRAP_MARK } from "./terminal-sanitize.ts";
+import { selectVisualItems, selectVisualPreview, widthAwareText, type VisualPreviewMode } from "./visual-preview.ts";
+import { captureWriteSnapshot, writeDiffOmissionReason } from "./write-snapshot.ts";
+
+export { anchorFramedHeights } from "./mouse-layout.ts";
+export { sanitizeToolText } from "./terminal-sanitize.ts";
 import {
 	BUILTIN_COMPATIBILITY_TOOL_NAMES,
 	isBuiltinCompatibilityToolName,
@@ -89,12 +115,12 @@ const ANSI_RE = /\x1b\[[0-9;]*m/g;
 const ANSI_PRESENT_RE = /\x1b\[[0-9;]*m/;
 const PATCH_FLAG = Symbol.for("pi-claudify:patched-container-render");
 const TOOL_RENDER_CACHE = Symbol.for("pi-claudify:tool-render-cache");
+const TOOL_RENDER_SETTINGS_REVISION = Symbol.for("pi-claudify:tool-render-settings-revision");
 const TOOL_CACHE_PATCH_FLAG = Symbol.for("pi-claudify:patched-tool-cache-invalidation");
 const TOOL_IMAGE_EXPAND_PATCH_FLAG = Symbol.for("pi-claudify:patched-read-image-expansion");
 const CUSTOM_MESSAGE_PATCH_FLAG = Symbol.for("pi-claudify:patched-custom-message-render");
 const COMPACTION_MESSAGE_PATCH_FLAG = Symbol.for("pi-claudify:patched-compaction-message-render");
 const USER_MESSAGE_PATCH_FLAG = Symbol.for("pi-claudify:patched-user-message-render");
-const WRAP_MARK = "\uE000";
 const KITTY_IMAGE_PREFIX = "\x1b_G";
 const ITERM2_IMAGE_PREFIX = "\x1b]1337;File=";
 
@@ -440,19 +466,38 @@ function storedHexColor(value: unknown): CustomHexColor | null {
 	return normalizeHexColor(value) as CustomHexColor | null;
 }
 
+function rgbToAnsi256(r: number, g: number, b: number): number {
+	let best = 16;
+	let bestDistance = Number.POSITIVE_INFINITY;
+	const levels = [0, 95, 135, 175, 215, 255];
+	for (let ri = 0; ri < levels.length; ri++) {
+		for (let gi = 0; gi < levels.length; gi++) {
+			for (let bi = 0; bi < levels.length; bi++) {
+				const distance = (r - levels[ri]) ** 2 + (g - levels[gi]) ** 2 + (b - levels[bi]) ** 2;
+				if (distance < bestDistance) {
+					bestDistance = distance;
+					best = 16 + 36 * ri + 6 * gi + bi;
+				}
+			}
+		}
+	}
+	for (let index = 0; index < 24; index++) {
+		const value = 8 + 10 * index;
+		const distance = (r - value) ** 2 + (g - value) ** 2 + (b - value) ** 2;
+		if (distance < bestDistance) {
+			bestDistance = distance;
+			best = 232 + index;
+		}
+	}
+	return best;
+}
+
 function ansiFromHex(theme: unknown, hex: CustomHexColor, layer: "foreground" | "background"): string | null {
 	const rgb = colorToRgb(hex);
 	if (!rgb) return null;
-	const normalized = `#${[rgb.r, rgb.g, rgb.b].map((channel) => channel.toString(16).padStart(2, "0")).join("")}`;
-	const mode = (theme as any)?.mode === "256color" ? "256color" : "truecolor";
-	// Constructing a minimal pi Theme delegates 256-color conversion to pi's
-	// own rgbTo256 implementation instead of maintaining a second quantizer.
-	const converter = new PiTheme(
-		{ accent: normalized, thinkingXhigh: normalized } as any,
-		{ userMessageBg: normalized } as any,
-		mode,
-	);
-	return layer === "foreground" ? converter.getFgAnsi("accent") : converter.getBgAnsi("userMessageBg");
+	const prefix = layer === "foreground" ? 38 : 48;
+	if ((theme as any)?.mode === "256color") return `\x1b[${prefix};5;${rgbToAnsi256(rgb.r, rgb.g, rgb.b)}m`;
+	return `\x1b[${prefix};2;${rgb.r};${rgb.g};${rgb.b}m`;
 }
 
 function isDarkTheme(theme: unknown): boolean {
@@ -586,12 +631,6 @@ function clampLineWidth(line: string, width: number): string {
 	return visibleWidth(line) > width ? truncateToWidth(line, width) : line;
 }
 
-function isToolExecutionLike(value: unknown): value is { toolName: string; toolCallId: string } {
-	if (!value || typeof value !== "object") return false;
-	const candidate = value as Record<string, unknown>;
-	return typeof candidate.toolName === "string" && typeof candidate.toolCallId === "string";
-}
-
 function isBashToolExecution(value: unknown): boolean {
 	// A disabled `bash` tool override drops out of Claudify's stacking/grouping
 	// entirely — its row falls back to native pi spacing/presentation.
@@ -618,26 +657,7 @@ function readOnlyToolGroupLimit(): number {
 		: 5;
 }
 
-function toolComponentRecord(value: unknown): Record<string, any> {
-	return value as Record<string, any>;
-}
-
-function componentCwd(value: unknown): string {
-	const cwd = toolComponentRecord(value).cwd;
-	return typeof cwd === "string" && cwd ? cwd : process.cwd();
-}
-
-function componentTextContent(value: unknown): string {
-	return getTextContent(toolComponentRecord(value).result);
-}
-
-function bashReadDisplayInfo(value: unknown): BashDisplayInfo | null {
-	const rec = toolComponentRecord(value);
-	if (rec.toolName !== "bash" || !bashSemanticDisplayEnabled()) return null;
-	return classifyBashCommandForDisplay(rec.args?.command ?? "");
-}
-
-function isReadOnlyInspectionToolExecution(value: unknown): boolean {
+function isInspectionGroupCandidate(value: unknown): boolean {
 	if (!readOnlyToolGroupingEnabled() || !isToolExecutionLike(value)) return false;
 	const rec = toolComponentRecord(value);
 	if (rec.expanded === true) return false;
@@ -666,34 +686,6 @@ function plural(count: number, noun: string): string {
 	if (count === 1) return `1 ${noun}`;
 	const suffix = /(?:s|x|z|ch|sh)$/i.test(noun) ? "es" : "s";
 	return `${count} ${noun}${suffix}`;
-}
-
-function textDataLines(text: string): string[] {
-	return text.split("\n").filter((line) => line.trim().length > 0 && !line.trimStart().startsWith("["));
-}
-
-function compactList(values: string[], limit: number): string {
-	if (values.length === 0) return "";
-	const shown = values.slice(0, limit);
-	const suffix = values.length > shown.length ? `, … +${values.length - shown.length}` : "";
-	return `${shown.join(", ")}${suffix}`;
-}
-
-function uniqueLeadingGrepFiles(text: string, limit: number): string[] {
-	const seen = new Set<string>();
-	const files: string[] = [];
-	for (const rawLine of text.split("\n")) {
-		const line = rawLine.trim();
-		if (!line || line.startsWith("[")) continue;
-		const match = /^(.+?)(?::\d+:|-\d+-)/.exec(line);
-		if (!match) continue;
-		const file = match[1];
-		if (seen.has(file)) continue;
-		seen.add(file);
-		files.push(file);
-		if (files.length >= limit + 1) break;
-	}
-	return files;
 }
 
 function formatOffsetLimit(args: any): string {
@@ -726,62 +718,6 @@ function listInspectionTarget(value: unknown): string {
 	return shortPath(componentCwd(value), rec.args?.path ?? ".");
 }
 
-function readInspectionStatus(value: unknown): string {
-	const rec = toolComponentRecord(value);
-	if (!rec.result) return "Reading...";
-	if (rec.result?.isError) return "failed";
-	const text = componentTextContent(value);
-	const lines = text.length === 0 ? 0 : text.split("\n").length;
-	const suffix = rec.result?.details?.truncation?.truncated ? " (truncated)" : "";
-	return `${plural(lines, "line")} loaded${suffix}`;
-}
-
-function grepInspectionStatus(value: unknown): string {
-	const rec = toolComponentRecord(value);
-	if (!rec.result) return "Searching...";
-	if (rec.result?.isError) return "failed";
-	const text = componentTextContent(value).trim();
-	if (!text || /^No matches found\b/i.test(text)) return "no matches";
-	const lines = textDataLines(text);
-	let status = plural(lines.length, "match");
-	const files = uniqueLeadingGrepFiles(text, readOnlyToolGroupLimit());
-	if (files.length > 1) status += ` in ${compactList(files, readOnlyToolGroupLimit())}`;
-	if (rec.result?.details?.truncation?.truncated) status += " (truncated)";
-	return status;
-}
-
-function findInspectionStatus(value: unknown): string {
-	const rec = toolComponentRecord(value);
-	if (!rec.result) return "Finding...";
-	if (rec.result?.isError) return "failed";
-	const text = componentTextContent(value).trim();
-	if (!text || /^No files found\b/i.test(text)) return "no files";
-	const items = textDataLines(text);
-	let status = plural(items.length, "file");
-	if (items.length > 0) status += `: ${compactList(items, readOnlyToolGroupLimit())}`;
-	if (rec.result?.details?.truncation?.truncated) status += " (truncated)";
-	return status;
-}
-
-function listInspectionStatus(value: unknown): string {
-	const rec = toolComponentRecord(value);
-	if (!rec.result) return "Listing...";
-	if (rec.result?.isError) return "failed";
-	const text = componentTextContent(value).trim();
-	if (!text || /^empty directory\b/i.test(text)) return "empty directory";
-	const items = textDataLines(text);
-	let status = plural(items.length, "entry");
-	if (items.length > 0) status += `: ${compactList(items, readOnlyToolGroupLimit())}`;
-	return status;
-}
-
-function bashReadInspectionTarget(value: unknown): string {
-	const info = bashReadDisplayInfo(value);
-	if (!info) return "";
-	const range = info.rangeLabel ? ` (${info.rangeLabel})` : "";
-	return `${shortPath(componentCwd(value), info.path)}${range}`;
-}
-
 /** Raw shell command, for the `$ cmd` row under an aggregate header. */
 function bashInspectionCommand(value: unknown): string {
 	const rec = toolComponentRecord(value);
@@ -800,18 +736,7 @@ function bashInspectionCommand(value: unknown): string {
  * effectively unreachable.
  * Capture: docs/plans/2026-09-07-inspection-group-interaction.md
  */
-export function isSettledInspectionTool(value: unknown): boolean {
-	const rec = toolComponentRecord(value);
-	return !!rec.result && rec.isPartial !== true;
-}
-
-function bashReadInspectionStatus(value: unknown): string {
-	const rec = toolComponentRecord(value);
-	if (!rec.result) return "Reading...";
-	if (rec.result?.isError) return "failed";
-	const count = componentTextContent(value).split("\n").filter((line) => line.trim().length > 0).length;
-	return `${plural(count, "line")} read`;
-}
+export const isSettledInspectionTool = isSettledToolExecution;
 
 function inspectionKind(value: unknown): InspectionKind {
 	const rec = toolComponentRecord(value);
@@ -851,296 +776,66 @@ function inspectionTargetText(rec: { toolName?: unknown }, value: unknown): stri
 	return `$ ${bashInspectionCommand(value)}`;
 }
 
-/**
- * Once every tool in the group has settled, Claude Code drops the header and the
- * ⎿ rows and leaves a single dim past-tense line, indented, with no bullet.
- */
 function fitInspectionLine(line: string, width: number): string[] {
 	if (width <= 0) return [];
 	return wrapMarkedLine(line.replace(/\t/g, "   "), width)
 		.map((part) => padToWidth(visibleWidth(part) > width ? truncateToWidth(part, width, "") : part, width));
 }
 
-function renderCollapsedInspectionGroup(
-	kinds: InspectionKind[],
-	servers: string[],
-	width: number,
-	span?: { lead: number; count: number },
-): string[] {
+/** Frame aggregate content and report the exact clickable row range. */
+function frameInspectionLines(rendered: string[], width: number): InspectionGroupFrame {
 	syncToolBackgroundMode();
-	// Keep the captured grammar byte-for-byte: no invented click/ctrl+o hint.
-	// Clickability is a capability of the component, not prose in its content.
-	const summary = `${CLAUDE_COLLAPSED_INDENT}${WRAP_MARK}${WORKED_LINE_FG}${describeInspectionsDone(kinds, servers)}${RESET}`;
-	const core = fitInspectionLine(summary, width);
-	let lead = 0;
-	let framed: string[];
+	let start = 0;
+	let lines: string[];
 	if (effectiveToolBackgroundMode() === "outlines") {
-		framed = [" ".repeat(width), borderLine(width), ...core, borderLine(width)];
-		lead = 2;
+		lines = [" ".repeat(width), borderLine(width), ...rendered, borderLine(width)];
+		start = 2;
 	} else if (effectiveToolBackgroundMode() === "transparent") {
-		framed = [" ".repeat(width), ...core];
-		lead = 1;
+		lines = [" ".repeat(width), ...rendered];
+		start = 1;
 	} else {
-		framed = core;
+		lines = rendered;
 	}
-	if (span) {
-		span.lead = lead;
-		span.count = core.length;
-	}
-	return framed;
+	return { lines, interactiveRows: { start, end: start + rendered.length } };
 }
 
-function renderActiveInspectionGroup(group: unknown[], width: number, span?: { lead: number; count: number }): string[] {
-	syncToolBackgroundMode();
+/** Claude's settled group is one dim, indented, bullet-less summary. */
+function renderSettledInspectionGroup(group: unknown[], width: number): InspectionGroupFrame {
+	const summary = `${CLAUDE_COLLAPSED_INDENT}${WRAP_MARK}${WORKED_LINE_FG}${describeInspectionsDone(
+		group.map(inspectionKind),
+		mcpServersInGroup(group),
+	)}${RESET}`;
+	return frameInspectionLines(fitInspectionLine(summary, width), width);
+}
+
+function renderActiveInspectionGroup(group: unknown[], width: number): InspectionGroupFrame {
 	// MCP calls contribute a clause to the header but never a ⎿ row of their own.
 	const targets = group.filter((entry) => !isMcpToolExecution(entry));
 	const shown = targets.slice(0, readOnlyToolGroupLimit());
 	const remaining = targets.length - shown.length;
-	const kinds = group.map(inspectionKind);
-	const servers = mcpServersInGroup(group);
-	const core: string[] = [`${WRAP_MARK}${CLAUDE_TOOL_GLYPH} ${describeInspectionsActive(kinds, servers)}`];
+	const core: string[] = [`${WRAP_MARK}${CLAUDE_TOOL_GLYPH} ${describeInspectionsActive(
+		group.map(inspectionKind),
+		mcpServersInGroup(group),
+	)}`];
 	for (const entry of shown) {
 		core.push(`${TOOL_RULE}${CLAUDE_RESULT_PREFIX}${TRANSPARENT_RESET}${WRAP_MARK}${summarizeReadOnlyInspectionTool(entry)}`);
 	}
 	if (remaining > 0) {
 		core.push(`${TOOL_RULE}${CLAUDE_RESULT_PREFIX}${TRANSPARENT_RESET}${WRAP_MARK}… +${remaining} more`);
 	}
-	const rendered = core.flatMap((line) => fitInspectionLine(line, width));
-	let lead = 0;
-	let framed: string[];
-	if (effectiveToolBackgroundMode() === "outlines") {
-		framed = [" ".repeat(width), borderLine(width), ...rendered, borderLine(width)];
-		lead = 2;
-	} else if (effectiveToolBackgroundMode() === "transparent") {
-		framed = [" ".repeat(width), ...rendered];
-		lead = 1;
-	} else {
-		framed = rendered;
-	}
-	// The active header AND its target rows are one interactive block: clicking
-	// `$ command` must dissolve into the native running row just like ctrl+o.
-	if (span) { span.lead = lead; span.count = rendered.length; }
-	return framed;
+	return frameInspectionLines(core.flatMap((line) => fitInspectionLine(line, width)), width);
 }
 
-/**
- * The host writes mouseLayout only from Container.render. A component that
- * paints lines its children did not produce must install the geometry it
- * actually painted, or Container.handleMouse invents hit regions by rendering
- * invisible children at their native heights.
- *
- * This field is present in pi-tui >=0.85 and absent in the repo's older test
- * dependency. Feature-detected assignment keeps older hosts working while the
- * component's own handleMouse remains directly testable.
- */
-/**
- * Re-anchor per-child heights after the border patch trims blanks and adds
- * framing. Leading trimmed blanks belonged to the first child's top, trailing
- * blanks to the last child's bottom; framing lines (spacer, borders) belong to
- * the block, so the top count goes to the first child and the bottom border to
- * the last. Pure and unit-tested: the render path supplies measured inputs and
- * never adjusts them inline.
- */
-export function anchorFramedHeights(
-	naturalHeights: number[],
-	leadingBlanks: number,
-	trailingBlanks: number,
-	topFraming: number,
-	bottomFraming: number,
-): number[] {
-	const heights = [...naturalHeights];
-	if (heights.length === 0) return heights;
-	heights[0] = Math.max(0, heights[0] - leadingBlanks + topFraming);
-	heights[heights.length - 1] = Math.max(0, heights[heights.length - 1] - trailingBlanks + bottomFraming);
-	return heights;
-}
+const inspectionGroupPolicy: InspectionGroupPolicy = {
+	isEligible: isInspectionGroupCandidate,
+	isSettled: isSettledInspectionTool,
+	setExpanded: setToolExpanded,
+	renderActive: renderActiveInspectionGroup,
+	renderSettled: renderSettledInspectionGroup,
+};
 
-function installMouseLayout(
-	component: any,
-	layout: { width: number; children: Array<{ component: unknown; height: number }> } | undefined,
-): void {
-	try {
-		component.mouseLayout = layout;
-	} catch {
-		/* older/read-only host: keyboard expansion still works */
-	}
-}
-
-/**
- * A real transcript component for one consecutive run of aggregatable tools.
- *
- * Collapsed/active lines belong to this component, so a fullscreen click has a
- * real target. Opening marks every member expanded through pi's public method;
- * the next reconciliation dissolves the wrapper into native rows, preserving
- * links, output, per-tool status and the host's own rendering. ctrl+o duck-types
- * setExpanded on transcript children, so keyboard and pointer share this path.
- */
-export class InspectionGroupComponent extends Container {
-	private readonly members: unknown[];
-	private lastHeight = 0;
-	private summaryStart = 0;
-	private summaryEnd = 0;
-
-	constructor(members: unknown[]) {
-		super();
-		this.members = [...members];
-		for (const member of this.members) {
-			try { this.addChild(member as any); } catch { /* malformed child: validates() will degrade */ }
-		}
-	}
-
-	getMembers(): unknown[] {
-		return [...this.members];
-	}
-
-	validates(): boolean {
-		return this.members.length > 0 && this.members.every(
-			(member) => isReadOnlyInspectionToolExecution(member) && !(member as any)?.hideComponent,
-		);
-	}
-
-	private renderMembers(width: number): string[] {
-		const lines: string[] = [];
-		for (const member of this.members) {
-			try {
-				if (typeof (member as any)?.render === "function") lines.push(...(member as any).render(width));
-			} catch { /* one bad member must not blank its siblings */ }
-		}
-		return lines;
-	}
-
-	render(width: number): string[] {
-		try {
-			// The ⎿ gutter leaves no useful body in panes this narrow. Native rows
-			// are the honest fallback and retain every detail.
-			if (width < 24 || !this.validates()) {
-				const lines = this.renderMembers(width);
-				this.lastHeight = lines.length;
-				this.summaryStart = 0;
-				this.summaryEnd = 0;
-				installMouseLayout(this, undefined);
-				return lines;
-			}
-
-			let lines: string[];
-			if (!this.members.every(isSettledInspectionTool)) {
-				const span = { lead: 0, count: 0 };
-				lines = renderActiveInspectionGroup(this.members, width, span);
-				this.summaryStart = span.lead;
-				this.summaryEnd = span.lead + span.count;
-			} else {
-				const span = { lead: 0, count: 0 };
-				lines = renderCollapsedInspectionGroup(
-					this.members.map(inspectionKind),
-					mcpServersInGroup(this.members),
-					width,
-					span,
-				);
-				this.summaryStart = span.lead;
-				this.summaryEnd = span.lead + span.count;
-			}
-			this.lastHeight = lines.length;
-			// We painted all lines; members painted none. Never fabricate invisible
-			// member hit regions for this shape.
-			installMouseLayout(this, { width, children: [] });
-			return lines;
-		} catch {
-			const lines = this.renderMembers(width);
-			this.lastHeight = lines.length;
-			this.summaryStart = 0;
-			this.summaryEnd = 0;
-			installMouseLayout(this, undefined);
-			return lines;
-		}
-	}
-
-	handleMouse(event: any): { handled: true } | undefined {
-		const button = event?.button;
-		const isPrimary = button === "left" || button === 0 || button === "primary" || button === undefined;
-		if (
-			event?.type === "click" && isPrimary && this.validates() &&
-			typeof event?.y === "number" && event.y >= this.summaryStart && event.y < this.summaryEnd
-		) {
-			this.setExpanded(true);
-			return { handled: true };
-		}
-		return undefined;
-	}
-
-	get isExpandable(): boolean {
-		return true;
-	}
-
-	setExpanded(expanded: boolean): void {
-		for (const member of this.members) {
-			try {
-				const setter = (member as any)?.setExpanded;
-				if (typeof setter === "function") setter.call(member, expanded);
-				else {
-					(member as any).expanded = expanded;
-					(member as any).invalidate?.();
-				}
-			} catch { /* one member must not block the rest */ }
-		}
-		try { this.invalidate(); } catch { /* host may not expose invalidation */ }
-	}
-}
-
-/** Fold consecutive groupable rows into real components. Idempotent per render. */
-export function ensureInspectionGroups(container: any): void {
-	const children = Array.isArray(container?.children) ? container.children : null;
-	if (!children?.length) return;
-
-	let changed = false;
-	const next: unknown[] = [];
-	let run: unknown[] = [];
-	let reusable: InspectionGroupComponent | null = null;
-
-	const sameMembers = (group: InspectionGroupComponent, members: unknown[]): boolean => {
-		const current = group.getMembers();
-		return current.length === members.length && current.every((member, index) => member === members[index]);
-	};
-	const flush = () => {
-		if (!run.length) {
-			reusable = null;
-			return;
-		}
-		const members = run;
-		const prior = reusable;
-		run = [];
-		reusable = null;
-		// Claude Code captures singletons (`Read 1 file`), so every non-empty run
-		// gets a component — clickability must not disappear at count one.
-		if (prior && sameMembers(prior, members)) next.push(prior);
-		else {
-			next.push(new InspectionGroupComponent(members));
-			changed = true;
-		}
-	};
-
-	for (const child of children) {
-		if (child instanceof InspectionGroupComponent) {
-			if (child.validates()) {
-				if (!reusable) reusable = child;
-				run.push(...child.getMembers());
-			} else {
-				flush();
-				next.push(...child.getMembers());
-				try { child.clear(); } catch { /* release ownership best-effort */ }
-				changed = true;
-			}
-		} else if (isReadOnlyInspectionToolExecution(child) && !(child as any)?.hideComponent) {
-			run.push(child);
-		} else {
-			flush();
-			next.push(child);
-		}
-	}
-	flush();
-	if (!changed) return;
-	// Preserve the array identity: host code may retain a reference to children.
-	children.length = 0;
-	children.push(...next);
+export function ensureInspectionGroups(container: unknown): void {
+	reconcileInspectionGroups(container, inspectionGroupPolicy);
 }
 
 function hasConsecutiveBashToolChildren(children: unknown[]): boolean {
@@ -1210,10 +905,15 @@ function patchGlobalToolBorders(): void {
 	const originalRender = proto.render;
 	proto.render = function patchedContainerRender(width: number): string[] {
 		if (!isToolExecutionLike(this)) {
-			// Fold runs into components before the host composes the container. Its
-			// original render then owns the parent mouseLayout, while each wrapper
-			// owns the geometry of the lines it paints.
-			try { ensureInspectionGroups(this); } catch { /* native rows are the fallback */ }
+			const children = Array.isArray((this as any).children) ? (this as any).children as unknown[] : [];
+			// The prototype patch reaches every Container; only transcript containers
+			// with a candidate/group need tree reconciliation.
+			if (children.some((child) => isInspectionGroupComponent(child) || isInspectionGroupCandidate(child))) {
+				try { ensureInspectionGroups(this); } catch { /* native rows are the fallback */ }
+			}
+			// The host's original render owns parent mouseLayout; wrappers own only
+			// the geometry of the aggregate lines they paint.
+
 			const stacked = renderWithStackedConsecutiveBash(this, width);
 			if (stacked) {
 				// This path still bypasses originalRender; preserve the geometry of the
@@ -1223,9 +923,14 @@ function patchGlobalToolBorders(): void {
 			}
 		}
 
+		const settingsRevision = isToolExecutionLike(this) ? getSettingsRevision() : 0;
 		if (isToolExecutionLike(this)) {
+			if ((this as any)[TOOL_RENDER_SETTINGS_REVISION] !== settingsRevision) {
+				(this as any)[TOOL_RENDER_SETTINGS_REVISION] = settingsRevision;
+				delete (this as any)[TOOL_RENDER_CACHE];
+			}
 			const cached = (this as any)[TOOL_RENDER_CACHE];
-			if (cached?.width === width && cached?.mode === effectiveToolBackgroundMode()) {
+			if (cached?.width === width && cached?.mode === effectiveToolBackgroundMode() && cached?.settingsRevision === settingsRevision) {
 				return cached.lines;
 			}
 		}
@@ -1234,7 +939,7 @@ function patchGlobalToolBorders(): void {
 		if (!Array.isArray(rendered) || rendered.length === 0) return rendered;
 		if (!isToolExecutionLike(this)) return rendered;
 		if (effectiveToolBackgroundMode() === "default") {
-			(this as any)[TOOL_RENDER_CACHE] = { width, mode: effectiveToolBackgroundMode(), lines: rendered };
+			(this as any)[TOOL_RENDER_CACHE] = { width, mode: effectiveToolBackgroundMode(), settingsRevision, lines: rendered };
 			return rendered;
 		}
 
@@ -1246,7 +951,7 @@ function patchGlobalToolBorders(): void {
 
 		const { textLines, imageLines } = splitRenderedImageBlock(rendered.slice(start, end + 1));
 		if (imageLines.length > 0) {
-			(this as any)[TOOL_RENDER_CACHE] = { width, mode: effectiveToolBackgroundMode(), lines: rendered };
+			(this as any)[TOOL_RENDER_CACHE] = { width, mode: effectiveToolBackgroundMode(), settingsRevision, lines: rendered };
 			return rendered;
 		}
 		const core = textLines.map((line) => clampLineWidth(normalizeLeadingCheckGlyph(line), width));
@@ -1272,14 +977,14 @@ function patchGlobalToolBorders(): void {
 			const kids = Array.isArray((this as any).children) ? (this as any).children : [];
 			if (layout && layout.width === width && Array.isArray(layout.children) && layout.children.length === kids.length && kids.length > 0) {
 				const natural = layout.children.map((entry: any) => (typeof entry?.height === "number" ? entry.height : 0));
-				const topFraming = 1 + (toolBackgroundMode === "outlines" && core.length > 0 ? 1 : 0);
-				const bottomFraming = toolBackgroundMode === "outlines" && core.length > 0 ? 1 : 0;
+				const topFraming = 1 + (effectiveToolBackgroundMode() === "outlines" && core.length > 0 ? 1 : 0);
+				const bottomFraming = effectiveToolBackgroundMode() === "outlines" && core.length > 0 ? 1 : 0;
 				const heights = anchorFramedHeights(natural, start, rendered.length - 1 - end, topFraming, bottomFraming);
 				installMouseLayout(this, { width, children: kids.map((component: unknown, index: number) => ({ component, height: heights[index] ?? 0 })) });
 			}
 		} catch { /* hit-testing keeps the host layout */ }
 
-		(this as any)[TOOL_RENDER_CACHE] = { width, mode: effectiveToolBackgroundMode(), lines: result };
+		(this as any)[TOOL_RENDER_CACHE] = { width, mode: effectiveToolBackgroundMode(), settingsRevision, lines: result };
 		return result;
 	};
 
@@ -1290,93 +995,6 @@ function summarizeText(text: string, max = 60): string {
 	const oneLine = text.replace(/\n/g, " ").trim();
 	if (oneLine.length <= max) return oneLine;
 	return `${oneLine.slice(0, Math.max(0, max - 3))}...`;
-}
-
-/**
- * Strip terminal control bytes from model-supplied text before it enters a row.
- *
- * Applies to every string a model can steer into the transcript: shell commands,
- * MCP parameters, and the paths/patterns in a group's ⎿ target rows.
- *
- * A command is model output, so it can carry escape sequences. Resetting SGR is
- * not enough: a charset shift (ESC(0) survives a reset and turns later rows into
- * line-drawing glyphs, and OSC/DCS envelopes can swallow the rest of the line.
- * visibleWidth ignores these bytes when measuring, so anything left here makes
- * pi's width accounting disagree with the terminal.
- * Capture: docs/plans/2026-09-07-inspection-group-interaction.md
- */
-/** Marks where bytes were removed, so a strip can never read as "nothing was here". */
-const SANITIZED_MARK = "\ufffd";
-
-/**
- * Ordered rewrite rules for sanitizeToolText, built once.
- *
- * Order matters: terminated envelopes must go before the bare-ESC rule, or the
- * catch-all breaks an envelope into text that reads as content. Hoisted to
- * module scope because this runs per row per frame, and one of these is built
- * from WRAP_MARK — recompiling it on every call showed up as avoidable work on
- * large payloads. Global regexes are safe to share here: String.replace resets
- * lastIndex, unlike test/exec.
- */
-const SANITIZE_RULES: Array<readonly [RegExp, string]> = [
-	// Properly terminated envelopes carry no readable text: drop them whole.
-	[/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, ""],
-	[/\u001b[P_^X][\s\S]*?\u001b\\/g, ""],
-	// An UNTERMINATED envelope must not swallow the rest of the string: two bytes
-	// (ESC X) would erase a destructive tail and leave a row that looks complete —
-	// `echo hello <ESC>X && rm -rf ~/x` reading as `echo hello`. Strip the
-	// introducer, mark it, keep the text.
-	[/\u001b[P_^X]/g, SANITIZED_MARK],
-	[/\u001b\[[0-9;:?]*[ -\/]*[@-~]/g, ""],
-	// Charset designators are three bytes (ESC ( 0). Dropping only ESC and the
-	// intermediate would strand the final byte as a literal digit in the path.
-	[/\u001b[()*+$][0-~]/g, ""],
-	[/\u001b#[0-9]/g, ""],
-	[/\u001b/g, SANITIZED_MARK],
-	[new RegExp(WRAP_MARK, "g"), ""],
-	// Newline and tab are NOT in the C0 range below, and a row prints them
-	// verbatim: a path containing "\n⏺ Bash(echo safe)" forges a whole fake tool
-	// row. Fold every line/whitespace control to a space rather than deleting it,
-	// so the text stays readable and stays on one row.
-	[/[\u0009-\u000d\u0085\u2028\u2029]/g, " "],
-	[/[\u0000-\u001f\u007f-\u009f]/g, ""],
-	// Bidi overrides reorder the row without changing its bytes, so
-	// `echo hi <U+202E>...` can display as `rm -rf /`. Zero-width characters split
-	// a command invisibly (`r<ZWSP>m`). Neither belongs in an audit row.
-	[/[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g, ""],
-];
-
-export function sanitizeToolText(text: unknown): string {
-	let out = typeof text === "string" ? text : String(text ?? "");
-	// Fast path: the overwhelming majority of paths and commands are clean ASCII.
-	if (!SANITIZE_SCAN.test(out)) return out;
-	for (const [pattern, replacement] of SANITIZE_RULES) out = out.replace(pattern, replacement);
-	return out;
-}
-
-/**
- * Cheap pre-check: does this text contain anything the rules would rewrite?
- * Must stay in sync with SANITIZE_RULES — WRAP_MARK (U+E000) is in here because
- * it is a Private Use character, not a control one, so a text carrying only the
- * wrap marker would otherwise skip sanitizing altogether.
- */
-const SANITIZE_SCAN = new RegExp(
-	`[\\u0000-\\u001f\\u007f-\\u009f\\u200b-\\u200f\\u202a-\\u202e\\u2066-\\u2069\\u2028\\u2029\\ufeff${WRAP_MARK}]`,
-);
-
-
-/**
- * The command text for a Bash header. Collapsed clips to 72 columns like Claude
- * Code; expanded (ctrl+o) returns the whole command, which Text wraps to width
- * against toolHeader's WRAP_MARK hanging indent.
- *
- * Without the expanded case the command was unrecoverable in EVERY state —
- * clipped in the in-flight target row and clipped again in the settled header —
- * so an aggregated `rm -rf … && curl … | sh` could not be read back at all.
- */
-function bashHeaderCommand(command: unknown, expanded: boolean): string {
-	const flat = sanitizeToolText(command).replace(/\s+/g, " ").trim();
-	return expanded ? flat : summarizeText(flat, 72);
 }
 
 function hashText(text: string): string {
@@ -2107,17 +1725,6 @@ function fileExistsForTool(cwd: string, filePath: string): boolean {
 	}
 }
 
-const WRITE_EXISTED_BEFORE = new Map<string, boolean>();
-
-function getWriteWasNewFile(ctx: any, cwd: string, filePath: string, reveal = shouldRevealCallArgs(ctx)): boolean | undefined {
-	if (typeof ctx?.state?._writeWasNewFile === "boolean") return ctx.state._writeWasNewFile;
-	if (!filePath || !reveal) return undefined;
-	const existedBefore = typeof ctx?.toolCallId === "string" ? WRITE_EXISTED_BEFORE.get(ctx.toolCallId) : undefined;
-	const wasNew = existedBefore === undefined ? !fileExistsForTool(cwd, filePath) : !existedBefore;
-	if (ctx?.state) ctx.state._writeWasNewFile = wasNew;
-	return wasNew;
-}
-
 function toolStatusDot(ctx: any, theme: Theme): string {
 	const status = ctx.state?._toolStatus as "pending" | "success" | "error" | undefined;
 	if (!claudeChromeEnabled()) {
@@ -2193,12 +1800,16 @@ function getBlinkingEntries(): BlinkEntry[] {
 		.slice(0, MAX_BLINKING_TOOLS);
 }
 
-function updateBlinkActiveStates(): void {
+function updateBlinkActiveStates(skipInvalidateKey?: any): void {
 	const activeSet = new Set(getBlinkingEntries().map((entry) => entry.key));
 	for (const entry of _blinkContexts.values()) {
 		const active = activeSet.has(entry.key);
 		if (entry.key?._blinkActive !== active) {
 			entry.key._blinkActive = active;
+			// setupBlinkTimer runs inside renderResult/updateDisplay. Invalidating the
+			// row currently being constructed is reentrant and Pi 0.85 appends the
+			// result region twice. Its state is already correct for this render.
+			if (entry.key === skipInvalidateKey) continue;
 			try { entry.invalidate(); } catch { /* noop */ }
 		}
 	}
@@ -2242,7 +1853,7 @@ function setupBlinkTimer(ctx: any): void {
 	}
 	_blinkContexts.set(key, { key, order: ++_blinkOrder, invalidate });
 	key._blinkActive = false;
-	updateBlinkActiveStates();
+	updateBlinkActiveStates(key);
 	_stopGlobalBlinkTimerIfEmpty();
 	_scheduleGlobalBlinkTimer();
 }
@@ -2371,6 +1982,10 @@ function wrapMarkedLine(line: string, width: number): string[] {
 	return wrapped.map((part, index) => (index === 0 ? `${prefix}${part}` : `${continuation}${part}`));
 }
 
+function renderToolTextLines(text: string, width: number): string[] {
+	return new ToolText(text).render(width);
+}
+
 class ToolText extends Text {
 	private value = "";
 	private toolCachedValue?: string;
@@ -2425,7 +2040,7 @@ function previewLimit(): number {
 
 function expandedPreviewLimit(): number {
 	const value = readSettings().values.expandedPreviewMaxLines;
-	return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : 4000;
+	return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : 150;
 }
 
 function bashCollapsedLimit(): number {
@@ -2648,6 +2263,28 @@ function buildPreviewText(lines: string[], expanded: boolean, theme: Theme, fall
 		text += `\n${theme.fg("warning", `(display capped at ${maxLines} lines)`)}`;
 	}
 	return text;
+}
+
+function visualPreviewText(
+	text: string,
+	width: number,
+	rows: number,
+	mode: VisualPreviewMode,
+	theme: Theme,
+	style: "dim" | "error",
+	options: { expandHint?: boolean; expandedCap?: boolean; laterQualifier?: "more" } = {},
+): string {
+	const preview = selectVisualPreview(text, Math.max(10, width - visibleWidth(CLAUDE_RESULT_PREFIX)), rows, mode);
+	const lines = preview.rows.map((line) => theme.fg(style, line || " "));
+	if (preview.hiddenPosition) {
+		const qualifier = preview.hiddenPosition === "earlier" ? " earlier" : options.laterQualifier ? ` ${options.laterQualifier}` : "";
+		const hint = options.expandHint ? " (ctrl+o to expand)" : "";
+		lines[preview.hiddenPosition === "earlier" ? "unshift" : "push"](
+			theme.fg("muted", `… +${preview.hiddenRows}${qualifier} lines${hint}`),
+		);
+		if (options.expandedCap) lines.push(theme.fg("warning", `(display capped at ${rows} lines)`));
+	}
+	return lines.join("\n");
 }
 
 // ===========================================================================
@@ -3204,45 +2841,82 @@ function adaptiveWrapRows(tw?: number): number {
 	return MAX_WRAP_ROWS_NARROW;
 }
 
-function fit(value: string, width: number): string {
-	if (width <= 0) return "";
-	const plain = diffStrip(value);
-	if (plain.length <= width) return value + " ".repeat(width - plain.length);
-	const showWidth = width > 2 ? width - 1 : width;
-	let vis = 0;
-	let i = 0;
-	while (i < value.length && vis < showWidth) {
-		if (value[i] === "\x1b") {
-			const end = value.indexOf("m", i);
+interface AnsiCell {
+	text: string;
+	width: number;
+}
+
+const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+/** ANSI escapes are zero-width cells; visible text advances by grapheme cluster. */
+function ansiCells(text: string): AnsiCell[] {
+	const cells: AnsiCell[] = [];
+	let index = 0;
+	let plainStart = 0;
+	const flushPlain = (end: number) => {
+		if (end <= plainStart) return;
+		for (const { segment } of graphemeSegmenter.segment(text.slice(plainStart, end))) {
+			cells.push({ text: segment, width: visibleWidth(segment) });
+		}
+	};
+	while (index < text.length) {
+		if (text[index] === "\x1b") {
+			const end = text.indexOf("m", index);
 			if (end !== -1) {
-				i = end + 1;
+				flushPlain(index);
+				cells.push({ text: text.slice(index, end + 1), width: 0 });
+				index = end + 1;
+				plainStart = index;
 				continue;
 			}
 		}
-		vis++;
-		i++;
+		index++;
 	}
-	return width > 2 ? `${value.slice(0, i)}${D_RST}${FG_DIM}›${D_RST}` : `${value.slice(0, i)}${D_RST}`;
+	flushPlain(text.length);
+	return cells;
+}
+
+function fit(value: string, width: number): string {
+	if (width <= 0) return "";
+	const valueWidth = visibleWidth(value);
+	if (valueWidth <= width) return value + " ".repeat(width - valueWidth);
+	const showWidth = width > 2 ? width - 1 : width;
+	let used = 0;
+	let out = "";
+	for (const cell of ansiCells(value)) {
+		if (cell.width > 0 && used + cell.width > showWidth) break;
+		out += cell.text;
+		used += cell.width;
+	}
+	return width > 2 ? `${out}${D_RST}${FG_DIM}›${D_RST}` : `${out}${D_RST}`;
 }
 
 function ansiState(text: string): string {
 	const matches = text.match(/\x1b\[[0-9;]*m/g) ?? [];
 	let fg = "";
 	let bg = "";
+	let bold = false;
+	let dim = false;
+	let italic = false;
 	for (const seq of matches) {
 		const params = seq.slice(2, -1);
 		if (params === "0") {
 			fg = "";
 			bg = "";
-		} else if (params === "39") {
-			fg = "";
-		} else if (params.startsWith("38;")) {
-			fg = seq;
-		} else if (params.startsWith("48;")) {
-			bg = seq;
-		}
+			bold = false;
+			dim = false;
+			italic = false;
+		} else if (params === "39") fg = "";
+		else if (params === "49") bg = "";
+		else if (params === "1") bold = true;
+		else if (params === "2") dim = true;
+		else if (params === "22") { bold = false; dim = false; }
+		else if (params === "3") italic = true;
+		else if (params === "23") italic = false;
+		else if (params.startsWith("38;")) fg = seq;
+		else if (params.startsWith("48;")) bg = seq;
 	}
-	return bg + fg;
+	return bg + fg + (bold ? D_BOLD : "") + (dim ? D_DIM : "") + (italic ? "\x1b[3m" : "");
 }
 
 function normalizeShikiContrast(ansi: string): string {
@@ -3259,67 +2933,54 @@ function normalizeShikiContrast(ansi: string): string {
 
 function wrapAnsi(text: string, width: number, maxRows = adaptiveWrapRows(), fillBg = ""): string[] {
 	if (width <= 0) return [""];
-	const plain = diffStrip(text);
-	if (plain.length <= width) {
-		const pad = width - plain.length;
+	const cells = ansiCells(text);
+	const totalWidth = cells.reduce((sum, cell) => sum + cell.width, 0);
+	if (totalWidth <= width) {
+		const pad = width - totalWidth;
 		return pad > 0 ? [text + fillBg + " ".repeat(pad) + (fillBg ? D_RST : "")] : [text];
 	}
 
 	const rows: string[] = [];
 	let row = "";
-	let vis = 0;
-	let i = 0;
+	let used = 0;
+	let cellIndex = 0;
 	let onLastRow = false;
 	let effectiveWidth = width;
-
-	while (i < text.length) {
+	while (cellIndex < cells.length) {
 		if (!onLastRow && rows.length >= maxRows - 1) {
 			onLastRow = true;
 			effectiveWidth = width > 2 ? width - 1 : width;
 		}
-		if (text[i] === "\x1b") {
-			const end = text.indexOf("m", i);
-			if (end !== -1) {
-				row += text.slice(i, end + 1);
-				i = end + 1;
-				continue;
-			}
+		const cell = cells[cellIndex];
+		if (cell.width === 0) {
+			row += cell.text;
+			cellIndex++;
+			continue;
 		}
-		if (vis >= effectiveWidth) {
+		if (used + cell.width > effectiveWidth && used > 0) {
 			if (onLastRow) {
-				let hasMore = false;
-				for (let j = i; j < text.length; j++) {
-					if (text[j] === "\x1b") {
-						const e2 = text.indexOf("m", j);
-						if (e2 !== -1) {
-							j = e2;
-							continue;
-						}
-					}
-					hasMore = true;
-					break;
-				}
+				const hasMore = cells.slice(cellIndex).some((remaining) => remaining.width > 0);
 				if (hasMore && width > 2) row += `${D_RST}${FG_DIM}›${D_RST}`;
-				else row += fillBg + " ".repeat(Math.max(0, width - vis)) + D_RST;
+				else row += fillBg + " ".repeat(Math.max(0, width - used)) + D_RST;
 				rows.push(row);
 				return rows;
 			}
 			const state = ansiState(row);
-			rows.push(row + D_RST);
+			rows.push(row + fillBg + " ".repeat(Math.max(0, width - used)) + D_RST);
 			row = state + fillBg;
-			vis = 0;
+			used = 0;
 			if (rows.length >= maxRows - 1) {
 				onLastRow = true;
 				effectiveWidth = width > 2 ? width - 1 : width;
 			}
+			continue;
 		}
-		row += text[i];
-		vis++;
-		i++;
+		row += cell.text;
+		used += cell.width;
+		cellIndex++;
 	}
-
 	if (row.length > 0 || rows.length === 0) {
-		rows.push(row + fillBg + " ".repeat(Math.max(0, width - vis)) + D_RST);
+		rows.push(row + fillBg + " ".repeat(Math.max(0, width - used)) + D_RST);
 	}
 	return rows;
 }
@@ -3546,6 +3207,87 @@ function getCachedParsedDiff(ctx: any, key: string, oldContent: string, newConte
 		ctx.state._parsedDiff = diff;
 	}
 	return diff;
+}
+
+function asParsedDiff(value: unknown): ParsedDiff | null {
+	if (!value || typeof value !== "object") return null;
+	const candidate = value as Partial<ParsedDiff>;
+	return Array.isArray(candidate.lines)
+		&& typeof candidate.added === "number"
+		&& typeof candidate.removed === "number"
+		&& typeof candidate.chars === "number"
+		? candidate as ParsedDiff
+		: null;
+}
+
+/** Rebuild our render model from pi's persisted standard unified patch. */
+export function parsePersistedEditPatch(patch: unknown): ParsedDiff | null {
+	if (typeof patch !== "string" || !patch.trim()) return null;
+	try {
+		const files = Diff.parsePatch(patch) as any[];
+		const lines: DiffLine[] = [];
+		let added = 0;
+		let removed = 0;
+		let chars = 0;
+		for (const file of files) {
+			for (const hunk of file?.hunks ?? []) {
+				if (lines.length > 0) lines.push({ type: "sep", oldNum: null, newNum: null, content: "" });
+				let oldNum = Number(hunk.oldStart) || 1;
+				let newNum = Number(hunk.newStart) || 1;
+				for (const raw of hunk.lines ?? []) {
+					if (raw === "\\ No newline at end of file") continue;
+					const marker = raw[0];
+					const content = raw.slice(1);
+					chars += content.length;
+					if (marker === "+") {
+						lines.push({ type: "add", oldNum: null, newNum, content });
+						newNum++;
+						added++;
+					} else if (marker === "-") {
+						lines.push({ type: "del", oldNum, newNum: null, content });
+						oldNum++;
+						removed++;
+					} else {
+						lines.push({ type: "ctx", oldNum, newNum, content });
+						oldNum++;
+						newNum++;
+					}
+				}
+			}
+		}
+		return lines.length > 0 ? { lines, added, removed, chars } : null;
+	} catch {
+		return null;
+	}
+}
+
+function diffContentWidth(width: number): number {
+	return Math.max(20, Math.min(MAX_TERM_WIDTH, Math.floor(width) - visibleWidth(CLAUDE_RESULT_PREFIX)));
+}
+
+function renderWidthAwareDiff(
+	lastComponent: unknown,
+	key: string,
+	placeholder: string,
+	summary: string,
+	diff: ParsedDiff,
+	language: BundledLanguage | undefined,
+	maxLines: number,
+	theme: Theme,
+	invalidate: () => void,
+) {
+	return diffCard(
+		lastComponent,
+		key,
+		placeholder,
+		async (width) => {
+			const rendered = await renderSplit(diff, language, maxLines, resolveDiffColors(theme), diffContentWidth(width));
+			return withFinalBranchBlock(`${summary}\n${rendered}`, theme);
+		},
+		invalidate,
+		renderToolTextLines,
+		withBranch(summary, theme),
+	);
 }
 
 function wordDiffAnalysis(
@@ -4099,64 +3841,48 @@ async function computeLocalizedEditDiffs(filePath: string, operations: Array<{ o
 	}
 }
 
-function renderEditPreviewBody(
-	ctx: any,
-	key: string,
+async function buildEditPreviewText(
 	theme: Theme,
 	language: BundledLanguage | undefined,
 	operations: Array<{ oldText: string; newText: string }>,
 	diffs: ParsedDiff[],
 	lines: number[],
 	summary: string,
-): void {
+	expanded: boolean,
+	width: number,
+): Promise<string> {
 	const dc = resolveDiffColors(theme);
-	const branchWidth = branchDiffWidth();
+	const branchWidth = diffContentWidth(width);
 	if (operations.length === 1) {
 		const [diff] = diffs;
-		const line = lines[0] ?? getFirstChangedNewLine(diff);
-		renderSplit(diff, language, ctx.expanded ? MAX_PREVIEW_LINES : 32, dc, branchWidth)
-			.then((rendered) => {
-				if (ctx.state._pk !== key) return;
-				ctx.state._ptBody = `${resultSentence(theme, describeEdit(diff.added, diff.removed, ccEmphasis()))}\n${rendered}`;
-				ctx.state._ptDisplay = indentBranchBlock(withBranch(ctx.state._ptBody, theme, false, true));
-				ctx.invalidate();
-			})
-			.catch(() => {
-				if (ctx.state._pk !== key) return;
-				ctx.state._ptBody = resultSentence(theme, describeEdit(diff.added, diff.removed, ccEmphasis()));
-				ctx.state._ptDisplay = indentBranchBlock(withBranch(ctx.state._ptBody, theme, false, true));
-				ctx.invalidate();
-			});
-		return;
+		const rendered = await renderSplit(diff, language, expanded ? MAX_PREVIEW_LINES : 32, dc, branchWidth);
+		return indentBranchBlock(withBranch(
+			`${resultSentence(theme, describeEdit(diff.added, diff.removed, ccEmphasis()))}\n${rendered}`,
+			theme,
+			false,
+			true,
+		));
 	}
-	const maxShown = ctx.expanded ? operations.length : Math.min(operations.length, 3);
-	const previewLines = ctx.expanded
+	const maxShown = expanded ? operations.length : Math.min(operations.length, 3);
+	const previewLines = expanded
 		? Math.max(6, Math.floor(MAX_RENDER_LINES / Math.max(1, maxShown)))
 		: Math.max(8, Math.floor(MAX_PREVIEW_LINES / Math.max(1, maxShown)));
-	Promise.all(
-		diffs.slice(0, maxShown).map((diff, index) => {
+	const sections = await Promise.all(
+		diffs.slice(0, maxShown).map(async (diff, index) => {
 			const line = lines[index] ?? getFirstChangedNewLine(diff);
-			return renderSplit(diff, language, previewLines, dc, branchWidth)
-				.then((rendered) => `Edit ${index + 1}/${operations.length}${formatLineMeta(line, theme)}\n${rendered}`)
-				.catch(() => `Edit ${index + 1}/${operations.length}${formatLineMeta(line, theme)} ${summarizeDiff(diff.added, diff.removed)}`);
+			try {
+				const rendered = await renderSplit(diff, language, previewLines, dc, branchWidth);
+				return `Edit ${index + 1}/${operations.length}${formatLineMeta(line, theme)}\n${rendered}`;
+			} catch {
+				return `Edit ${index + 1}/${operations.length}${formatLineMeta(line, theme)} ${summarizeDiff(diff.added, diff.removed)}`;
+			}
 		}),
-	)
-		.then((sections) => {
-			if (ctx.state._pk !== key) return;
-			const remainder = operations.length - maxShown;
-			const suffix = remainder > 0
-				? `\n${theme.fg("muted", `… ${remainder} more edit blocks${ctx.expanded ? "" : " (ctrl+o to expand)"}`)}`
-				: "";
-			ctx.state._ptBody = `${operations.length} edits ${summary}\n\n${sections.join("\n\n")}${suffix}`;
-			ctx.state._ptDisplay = indentBranchBlock(withBranch(ctx.state._ptBody, theme, false, true));
-			ctx.invalidate();
-		})
-		.catch(() => {
-			if (ctx.state._pk !== key) return;
-			ctx.state._ptBody = `${operations.length} edits ${summary}`;
-			ctx.state._ptDisplay = indentBranchBlock(withBranch(ctx.state._ptBody, theme, false, true));
-			ctx.invalidate();
-		});
+	);
+	const remainder = operations.length - maxShown;
+	const suffix = remainder > 0
+		? `\n${theme.fg("muted", `… ${remainder} more edit blocks${expanded ? "" : " (ctrl+o to expand)"}`)}`
+		: "";
+	return indentBranchBlock(withBranch(`${operations.length} edits ${summary}\n\n${sections.join("\n\n")}${suffix}`, theme, false, true));
 }
 
 function stripThinkingPresentationArtifacts(text: string): string {
@@ -4906,21 +4632,24 @@ function serverFromQualifiedName(qualified: string): string {
  * Generic over servers and over every naming convention — nothing is hardcoded.
  */
 export function mcpServerName(toolName: unknown, args: any): string {
+	const safeIdentifier = (value: unknown): string => sanitizeToolText(value).trim();
 	const name = typeof toolName === "string" ? toolName : "";
 
 	// A direct tool, whose server was recorded when the adapter registered it.
 	const registered = mcpToolServers.get(name);
-	if (registered) return registered;
+	if (registered) return safeIdentifier(registered);
 
 	// MCP tools exposed as mcp__<server>__<tool>.
 	const qualified = /^mcp__(.+?)__/.exec(name);
-	if (qualified) return qualified[1];
+	if (qualified) return safeIdentifier(qualified[1]);
 
-	// The proxy tool: the server is explicit, or inferable from the operand.
+	// The proxy tool: the server is explicit, or inferable from the operand. Both
+	// values can originate in streamed model arguments and must be safe before
+	// they enter an aggregate header or the per-component server cache.
 	const explicit = getStringArg(args, "server", "connect");
-	if (explicit) return explicit;
+	if (explicit) return safeIdentifier(explicit);
 	const operand = getStringArg(args, "tool", "describe");
-	return operand ? serverFromQualifiedName(operand) : "";
+	return operand ? safeIdentifier(serverFromQualifiedName(operand)) : "";
 }
 
 /**
@@ -4944,60 +4673,6 @@ function mcpServerForComponent(value: unknown): string {
  * Only reached when grouping is switched off — Claude Code shows no per-call MCP
  * row at all, so the aggregate clause normally renders instead of this.
  */
-/**
- * The effective MCP parameters as one compact line, or "" when there are none.
- *
- * Proxy mode carries them as a JSON *string* in `args.args`; direct mode passes
- * them as the argument object itself, where `tool`/`server` are routing keys
- * rather than parameters. Unparseable JSON is shown verbatim — whatever the
- * model sent is what ran, so it must be readable even when malformed.
- */
-/** Keys that address an MCP call rather than parameterise it (see getStringArg use above). */
-const MCP_ROUTING_KEYS = new Set(["tool", "args", "server", "connect", "search", "action", "describe"]);
-
-function mcpCallArgsText(name: string, args: any): string {
-	const render = (value: unknown): string => {
-		if (value === undefined || value === null) return "";
-		if (typeof value === "string") {
-			const trimmed = value.trim();
-			if (!trimmed) return "";
-			// Proxy mode sends "{}" for a no-parameter call: an empty envelope, not a
-			// parameter worth a slot in the header.
-			try {
-				const parsed = JSON.parse(trimmed);
-				if (parsed && typeof parsed === "object" && Object.keys(parsed).length === 0) return "";
-			} catch {
-				/* malformed: fall through and show it verbatim */
-			}
-			return trimmed;
-		}
-		try {
-			const json = JSON.stringify(value);
-			return !json || json === "{}" || json === "[]" ? "" : json;
-		} catch {
-			return "";
-		}
-	};
-	let text: string;
-	if (name === "mcp") {
-		text = render(args?.args);
-		if (!text) {
-			// Routing keys address the call; they are not parameters of it. Leaving
-			// them in undid the empty-envelope suppression above and printed
-			// `MCP(forgejo:get_my_user_info {"server":"forgejo"})` for a call that
-			// takes no parameters at all — the most common MCP row there is.
-			const rest: Record<string, unknown> = {};
-			for (const [key, value] of Object.entries((args ?? {}) as Record<string, unknown>)) {
-				if (!MCP_ROUTING_KEYS.has(key)) rest[key] = value;
-			}
-			text = render(rest);
-		}
-	} else {
-		text = render(args);
-	}
-	return sanitizeToolText(text).replace(/\s+/g, " ").trim();
-}
-
 function summarizeMcpToolCall(name: string, args: any, theme: Theme, expanded = false): string {
 	const server = mcpServerName(name, args);
 	// Expanded (ctrl+o) appends the parameters. Collapsed, an MCP call is hidden
@@ -5006,7 +4681,10 @@ function summarizeMcpToolCall(name: string, args: any, theme: Theme, expanded = 
 	// state. Claude Code shows MCP parameters in the row, so this is parity, and
 	// the collapsed line is untouched.
 	const params = expanded ? mcpCallArgsText(name, args) : "";
-	const withParams = (head: string): string => (params ? `${head} ${theme.fg("muted", params)}` : head);
+	const withParams = (head: string): string => {
+		const safeHead = sanitizeToolText(head);
+		return params ? `${safeHead} ${theme.fg("muted", params)}` : safeHead;
+	};
 
 	// A direct tool: the call *is* the MCP tool, so name it.
 	if (name !== "mcp") {
@@ -5454,14 +5132,17 @@ export default function (pi: ExtensionAPI): void {
 		return linkedPath(cwd, sp(path), resolve(cwd, path));
 	};
 
-	const readTool = createReadTool(cwd);
+	const readTool = createReadToolDefinition(cwd);
 	if (shouldRegisterBuiltinToolOverride(pi, "read")) pi.registerTool({
 		name: "read",
 		label: "read",
 		description: readTool.description,
 		parameters: readTool.parameters,
-		async execute(toolCallId, params, signal, onUpdate) {
-			return readTool.execute(toolCallId, params, signal, onUpdate);
+		...forwardedToolContract(readTool),
+		async execute(toolCallId, params, signal, onUpdate, ctx) {
+			const runtimeCwd = ctx?.cwd ?? cwd;
+			const { autoResizeImages } = hostToolSettings(runtimeCwd);
+			return createReadToolDefinition(runtimeCwd, { autoResizeImages }).execute(toolCallId, params, signal, onUpdate, ctx);
 		},
 		renderCall(args, theme, ctx) {
 			syncToolCallStatus(ctx);
@@ -5491,26 +5172,39 @@ export default function (pi: ExtensionAPI): void {
 			const lines = content.text.split("\n");
 			// A failed read is not content: reporting it as "1 line loaded" hides the error.
 			if (ctx.isError) {
-				const preview = buildPreviewText(lines.map((line) => theme.fg("error", line || " ")), expanded, theme, previewLimit());
-				return makeText(ctx.lastComponent, withBranch(preview, theme));
+				const key = `read-error:${hashText(content.text)}:${expanded ? 1 : 0}`;
+				return widthAwareText(ctx.lastComponent, key, (width) => {
+					const rows = collapsedPreviewCount(expanded, previewLimit());
+					const preview = visualPreviewText(content.text, width, rows, "head", theme, "error", {
+						expandHint: !expanded,
+						expandedCap: expanded,
+					});
+					return renderToolTextLines(withBranch(preview || theme.fg("error", "No text content"), theme), width);
+				}, getSettingsRevision);
 			}
 			let text = theme.fg("muted", `${plural(lines.length, "line")} loaded`);
 			if (details?.truncation?.truncated) text += theme.fg("warning", " (truncated)");
 			if (!expanded) return makeText(ctx.lastComponent, withBranch(`${text}${theme.fg("muted", " (ctrl+o to expand)")}`, theme));
-			const shown = lines.slice(0, previewLimit());
-			text += `\n${buildPreviewText(shown.map((line) => theme.fg("dim", line || " ")), false, theme, previewLimit())}`;
-			return makeText(ctx.lastComponent, withBranch(text, theme));
+			const key = `read-expanded:${hashText(content.text)}`;
+			return widthAwareText(ctx.lastComponent, key, (width) => {
+				const rows = expandedPreviewLimit();
+				const preview = visualPreviewText(content.text, width, rows, "head", theme, "dim", { expandedCap: true });
+				return renderToolTextLines(withBranch(`${text}\n${preview}`, theme), width);
+			}, getSettingsRevision);
 		},
 	});
 
-	const bashTool = createBashTool(cwd);
+	const bashTool = createBashToolDefinition(cwd);
 	if (shouldRegisterBuiltinToolOverride(pi, "bash")) pi.registerTool({
 		name: "bash",
 		label: "bash",
 		description: bashTool.description,
 		parameters: bashTool.parameters,
-		async execute(toolCallId, params, signal, onUpdate) {
-			return bashTool.execute(toolCallId, params, signal, onUpdate);
+		...forwardedToolContract(bashTool),
+		async execute(toolCallId, params, signal, onUpdate, ctx) {
+			const runtimeCwd = ctx?.cwd ?? cwd;
+			const { shellPath, commandPrefix } = hostToolSettings(runtimeCwd);
+			return createBashToolDefinition(runtimeCwd, { shellPath, commandPrefix }).execute(toolCallId, params, signal, onUpdate, ctx);
 		},
 		renderCall(args, theme, ctx) {
 			syncToolCallStatus(ctx);
@@ -5538,28 +5232,18 @@ export default function (pi: ExtensionAPI): void {
 			if (isPartial) {
 				setupBlinkTimer(ctx);
 				const running = semantic?.kind === "read" ? "Reading" : "Running";
-				let text = theme.fg("warning", `${running}... (${nonEmpty.length} lines)`);
-				// Running output is ALWAYS a bounded preview, even after a click or
-				// ctrl+o dissolves the aggregate into a native Bash row. Expansion
-				// changes the interaction surface, not the streaming-output budget;
-				// settled expanded output has its own expandedPreviewMaxLines setting.
-				if (nonEmpty.length > 0) {
-					const limit = bashCollapsedLimit();
-					if (bashRunningPreview() === "tail") {
-						const tail = nonEmpty.slice(-limit);
-						const lines = tail.map((line) => theme.fg("dim", line));
-						// Without this, a truncated tail reads as the whole output —
-						// the count in the header is not enough to say lines are hidden.
-						if (tail.length < nonEmpty.length) lines.unshift(theme.fg("muted", `… +${nonEmpty.length - tail.length} earlier lines`));
-						text += `\n${lines.join("\n")}`;
-					} else {
-						const head = nonEmpty.slice(0, limit);
-						const lines = head.map((line) => theme.fg("dim", line));
-						if (head.length < nonEmpty.length) lines.push(theme.fg("muted", `… +${nonEmpty.length - head.length} more lines`));
-						text += `\n${lines.join("\n")}`;
+				const key = `bash-running:${hashText(output)}`;
+				return widthAwareText(ctx.lastComponent, key, (width) => {
+					const previewMode = bashRunningPreview();
+					const previewRows = bashCollapsedLimit();
+					let text = theme.fg("warning", `${running}... (${nonEmpty.length} lines)`);
+					// Budget after wrapping: one minified 50 KB line must not become
+					// hundreds of terminal rows merely because the logical-line count is 1.
+					if (nonEmpty.length > 0) {
+						text += `\n${visualPreviewText(nonEmpty.join("\n"), width, previewRows, previewMode, theme, "dim", { laterQualifier: "more" })}`;
 					}
-				}
-				return makeText(ctx.lastComponent, withBranch(text, theme));
+					return renderToolTextLines(withBranch(text, theme), width);
+				}, getSettingsRevision);
 			}
 			clearBlinkTimer(ctx);
 			setToolStatus(ctx, ctx.isError ? "error" : "success");
@@ -5577,8 +5261,15 @@ export default function (pi: ExtensionAPI): void {
 			if (mode === "summary") return makeText(ctx.lastComponent, withBranch(text, theme));
 			if (mode === "preview") {
 				if (nonEmpty.length === 0) return makeText(ctx.lastComponent, withBranch(text, theme));
-				const preview = buildPreviewText(nonEmpty.map((line) => theme.fg(isError ? "error" : "dim", line)), expanded, theme, bashCollapsedLimit());
-				return makeText(ctx.lastComponent, withBranch(`${text}\n${preview}`, theme));
+				const key = `bash-preview:${hashText(output)}:${expanded ? 1 : 0}`;
+				return widthAwareText(ctx.lastComponent, key, (width) => {
+					const rows = collapsedPreviewCount(expanded, bashCollapsedLimit());
+					const preview = visualPreviewText(nonEmpty.join("\n"), width, rows, "head", theme, isError ? "error" : "dim", {
+						expandHint: !expanded,
+						expandedCap: expanded,
+					});
+					return renderToolTextLines(withBranch(`${text}\n${preview}`, theme), width);
+				}, getSettingsRevision);
 			}
 
 			if (!expanded && nonEmpty.length > 0) {
@@ -5586,19 +5277,25 @@ export default function (pi: ExtensionAPI): void {
 				return makeText(ctx.lastComponent, withBranch(`${text}${hint}`, theme));
 			}
 			if (!expanded) return makeText(ctx.lastComponent, withBranch(text, theme));
-			text += `\n${buildPreviewText(nonEmpty.map((line) => theme.fg(isError ? "error" : "dim", line)), true, theme, bashCollapsedLimit())}`;
-			return makeText(ctx.lastComponent, withBranch(text, theme));
+			const key = `bash-expanded:${hashText(output)}`;
+			return widthAwareText(ctx.lastComponent, key, (width) => {
+				const rows = expandedPreviewLimit();
+				const preview = visualPreviewText(nonEmpty.join("\n"), width, rows, "head", theme, isError ? "error" : "dim", { expandedCap: true });
+				return renderToolTextLines(withBranch(`${text}\n${preview}`, theme), width);
+			}, getSettingsRevision);
 		},
 	});
 
-	const grepTool = createGrepTool(cwd);
+	const grepTool = createGrepToolDefinition(cwd);
 	if (shouldRegisterBuiltinToolOverride(pi, "grep")) pi.registerTool({
 		name: "grep",
 		label: "grep",
 		description: grepTool.description,
 		parameters: grepTool.parameters,
-		async execute(toolCallId, params, signal, onUpdate) {
-			return grepTool.execute(toolCallId, params, signal, onUpdate);
+		...forwardedToolContract(grepTool),
+		async execute(toolCallId, params, signal, onUpdate, ctx) {
+			const runtimeCwd = ctx?.cwd ?? cwd;
+			return createGrepToolDefinition(runtimeCwd).execute(toolCallId, params, signal, onUpdate, ctx);
 		},
 		renderCall(args, theme, ctx) {
 			syncToolCallStatus(ctx);
@@ -5624,19 +5321,25 @@ export default function (pi: ExtensionAPI): void {
 			let text = theme.fg("muted", `${matches.length} matches`);
 			if (details?.truncation?.truncated) text += theme.fg("warning", " (truncated)");
 			if (!expanded) return makeText(ctx.lastComponent, withBranch(`${text}${theme.fg("muted", " (ctrl+o to expand)")}`, theme));
-			text += `\n${buildPreviewText(matches.map((line) => theme.fg("dim", line)), false, theme, previewLimit())}`;
-			return makeText(ctx.lastComponent, withBranch(text, theme));
+			const rawMatches = matches.join("\n");
+			const key = `grep-expanded:${hashText(rawMatches)}`;
+			return widthAwareText(ctx.lastComponent, key, (width) => {
+				const preview = visualPreviewText(rawMatches, width, expandedPreviewLimit(), "head", theme, "dim", { expandedCap: true });
+				return renderToolTextLines(withBranch(`${text}\n${preview}`, theme), width);
+			}, getSettingsRevision);
 		},
 	});
 
-	const findTool = createFindTool(cwd);
+	const findTool = createFindToolDefinition(cwd);
 	if (shouldRegisterBuiltinToolOverride(pi, "find")) pi.registerTool({
 		name: "find",
 		label: "find",
 		description: findTool.description,
 		parameters: findTool.parameters,
-		async execute(toolCallId, params, signal, onUpdate) {
-			return findTool.execute(toolCallId, params, signal, onUpdate);
+		...forwardedToolContract(findTool),
+		async execute(toolCallId, params, signal, onUpdate, ctx) {
+			const runtimeCwd = ctx?.cwd ?? cwd;
+			return createFindToolDefinition(runtimeCwd).execute(toolCallId, params, signal, onUpdate, ctx);
 		},
 		renderCall(args, theme, ctx) {
 			syncToolCallStatus(ctx);
@@ -5660,32 +5363,29 @@ export default function (pi: ExtensionAPI): void {
 			if (items.length === 0) return makeText(ctx.lastComponent, withBranch(theme.fg("muted", "no files found"), theme));
 			let text = theme.fg("muted", `${items.length} files`);
 			if (!expanded) return makeText(ctx.lastComponent, withBranch(`${text}${theme.fg("muted", " (ctrl+o to expand)")}`, theme));
-			// Expanded: grouped find results with icons
-			const maxShow = previewLimit();
-			const shown = items.slice(0, maxShow);
-			const findLines: string[] = [];
-			for (let i = 0; i < shown.length; i++) {
-				const item = shown[i].trim();
-				const icon = fileIcon(item);
-				findLines.push(`  ${icon}${theme.fg("dim", item)}`);
-			}
-			const remaining = items.length - shown.length;
-			if (remaining > 0) {
-				findLines.push(`  ${theme.fg("muted", `… ${remaining} more files`)}`);
-			}
-			text += `\n${findLines.join('\n')}`;
-			return makeText(ctx.lastComponent, withBranch(text, theme));
+			const rawItems = items.join("\n");
+			const key = `find-expanded:${hashText(rawItems)}`;
+			return widthAwareText(ctx.lastComponent, key, (width) => {
+				const selected = selectVisualItems(items, (item) => item.trim(), Math.max(10, width - 10), expandedPreviewLimit());
+				const findLines = selected.rows.map((row) => row.continuation
+					? `    ${theme.fg("dim", row.text)}`
+					: `  ${fileIcon(row.item.trim())}${theme.fg("dim", row.text)}`);
+				if (selected.hiddenItems > 0) findLines.push(`  ${theme.fg("muted", `… ${selected.hiddenItems} more files`)}`);
+				return renderToolTextLines(withBranch(`${text}\n${findLines.join("\n")}`, theme), width);
+			}, getSettingsRevision);
 		},
 	});
 
-	const lsTool = createLsTool(cwd);
+	const lsTool = createLsToolDefinition(cwd);
 	if (shouldRegisterBuiltinToolOverride(pi, "ls")) pi.registerTool({
 		name: "ls",
 		label: "ls",
 		description: lsTool.description,
 		parameters: lsTool.parameters,
-		async execute(toolCallId, params, signal, onUpdate) {
-			return lsTool.execute(toolCallId, params, signal, onUpdate);
+		...forwardedToolContract(lsTool),
+		async execute(toolCallId, params, signal, onUpdate, ctx) {
+			const runtimeCwd = ctx?.cwd ?? cwd;
+			return createLsToolDefinition(runtimeCwd).execute(toolCallId, params, signal, onUpdate, ctx);
 		},
 		renderCall(args, theme, ctx) {
 			syncToolCallStatus(ctx);
@@ -5705,53 +5405,48 @@ export default function (pi: ExtensionAPI): void {
 			if (items.length === 0) return makeText(ctx.lastComponent, withBranch(theme.fg("muted", "empty directory"), theme));
 			let text = theme.fg("muted", `${items.length} entries`);
 			if (!expanded) return makeText(ctx.lastComponent, withBranch(`${text}${theme.fg("muted", " (ctrl+o to expand)")}`, theme));
-			// Expanded: tree-view with icons
-			const maxShow = previewLimit();
-			const shown = items.slice(0, maxShow);
-			const treeLines: string[] = [];
-			for (let i = 0; i < shown.length; i++) {
-				const item = shown[i];
-				const isDir = item.endsWith("/");
-				const isLast = i === shown.length - 1 && items.length <= maxShow;
-				const prefix = isLast ? `${FG_RULE}\u2514\u2500\u2500${D_RST} ` : `${FG_RULE}\u251c\u2500\u2500${D_RST} `;
-				const icon = isDir ? dirIcon() : fileIcon(item);
-				const name = isDir ? theme.fg("accent", theme.bold(item)) : theme.fg("dim", item);
-				treeLines.push(`${prefix}${icon}${name}`);
-			}
-			const remaining = items.length - shown.length;
-			if (remaining > 0) {
-				treeLines.push(`${FG_RULE}\u2514\u2500\u2500${D_RST} ${theme.fg("muted", `\u2026 ${remaining} more entries`)}`);
-			}
-			text += `\n${treeLines.join('\n')}`;
-			return makeText(ctx.lastComponent, withBranch(text, theme));
+			const rawItems = items.join("\n");
+			const key = `ls-expanded:${hashText(rawItems)}`;
+			return widthAwareText(ctx.lastComponent, key, (width) => {
+				const selected = selectVisualItems(items, (item) => item, Math.max(10, width - 12), expandedPreviewLimit());
+				const treeLines = selected.rows.map((row, index) => {
+					if (row.continuation) return `${FG_RULE}│${D_RST}    ${theme.fg("dim", row.text)}`;
+					const isDir = row.item.endsWith("/");
+					const isLast = index === selected.rows.length - 1 && selected.hiddenItems === 0;
+					const prefix = isLast ? `${FG_RULE}└──${D_RST} ` : `${FG_RULE}├──${D_RST} `;
+					const icon = isDir ? dirIcon() : fileIcon(row.item);
+					const name = isDir ? theme.fg("accent", theme.bold(row.text)) : theme.fg("dim", row.text);
+					return `${prefix}${icon}${name}`;
+				});
+				if (selected.hiddenItems > 0) treeLines.push(`${FG_RULE}└──${D_RST} ${theme.fg("muted", `… ${selected.hiddenItems} more entries`)}`);
+				return renderToolTextLines(withBranch(`${text}\n${treeLines.join("\n")}`, theme), width);
+			}, getSettingsRevision);
 		},
 	});
 
-	const writeTool = createWriteTool(cwd);
+	const writeTool = createWriteToolDefinition(cwd);
 	if (shouldRegisterBuiltinToolOverride(pi, "write")) pi.registerTool({
 		name: "write",
 		label: "write",
 		description: writeTool.description,
 		parameters: writeTool.parameters,
-		async execute(toolCallId, params, signal, onUpdate, _ctx) {
+		...forwardedToolContract(writeTool),
+		async execute(toolCallId, params, signal, onUpdate, ctx) {
+			const runtimeCwd = ctx?.cwd ?? cwd;
 			const fp = params.path ?? (params as any).file_path ?? "";
-			const fullPath = fp ? resolve(cwd, fp) : "";
-			const existedBefore = !!fullPath && fileExistsForTool(cwd, fp);
-			WRITE_EXISTED_BEFORE.set(toolCallId, existedBefore);
-			let old: string | null = null;
-			try {
-				if (fullPath && existedBefore) old = readFileSync(fullPath, "utf-8");
-			} catch {
-				old = null;
-			}
-			const result = await writeTool.execute(toolCallId, params, signal, onUpdate);
+			const fullPath = fp ? resolve(runtimeCwd, fp) : "";
+			const snapshot = captureWriteSnapshot(fullPath);
+			const result = await createWriteToolDefinition(runtimeCwd).execute(toolCallId, params, signal, onUpdate, ctx);
 			const content = params.content ?? "";
-			if (old !== null && old !== content) {
-				const diff = parseDiff(old, content);
+			const omission = writeDiffOmissionReason(snapshot, content);
+			if (omission) {
+				(result as any).details = { _type: "diffOmitted", reason: omission, filePath: fp, lines: lineCount(content) };
+			} else if (snapshot.kind === "content" && snapshot.content !== content) {
+				const diff = parseDiff(snapshot.content, content);
 				(result as any).details = { _type: "diff", summary: summarizeDiff(diff.added, diff.removed), diff, language: lang(fp) };
-			} else if (old === null) {
+			} else if (snapshot.kind === "new") {
 				(result as any).details = { _type: "new", lines: lineCount(content), filePath: fp };
-			} else if (old === content) {
+			} else if (snapshot.kind === "content" && snapshot.content === content) {
 				(result as any).details = { _type: "noChange" };
 			}
 			return result;
@@ -5772,7 +5467,6 @@ export default function (pi: ExtensionAPI): void {
 			}
 			clearBlinkTimer(ctx);
 			setToolStatus(ctx, ctx.isError ? "error" : "success");
-			if (typeof ctx?.toolCallId === "string") WRITE_EXISTED_BEFORE.delete(ctx.toolCallId);
 			if (ctx.isError) {
 				const e =
 					result.content
@@ -5782,32 +5476,28 @@ export default function (pi: ExtensionAPI): void {
 				return makeText(ctx.lastComponent, withBranch(theme.fg("error", e), theme));
 			}
 			const d = (result as any).details;
-			if (d?._type === "diff") {
+			if (d?._type === "diff" && d.diff?.lines) {
 				const previewLines = ctx.expanded ? MAX_RENDER_LINES : diffCollapsedLimit();
-				const hunks = d.diff?.lines?.filter((l: any) => l.type === "sep").length + (d.diff?.lines?.length ? 1 : 0);
-				const diffWidth = branchDiffWidth();
-				const mode = shouldUseSplit(d.diff, diffWidth, previewLines) ? "split" : "unified";
 				const richSummary = resultSentence(theme, describeWrite(writtenLineCount(ctx.args?.content ?? ""), spl(ctx.args?.path ?? (ctx.args as any)?.file_path ?? ""), ccEmphasis()));
-				const key = `wd:${diffWidth}:${d.summary}:${d.diff?.lines?.length ?? 0}:${d.language ?? ""}:${ctx.expanded ? 1 : 0}`;
-				if (ctx.state._wdk !== key) {
-					ctx.state._wdk = key;
-					ctx.state._wdt = withFinalBranchBlock(`${richSummary}\n${theme.fg("muted", "rendering diff…")}`, theme);
-					const dc = resolveDiffColors(theme);
-					renderSplit(d.diff, d.language, previewLines, dc, diffWidth)
-						.then((rendered) => {
-							if (ctx.state._wdk !== key) return;
-							ctx.state._wdt = withFinalBranchBlock(`${richSummary}\n${rendered}`, theme);
-							ctx.invalidate();
-						})
-						.catch(() => {
-							if (ctx.state._wdk !== key) return;
-							ctx.state._wdt = withBranch(richSummary, theme);
-							ctx.invalidate();
-						});
-				}
-				return makeText(ctx.lastComponent, ctx.state._wdt ?? withBranch(richSummary, theme));
+				const key = `write:${hashText(JSON.stringify(d.diff))}:${d.language ?? ""}:${ctx.expanded ? 1 : 0}:${getSettingsRevision()}`;
+				return renderWidthAwareDiff(
+					ctx.lastComponent,
+					key,
+					withFinalBranchBlock(`${richSummary}\n${theme.fg("muted", "rendering diff…")}`, theme),
+					richSummary,
+					d.diff,
+					d.language,
+					previewLines,
+					theme,
+					ctx.invalidate,
+				);
 			}
 			if (d?._type === "noChange") return makeText(ctx.lastComponent, withBranch(theme.fg("muted", "✓ no changes"), theme));
+			if (d?._type === "diffOmitted") {
+				const summary = resultSentence(theme, describeWrite(writtenLineCount(ctx.args?.content ?? ""), spl(d.filePath ?? ""), ccEmphasis()));
+				const reason = d.reason === "oversized" ? "diff omitted: file too large" : "diff omitted: source unavailable";
+				return makeText(ctx.lastComponent, withBranch(`${summary} ${theme.fg("muted", `(${reason})`)}`, theme));
+			}
 			if (d?._type === "new") {
 				const content = typeof ctx.args?.content === "string" ? ctx.args.content : "";
 				const lineTotal = writtenLineCount(content);
@@ -5815,44 +5505,41 @@ export default function (pi: ExtensionAPI): void {
 				const syntheticDiff = getCachedParsedDiff(ctx, `nf-diff:${d.filePath}:${contentHash}`, "", content);
 				const richSummary = resultSentence(theme, describeWrite(lineTotal, spl(d.filePath ?? ""), ccEmphasis()));
 				const previewLines = ctx.expanded ? MAX_RENDER_LINES : diffCollapsedLimit();
-				const diffWidth = branchDiffWidth();
-				const pk = `nf:${d.filePath}:${contentHash}:${diffWidth}:${ctx.expanded ? 1 : 0}`;
-				if (ctx.state._nfk !== pk) {
-					ctx.state._nfk = pk;
-					ctx.state._nft = withFinalBranchBlock(`${richSummary}\n${theme.fg("muted", "rendering diff…")}`, theme);
-					const dc = resolveDiffColors(theme);
-					const body = claudeDiffPaletteEnabled()
-						? renderFileListing(content, lang(d.filePath), previewLines, diffWidth)
-						: renderUnified(syntheticDiff, lang(d.filePath), previewLines, dc, diffWidth);
-					body
-						.then((rendered) => {
-							if (ctx.state._nfk !== pk) return;
-							ctx.state._nft = withFinalBranchBlock(`${richSummary}\n${rendered}`, theme);
-							ctx.invalidate();
-						})
-						.catch(() => {
-							if (ctx.state._nfk !== pk) return;
-							ctx.state._nft = withBranch(richSummary, theme);
-							ctx.invalidate();
-						});
-				}
-				return makeText(ctx.lastComponent, ctx.state._nft ?? withBranch(richSummary, theme));
+				const language = lang(d.filePath);
+				const key = `new-file:${d.filePath}:${contentHash}:${ctx.expanded ? 1 : 0}:${getSettingsRevision()}`;
+				return diffCard(
+					ctx.lastComponent,
+					key,
+					withFinalBranchBlock(`${richSummary}\n${theme.fg("muted", "rendering diff…")}`, theme),
+					async (width) => {
+						const bodyWidth = diffContentWidth(width);
+						const rendered = claudeDiffPaletteEnabled()
+							? await renderFileListing(content, language, previewLines, bodyWidth)
+							: await renderUnified(syntheticDiff, language, previewLines, resolveDiffColors(theme), bodyWidth);
+						return withFinalBranchBlock(`${richSummary}\n${rendered}`, theme);
+					},
+					ctx.invalidate,
+					renderToolTextLines,
+					withBranch(richSummary, theme),
+				);
 			}
 			return makeText(ctx.lastComponent, withBranch(theme.fg("success", "Written"), theme));
 		},
 	});
 
-	const editTool = createEditTool(cwd);
+	const editTool = createEditToolDefinition(cwd);
 	if (shouldRegisterBuiltinToolOverride(pi, "edit")) pi.registerTool({
 		name: "edit",
 		label: "edit",
 		description: editTool.description,
 		parameters: editTool.parameters,
-		async execute(toolCallId, params, signal, onUpdate, _ctx) {
+		...forwardedToolContract(editTool),
+		async execute(toolCallId, params, signal, onUpdate, ctx) {
+			const runtimeCwd = ctx?.cwd ?? cwd;
 			const fp = params.path ?? (params as any).file_path ?? "";
 			const operations = getEditOperations(params);
-			const localizedDiffs = operations.length === 1 ? await computeLocalizedEditDiffs(fp, operations, cwd) : null;
-			const result = await editTool.execute(toolCallId, params, signal, onUpdate);
+			const localizedDiffs = operations.length === 1 ? await computeLocalizedEditDiffs(fp, operations, runtimeCwd) : null;
+			const result = await createEditToolDefinition(runtimeCwd).execute(toolCallId, params, signal, onUpdate, ctx);
 			if (operations.length === 0) return result;
 			const { diffs, summary, totalLines, totalHunks } = summarizeEditOperations(operations);
 			const baseDetails = (((result as any).details ?? {}) as Record<string, unknown>);
@@ -5868,6 +5555,10 @@ export default function (pi: ExtensionAPI): void {
 					hunks: countDiffHunks(diff),
 					added: diff?.added ?? 0,
 					removed: diff?.removed ?? 0,
+					// Persist the render model with the tool result. ctx.state and the
+					// pre-edit filesystem are both gone after /reload or restart.
+					parsedDiff: diff,
+					language: lang(fp),
 				};
 				return result;
 			}
@@ -5880,6 +5571,9 @@ export default function (pi: ExtensionAPI): void {
 				hunks: totalHunks,
 				totalAdded: diffs.reduce((sum, diff) => sum + diff.added, 0),
 				totalRemoved: diffs.reduce((sum, diff) => sum + diff.removed, 0),
+				parsedDiffs: diffs,
+				editLines: diffs.map((diff) => getFirstChangedNewLine(diff)),
+				language: lang(fp),
 			};
 			return result;
 		},
@@ -5890,29 +5584,28 @@ export default function (pi: ExtensionAPI): void {
 			const summary = stableCallSummary(ctx, "_callSummary", () => shouldRevealCallArgs(ctx) && operations.length > 1 ? `${spl(fp)} ${theme.fg("muted", `(${operations.length} edits)`)}` : spl(fp), revealSummary);
 			syncToolCallStatus(ctx);
 			const hdr = toolHeader("Update", summary, theme, toolStatusDot(ctx, theme));
-			if (!(ctx.argsComplete && operations.length > 0)) return makeText(ctx.lastComponent, hdr);
-			const diffWidth = branchDiffWidth();
-			const key = `edit:${fp}:${hashText(operations.map((edit) => `${edit.oldText}\u0000${edit.newText}`).join("\u0001"))}:${diffWidth}:${ctx.expanded ? 1 : 0}`;
+			// Before/during execution the call owns the preview. Once settled, the
+			// result component renders from persisted result.details so reload does
+			// not depend on ctx.state or the already-modified filesystem.
+			if (ctx.isPartial === false || !(ctx.argsComplete && operations.length > 0)) return makeText(ctx.lastComponent, hdr);
+			const key = `edit-call:${fp}:${hashText(operations.map((edit) => `${edit.oldText}\u0000${edit.newText}`).join("\u0001"))}:${ctx.expanded ? 1 : 0}:${getSettingsRevision()}`;
 			const { diffs: fallbackDiffs, summary: editSummary } = getCachedEditOperationSummary(ctx, key, operations);
-			if (ctx.state._pk !== key) {
-				ctx.state._pk = key;
-				ctx.state._ptBody = theme.fg("muted", "(rendering…)");
-				ctx.state._ptDisplay = indentBranchBlock(withBranch(ctx.state._ptBody, theme, false, true));
-				const lg = lang(fp);
-				void computeLocalizedEditDiffs(fp, operations, cwd)
-					.then((localizedDiffs) => {
-						if (ctx.state._pk !== key) return;
-						const diffs = localizedDiffs?.map((entry) => entry.diff) ?? fallbackDiffs;
-						const lines = localizedDiffs?.map((entry) => entry.line) ?? diffs.map((diff) => getFirstChangedNewLine(diff));
-						renderEditPreviewBody(ctx, key, theme, lg, operations, diffs, lines, editSummary);
-					})
-					.catch(() => {
-						if (ctx.state._pk !== key) return;
-						renderEditPreviewBody(ctx, key, theme, lg, operations, fallbackDiffs, fallbackDiffs.map((diff) => getFirstChangedNewLine(diff)), editSummary);
-					});
-			}
-			const body = ctx.state._ptDisplay as string | undefined;
-			return makeText(ctx.lastComponent, body ? `${hdr}\n${body}` : hdr);
+			const placeholder = `${hdr}\n${indentBranchBlock(withBranch(theme.fg("muted", "(rendering diff…)"), theme, false, true))}`;
+			return diffCard(
+				ctx.lastComponent,
+				key,
+				placeholder,
+				async (width) => {
+					const localized = await computeLocalizedEditDiffs(fp, operations, ctx.cwd ?? cwd).catch(() => null);
+					const diffs = localized?.map((entry) => entry.diff) ?? fallbackDiffs;
+					const lines = localized?.map((entry) => entry.line) ?? diffs.map(getFirstChangedNewLine);
+					const body = await buildEditPreviewText(theme, lang(fp), operations, diffs, lines, editSummary, ctx.expanded === true, width);
+					return `${hdr}\n${body}`;
+				},
+				ctx.invalidate,
+				renderToolTextLines,
+				hdr,
+			);
 		},
 		renderResult(result, { isPartial }, theme, ctx) {
 			if (isPartial) {
@@ -5929,15 +5622,48 @@ export default function (pi: ExtensionAPI): void {
 						.join("\n") ?? "Error";
 				return makeText(ctx.lastComponent, indentBranchBlock(withBranch(theme.fg("error", e), theme)));
 			}
-			// renderCall already emitted "Added N lines, removed M lines" above the diff.
-			// Repeating it here is what produced a duplicate ⎿ row.
-			if ((result as any).details?._type === "editInfo") {
-				return makeText(ctx.lastComponent, "");
+			const details = ((result as any).details ?? {}) as Record<string, any>;
+			const operations = getEditOperations(ctx.args);
+			const fallback = operations.length > 0 ? summarizeEditOperations(operations) : null;
+			let diffs = Array.isArray(details.parsedDiffs)
+				? details.parsedDiffs.map(asParsedDiff).filter(Boolean) as ParsedDiff[]
+				: [];
+			let displayOperations = operations;
+			let lines = Array.isArray(details.editLines) ? details.editLines.filter((line: unknown) => typeof line === "number") : [];
+			const singlePersisted = asParsedDiff(details.parsedDiff);
+			if (diffs.length === 0 && singlePersisted) diffs = [singlePersisted];
+			if (diffs.length === 0) {
+				const fromPatch = parsePersistedEditPatch(details.patch);
+				if (fromPatch) {
+					diffs = [fromPatch];
+					displayOperations = [operations[0] ?? { oldText: "", newText: "" }];
+				}
 			}
-			if ((result as any).details?._type === "multiEditInfo") {
-				const { editCount } = (result as any).details;
-				return makeText(ctx.lastComponent, editCount > 1 ? withBranch(theme.fg("muted", `${editCount} edits`), theme) : "");
+			if (diffs.length === 0 && fallback) diffs = fallback.diffs;
+			if (lines.length === 0 && typeof details.editLine === "number") lines = [details.editLine];
+			if (lines.length === 0) lines = diffs.map(getFirstChangedNewLine);
+
+			if (diffs.length > 0) {
+				if (displayOperations.length !== diffs.length) {
+					displayOperations = diffs.map((_, index) => operations[index] ?? { oldText: "", newText: "" });
+				}
+				const summary = fallback?.summary ?? summarizeDiff(
+					diffs.reduce((total, diff) => total + diff.added, 0),
+					diffs.reduce((total, diff) => total + diff.removed, 0),
+				);
+				const key = `edit-result:${hashText(JSON.stringify(diffs))}:${ctx.expanded ? 1 : 0}:${getSettingsRevision()}`;
+				const placeholder = indentBranchBlock(withBranch(theme.fg("muted", "(rendering diff…)"), theme, false, true));
+				return diffCard(
+					ctx.lastComponent,
+					key,
+					placeholder,
+					(width) => buildEditPreviewText(theme, details.language ?? lang(ctx.args?.path ?? ""), displayOperations, diffs, lines, summary, ctx.expanded === true, width),
+					ctx.invalidate,
+					renderToolTextLines,
+					withBranch(theme.fg("success", "Applied"), theme),
+				);
 			}
+
 			return makeText(ctx.lastComponent, indentBranchBlock(withBranch(theme.fg("success", "Applied"), theme)));
 		},
 	});
