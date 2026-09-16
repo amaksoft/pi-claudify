@@ -146,6 +146,8 @@ import { getRawStringArg, getStringArg, getTextContent } from "./domain/tool-arg
 export { classifyBashCommandForDisplay, type BashDisplayInfo } from "./domain/bash-display.ts";
 import {
 	BUILTIN_COMPATIBILITY_TOOL_NAMES,
+	CLAUDIFY_REGISTERED_TOOL_NAMES,
+	CRON_COMPATIBILITY_TOOL_NAMES,
 	isBuiltinCompatibilityToolName,
 	parseCompatibilityConfig,
 	resolveCompatibilityFeatureEnabled,
@@ -218,6 +220,7 @@ import { createToolChrome } from "./render/tool-chrome.ts";
 import { selectVisualItems, selectVisualPreview, widthAwareText, type VisualPreviewMode } from "./visual-preview.ts";
 import { computeAggregateEditDiff, computeLocalizedEditDiffs } from "./tools/edit-preview.ts";
 import { registerBuiltinTools } from "./tools/register-builtins.ts";
+import { CronScheduler, installCronLifecycle, registerCronTools } from "./tools/cron-tools.ts";
 import { renderApplyPatchCall as renderApplyPatchCallWithRuntime, renderApplyPatchResult as renderApplyPatchResultWithRuntime, type ApplyPatchRuntime } from "./tools/apply-patch-tool.ts";
 import { renderGenericToolCall as renderGenericCall, renderGenericToolResult as renderGenericResult, type GenericToolRuntime } from "./tools/generic-tool.ts";
 import { mcpServerForComponent, mcpServerName, renderMcpToolResult as renderMcpResult } from "./tools/mcp-tool.ts";
@@ -348,7 +351,7 @@ function presentationOverrideSkipped(toolName: unknown): boolean {
 	const settings = readSettings().values;
 	const config = parseCompatibilityConfig(settings.compatibility);
 	const legacySkipped = skippedToolOverrides(settings).has(name);
-	const family = isBuiltinCompatibilityToolName(name) ? undefined : compatibilityToolFamilyForName(name);
+	const family = (CLAUDIFY_REGISTERED_TOOL_NAMES as readonly string[]).includes(name) ? undefined : compatibilityToolFamilyForName(name);
 	return !resolveCompatibilityToolEnabled(config, name, family, legacySkipped);
 }
 
@@ -1168,10 +1171,12 @@ export default function (pi: ExtensionAPI): void {
 	// apply_patch has no execution override to skip — its own gate is enforced
 	// entirely through `presentationOverrideSkipped` inside the tool-renderer
 	// patch instead.
-	const compatDisabledBuiltins = BUILTIN_COMPATIBILITY_TOOL_NAMES.filter(
-		(name) => name !== "apply_patch" && presentationOverrideSkipped(name),
-	);
-	const effectiveSkippedOverrides = new Set<string>([...skippedOverrides, ...compatDisabledBuiltins]);
+	const compatibilityControlledTools = [
+		...BUILTIN_COMPATIBILITY_TOOL_NAMES.filter((name) => name !== "apply_patch"),
+		...CRON_COMPATIBILITY_TOOL_NAMES,
+		];
+	const compatibilityDisabledTools = compatibilityControlledTools.filter((name) => presentationOverrideSkipped(name));
+	const effectiveSkippedOverrides = new Set<string>([...skippedOverrides, ...compatibilityDisabledTools]);
 	type RegisteredTool = Parameters<ExtensionAPI["registerTool"]>[0];
 	const toolRegistration = new ToolRegistrationCoordinator<RegisteredTool>(
 		{
@@ -1198,6 +1203,16 @@ export default function (pi: ExtensionAPI): void {
 		}
 		return { agentDir: effectiveAgentDir(getAgentDirCapability), projectTrusted };
 	};
+
+	if (featureEnabled("scheduledTasks") && typeof (pi as any).sendUserMessage === "function") {
+		const scheduler = new CronScheduler({
+			cwd,
+			sendUserMessage: (prompt) => (pi as any).sendUserMessage(prompt),
+			onError: (error) => debugDiagnostic("cron-scheduler", error),
+		});
+		registerCronTools(pi, scheduler, registerBuiltinOverride);
+		installCronLifecycle(pi, scheduler);
+	}
 
 	registerBuiltinTools({
 		cwd,

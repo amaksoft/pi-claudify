@@ -40,6 +40,8 @@ Every Claudify integration has a config kill switch so it can coexist with other
 
 A disabled tool is not registered, adapted, or grouped by Claudify; the host or external owner keeps execution and native presentation. The legacy `skipToolOverrides` list remains supported as an exact per-tool opt-out. Structural changes take full effect after `/reload`; restart Pi only when warned that an older generation installed a legacy host patch.
 
+Scheduled prompts are available out of the box through `CronCreate`, `CronList`, and `CronDelete`. They use five-field local-time cron expressions and run only while Pi is open and idle. Jobs are session-only unless `durable: true`, which requires a trusted project and explicit TUI confirmation before persisting to the current project's `.pi/scheduled_tasks.json`; deleting a durable job also requires confirmation. Recurring jobs expire after seven days. Disable the entire scheduler with `compatibility.features.scheduledTasks`, or disable any Cron tool by name under `compatibility.tools`.
+
 ### Sections
 
 #### Theme
