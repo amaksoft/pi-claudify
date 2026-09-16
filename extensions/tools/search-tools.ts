@@ -9,23 +9,10 @@ import {
 import { buildSearchCallView, buildTextResultView, type SearchToolName } from "../domain/tool-view.ts";
 import { dirIcon, fileIcon } from "../render/file-icons.ts";
 import { selectVisualItems } from "../visual-preview.ts";
+import type { WidthAwareToolRuntime } from "./presenter-runtime.ts";
 
-export interface SearchToolRuntime {
-	cwd: string;
-	register(definition: any): void;
-	forwardContract(definition: any): Record<string, unknown>;
+export interface SearchToolRuntime extends WidthAwareToolRuntime {
 	shortPath(path: string, cwd: string): string;
-	syncCallStatus(ctx: any): void;
-	stableSummary(ctx: any, key: string, build: () => string): string;
-	makeText(last: unknown, text: string): any;
-	header(label: string, summary: string, theme: Theme, prefix?: string): string;
-	statusDot(ctx: any, theme: Theme): string;
-	withBranch(content: string, theme: Theme): string;
-	startBlink(ctx: any): void;
-	stopBlink(ctx: any): void;
-	setStatus(ctx: any, status: "pending" | "success" | "error"): void;
-	widthAware(last: unknown, key: string, build: (width: number) => string[], revision: () => number): any;
-	renderLines(text: string, width: number): string[];
 	visualPreview(text: string, width: number, rows: number, theme: Theme): string;
 	expandedLimit(): number;
 	revision(): number;

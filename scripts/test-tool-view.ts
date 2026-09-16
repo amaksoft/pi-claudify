@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 
 import { languageForPath } from "../extensions/domain/language.ts";
+import { extractApplyPatchFiles, getRawStringArg, getStringArg, getStringArrayArg, getTextContent } from "../extensions/domain/tool-arguments.ts";
 import { buildSearchCallView, buildTextResultView } from "../extensions/domain/tool-view.ts";
 import { dirIcon, fileIcon } from "../extensions/render/file-icons.ts";
 
@@ -24,5 +25,10 @@ assert.match(dirIcon(), /\ue5ff/, "directories use the directory icon");
 assert.equal(languageForPath("src/component.TSX"), "tsx");
 assert.equal(languageForPath("C:\\repo\\Dockerfile"), undefined);
 assert.equal(languageForPath("script"), undefined);
+assert.equal(getTextContent({ content: [{ type: "text", text: "one" }, { type: "image" }, { type: "text", text: "two" }] }), "one\ntwo");
+assert.equal(getRawStringArg({ query: "  needle  " }, "path", "query"), "needle");
+assert.equal(getStringArg({ query: "x\x1b]0;spoof\x07" }, "query"), "x");
+assert.deepEqual(getStringArrayArg({ paths: [" a ", 4, "b"] }, "paths"), ["a", "b"]);
+assert.deepEqual(extractApplyPatchFiles("*** Update File: a.ts\n@@\n*** Add File: b.ts\n*** Update File: a.ts"), ["a.ts", "b.ts"]);
 
 console.log("tool view tests passed");

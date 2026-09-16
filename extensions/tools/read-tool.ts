@@ -1,32 +1,17 @@
 import { createReadToolDefinition, type ReadToolDetails, type Theme } from "@earendil-works/pi-coding-agent";
 import { sanitizeToolText } from "../terminal-sanitize.ts";
+import type { WidthAwareToolRuntime } from "./presenter-runtime.ts";
 
-export interface ReadToolRuntime {
-	cwd: string;
-	register(definition: any): void;
-	forwardContract(definition: any): Record<string, unknown>;
+export interface ReadToolRuntime extends WidthAwareToolRuntime {
 	autoResizeImages(cwd: string, ctx: any): boolean;
 	linkedPath(path: string, cwd: string): string;
-	syncCallStatus(ctx: any): void;
-	stableSummary(ctx: any, key: string, build: () => string): string;
-	makeText(last: unknown, text: string): any;
-	header(label: string, summary: string, theme: Theme, prefix?: string): string;
-	statusDot(ctx: any, theme: Theme): string;
-	withBranch(content: string, theme: Theme): string;
-	startBlink(ctx: any): void;
-	stopBlink(ctx: any): void;
-	setStatus(ctx: any, status: "pending" | "success" | "error"): void;
 	firstImage(result: any): unknown;
 	renderImage(result: any, expanded: boolean, theme: Theme, ctx: any): any;
 	errorText(theme: Theme, text: string): string;
 	formatReadCount(theme: Theme, count: number): string;
-	widthAware(last: unknown, key: string, build: (width: number) => string[], revision: () => number): any;
 	visualPreview(text: string, width: number, rows: number, mode: "dim" | "claudeError", theme: Theme, expanded: boolean): string;
-	renderLines(text: string, width: number): string[];
 	collapsedRows(expanded: boolean): number;
 	expandedRows(): number;
-	revision(): number;
-	hash(text: string): string;
 }
 
 export function registerReadTool(runtime: ReadToolRuntime): void {

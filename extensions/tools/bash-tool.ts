@@ -3,34 +3,19 @@ import { createBashToolDefinition, type BashToolDetails, type Theme } from "@ear
 import { bashHeaderCommand } from "../bash-preview.ts";
 import { classifyBashCommandForDisplay, emptyBashResultLabel } from "../domain/bash-display.ts";
 import type { VisualPreviewMode } from "../visual-preview.ts";
+import type { WidthAwareToolRuntime } from "./presenter-runtime.ts";
 
-export interface BashToolRuntime {
-	cwd: string;
-	register(definition: any): void;
-	forwardContract(definition: any): Record<string, unknown>;
+export interface BashToolRuntime extends WidthAwareToolRuntime {
 	hostSettings(cwd: string, ctx: any): { shellPath?: string; commandPrefix?: string };
 	semanticEnabled(): boolean;
 	shortPath(path: string, cwd: string): string;
-	syncCallStatus(ctx: any): void;
-	stableSummary(ctx: any, key: string, build: () => string): string;
-	makeText(last: unknown, text: string): any;
-	header(label: string, summary: string, theme: Theme, prefix?: string): string;
-	statusDot(ctx: any, theme: Theme): string;
-	withBranch(content: string, theme: Theme): string;
-	startBlink(ctx: any): void;
-	stopBlink(ctx: any): void;
-	setStatus(ctx: any, status: "pending" | "success" | "error"): void;
 	errorText(theme: Theme, text: string): string;
-	widthAware(last: unknown, key: string, build: (width: number) => string[], revision: () => number): any;
 	visualPreview(text: string, width: number, rows: number, mode: VisualPreviewMode, theme: Theme, style: "dim" | "error" | "claudeError", options: Record<string, unknown>): string;
-	renderLines(text: string, width: number): string[];
 	outputMode(): "opencode" | "summary" | "preview";
 	runningPreview(): "head" | "tail";
 	collapsedLimit(): number;
 	collapsedRows(expanded: boolean): number;
 	expandedRows(): number;
-	revision(): number;
-	hash(text: string): string;
 }
 
 export function registerBashTool(runtime: BashToolRuntime): void {
