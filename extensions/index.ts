@@ -54,6 +54,16 @@ import {
 import { describeEdit, describeWrite, type SummaryEmphasis } from "./mutation-summary.ts";
 import { readSettings } from "./settings.ts";
 import {
+	BUILTIN_COMPATIBILITY_TOOL_NAMES,
+	isBuiltinCompatibilityToolName,
+	parseCompatibilityConfig,
+	resolveCompatibilityFeatureEnabled,
+	resolveCompatibilityToolEnabled,
+	type CompatibilityConfig,
+	type CompatibilityFeatureId,
+	type CompatibilityToolFamily,
+} from "./domain/compatibility.ts";
+import {
 	DEFAULT_HIDDEN_THINKING_LABEL,
 	DEFAULT_USER_PREFIX,
 	formatTranscriptLines,
@@ -147,6 +157,161 @@ function bustSpinnerSettingsCache(): void {
 
 function getMessageChromeSettings(): MessageChromeSettings {
 	return resolveMessageChromeSettings(readSettings().values);
+}
+
+// ---------------------------------------------------------------------------
+// Compatibility control — see extensions/domain/compatibility.ts and
+// README.md "Compatibility control". Absent `compatibility` config means
+// every feature and every tool stays enabled exactly as before this module
+// existed. Every helper below re-parses settings live (readSettings() is
+// itself cheaply cached), so toggling `compatibility` — or the `/claudify`
+// screen, for the settings it edits — takes effect on the very next
+// render/event without a restart, matching how every other live setting in
+// this file already behaves.
+// ---------------------------------------------------------------------------
+
+function compatibilityConfig(): CompatibilityConfig | undefined {
+	return parseCompatibilityConfig(readSettings().values.compatibility);
+}
+
+/** Global `enabled: false` disables every feature and every tool below. */
+function compatibilityGloballyDisabled(): boolean {
+	return compatibilityConfig()?.enabled === false;
+}
+
+function featureEnabled(id: CompatibilityFeatureId): boolean {
+	return resolveCompatibilityFeatureEnabled(compatibilityConfig(), id);
+}
+
+const EMPTY_TOOL_NAME_SET: ReadonlySet<string> = new Set();
+
+/** The legacy `skipToolOverrides` array, normalized like `compatibility.tools` keys. */
+function legacySkippedToolNames(): ReadonlySet<string> {
+	const raw = readSettings().values.skipToolOverrides;
+	if (!Array.isArray(raw)) return EMPTY_TOOL_NAME_SET;
+	return new Set(
+		raw.filter((value): value is string => typeof value === "string").map((value) => value.trim().toLowerCase()),
+	);
+}
+
+function compatibilityToolFamilyForName(name: string): CompatibilityToolFamily {
+	if (isMcpToolName(name)) return "mcp";
+	if (isOpenAiToolCandidate({ name })) return "openai";
+	return "generic";
+}
+
+/**
+ * Unifies the legacy `skipToolOverrides` exact-false override with
+ * `compatibility.tools` resolution (global enabled -> exact name -> legacy
+ * skip -> family `mcp:*`/`openai:*`/`generic:*` -> `default` -> true). Every
+ * call site that decides whether a tool gets Claudify's registration,
+ * presentation, or grouping goes through this one function, so a disabled
+ * builtin/family/tool loses all three consistently.
+ */
+function presentationOverrideSkipped(toolName: unknown): boolean {
+	if (typeof toolName !== "string" || toolName.length === 0) return false;
+	const name = toolName.toLowerCase();
+	const config = compatibilityConfig();
+	const legacySkipped = legacySkippedToolNames().has(name);
+	const family = isBuiltinCompatibilityToolName(name) ? undefined : compatibilityToolFamilyForName(name);
+	return !resolveCompatibilityToolEnabled(config, name, family, legacySkipped);
+}
+
+/**
+ * `toolPresentation: false` (or the global switch) disables Claudify's
+ * dynamic (mcp/openai/generic/apply_patch) tool call/result rendering —
+ * native pi rendering shows through for those tools — without touching the
+ * general container border/background chrome or read-only inspection
+ * grouping, which are gated independently by presentationOverrideSkipped
+ * itself. The seven core tool overrides (read/write/edit/bash/grep/find/ls)
+ * are governed only by the tool registry, never by this feature.
+ */
+function toolPresentationSkipped(toolName: unknown): boolean {
+	if (!featureEnabled("toolPresentation")) return true;
+	return presentationOverrideSkipped(toolName);
+}
+
+function effectiveToolBackgroundMode(): "default" | "transparent" | "outlines" {
+	return featureEnabled("toolBackground") ? toolBackgroundMode : "default";
+}
+
+// ---------------------------------------------------------------------------
+// Builtin tool restoration — a process-stable snapshot of the host's
+// pristine read/write/edit/bash/grep/find/ls definitions, captured before
+// Claudify's first registerTool() call ever replaces them. A later
+// `compatibility.tools` (or legacy `skipToolOverrides`) change that disables
+// one of these restores the untouched host definition instead of merely
+// skipping re-registration — and never clobbers a *different* extension that
+// has since taken ownership of the name.
+// ---------------------------------------------------------------------------
+
+type ToolOwnerKind = "builtin" | "self" | "external" | "unknown";
+
+const TOOL_ORIGINAL_DEFINITIONS_KEY = Symbol.for("pi-claudify:tool-original-definitions");
+const TOOL_OWNED_NAMES_KEY = Symbol.for("pi-claudify:tool-owned-names");
+
+function toolOriginalDefinitions(): Map<string, unknown> {
+	const bag = globalThis as unknown as Record<symbol, unknown>;
+	if (!(bag[TOOL_ORIGINAL_DEFINITIONS_KEY] instanceof Map)) bag[TOOL_ORIGINAL_DEFINITIONS_KEY] = new Map<string, unknown>();
+	return bag[TOOL_ORIGINAL_DEFINITIONS_KEY] as Map<string, unknown>;
+}
+
+function claudifyOwnedToolNames(): Set<string> {
+	const bag = globalThis as unknown as Record<symbol, unknown>;
+	if (!(bag[TOOL_OWNED_NAMES_KEY] instanceof Set)) bag[TOOL_OWNED_NAMES_KEY] = new Set<string>();
+	return bag[TOOL_OWNED_NAMES_KEY] as Set<string>;
+}
+
+function classifyToolOwner(tool: unknown): ToolOwnerKind {
+	const sourceInfo = (tool as { sourceInfo?: { source?: unknown; path?: unknown } } | undefined)?.sourceInfo;
+	if (!sourceInfo) return "unknown";
+	if (sourceInfo.source === "builtin") return "builtin";
+	const identity = `${sourceInfo.path ?? ""}\n${sourceInfo.source ?? ""}`.toLowerCase();
+	const packageBoundary = /(?:^|[\\/:])(?:@owlburtoe[\\/])?pi-claudify(?:$|[\\/:])/m;
+	return packageBoundary.test(identity) ? "self" : "external";
+}
+
+function findRegisteredTool(pi: ExtensionAPI, name: string): unknown {
+	try {
+		const tools = typeof (pi as any).getAllTools === "function" ? (pi as any).getAllTools() : [];
+		if (!Array.isArray(tools)) return undefined;
+		return tools.find((tool: any) => String(tool?.name ?? "").toLowerCase() === name);
+	} catch {
+		return undefined;
+	}
+}
+
+function captureOriginalBuiltinDefinition(pi: ExtensionAPI, name: string): void {
+	const originals = toolOriginalDefinitions();
+	if (originals.has(name)) return;
+	const found = findRegisteredTool(pi, name);
+	if (found && classifyToolOwner(found) === "builtin") originals.set(name, found);
+}
+
+/**
+ * Registers `definition` unless `compatibility.tools` (or legacy
+ * `skipToolOverrides`) disables it, in which case the pristine host
+ * definition captured before Claudify's first registration is restored
+ * instead — but only while Claudify still owns the live registration, so a
+ * newer external extension's definition for the same name is never
+ * clobbered.
+ */
+function shouldRegisterBuiltinToolOverride(pi: ExtensionAPI, name: string): boolean {
+	captureOriginalBuiltinDefinition(pi, name);
+	if (toolPresentationSkipped(name)) {
+		if (claudifyOwnedToolNames().has(name)) {
+			const current = findRegisteredTool(pi, name);
+			const currentOwner = current ? classifyToolOwner(current) : "unknown";
+			if (currentOwner !== "external") {
+				const original = toolOriginalDefinitions().get(name);
+				if (original) pi.registerTool(original as any);
+			}
+			claudifyOwnedToolNames().delete(name);
+		}
+		return false;
+	}
+	claudifyOwnedToolNames().add(name);
+	return true;
 }
 
 function applyHiddenThinkingLabel(ctx: any): void {
@@ -298,6 +463,10 @@ function isDarkTheme(theme: unknown): boolean {
 }
 
 export function applyAccentOverride(theme: unknown): void {
+	// `themeColors: false` also covers the manual re-apply calls the Claudify
+	// screen triggers on colorSource/accentColor changes, not only the
+	// automatic per-session/turn derivation inside applyThemePaletteIfNeeded.
+	if (!featureEnabled("themeColors")) return;
 	if (!theme || typeof theme !== "object") return;
 	const current = getThemeFg(theme, "accent");
 	if (current === undefined) return;
@@ -376,7 +545,7 @@ export function applyToolBackgroundMode(theme: unknown): void {
 		userBoxThemePrefixFg = safeFgAnsi(theme, "dim") ?? safeFgAnsi(theme, "muted");
 	}
 	setThemeBg(theme, "userMessageBg", TRANSPARENT_BG);
-	if (toolBackgroundMode === "default") return;
+	if (effectiveToolBackgroundMode() === "default") return;
 
 	setThemeBg(theme, "toolPendingBg", TRANSPARENT_BG);
 	setThemeBg(theme, "toolSuccessBg", TRANSPARENT_BG);
@@ -424,15 +593,17 @@ function isToolExecutionLike(value: unknown): value is { toolName: string; toolC
 }
 
 function isBashToolExecution(value: unknown): boolean {
-	return isToolExecutionLike(value) && (value as any).toolName === "bash";
+	// A disabled `bash` tool override drops out of Claudify's stacking/grouping
+	// entirely — its row falls back to native pi spacing/presentation.
+	return isToolExecutionLike(value) && (value as any).toolName === "bash" && !presentationOverrideSkipped("bash");
 }
 
 function shouldStackConsecutiveBash(): boolean {
-	return readSettings().values.bashStackConsecutive !== false;
+	return featureEnabled("bashStacking") && readSettings().values.bashStackConsecutive !== false;
 }
 
 function readOnlyToolGroupingEnabled(): boolean {
-	return readSettings().values.readOnlyToolGrouping !== false;
+	return featureEnabled("inspectionGroups") && readSettings().values.readOnlyToolGrouping !== false;
 }
 
 function readOnlyToolGroupLimit(): number {
@@ -465,6 +636,9 @@ function isReadOnlyInspectionToolExecution(value: unknown): boolean {
 	if (!readOnlyToolGroupingEnabled() || !isToolExecutionLike(value)) return false;
 	const rec = toolComponentRecord(value);
 	if (rec.expanded === true) return false;
+	// A disabled tool (compatibility.tools / legacy skipToolOverrides) never
+	// joins an aggregate group — no Claudify grouping for it, period.
+	if (presentationOverrideSkipped(rec.toolName)) return false;
 	if (rec.toolName === "read" || rec.toolName === "grep" || rec.toolName === "find" || rec.toolName === "ls") return true;
 	// Every MCP call aggregates, whatever it does. Claude Code renders a mutating
 	// or failing MCP tool exactly like a read-only one — there is no separate row.
@@ -670,8 +844,8 @@ function summarizeReadOnlyInspectionTool(value: unknown): string {
 function renderCollapsedInspectionGroup(kinds: InspectionKind[], servers: string[], width: number): string[] {
 	const summary = `${CLAUDE_COLLAPSED_INDENT}${WORKED_LINE_FG}${describeInspectionsDone(kinds, servers)}${RESET}`;
 	const core = wrapMarkedLine(summary, width).map((line) => padToWidth(line, width));
-	if (toolBackgroundMode === "outlines") return [" ".repeat(width), borderLine(width), ...core, borderLine(width)];
-	if (toolBackgroundMode === "transparent") return [" ".repeat(width), ...core];
+	if (effectiveToolBackgroundMode() === "outlines") return [" ".repeat(width), borderLine(width), ...core, borderLine(width)];
+	if (effectiveToolBackgroundMode() === "transparent") return [" ".repeat(width), ...core];
 	return core;
 }
 
@@ -694,8 +868,8 @@ function renderInspectionGroup(group: unknown[], width: number): string[] {
 		core.push(`${TOOL_RULE}${CLAUDE_RESULT_PREFIX}${TRANSPARENT_RESET}${WRAP_MARK}… +${remaining} more`);
 	}
 	const renderedCore = core.flatMap((line) => wrapMarkedLine(line, width)).map((line) => padToWidth(line, width));
-	if (toolBackgroundMode === "outlines") return [" ".repeat(width), borderLine(width), ...renderedCore, borderLine(width)];
-	if (toolBackgroundMode === "transparent") return [" ".repeat(width), ...renderedCore];
+	if (effectiveToolBackgroundMode() === "outlines") return [" ".repeat(width), borderLine(width), ...renderedCore, borderLine(width)];
+	if (effectiveToolBackgroundMode() === "transparent") return [" ".repeat(width), ...renderedCore];
 	return renderedCore;
 }
 
@@ -798,7 +972,7 @@ function patchGlobalToolBorders(): void {
 
 		if (isToolExecutionLike(this)) {
 			const cached = (this as any)[TOOL_RENDER_CACHE];
-			if (cached?.width === width && cached?.mode === toolBackgroundMode) {
+			if (cached?.width === width && cached?.mode === effectiveToolBackgroundMode()) {
 				return cached.lines;
 			}
 		}
@@ -806,8 +980,8 @@ function patchGlobalToolBorders(): void {
 		const rendered = originalRender.call(this, width);
 		if (!Array.isArray(rendered) || rendered.length === 0) return rendered;
 		if (!isToolExecutionLike(this)) return rendered;
-		if (toolBackgroundMode === "default") {
-			(this as any)[TOOL_RENDER_CACHE] = { width, mode: toolBackgroundMode, lines: rendered };
+		if (effectiveToolBackgroundMode() === "default") {
+			(this as any)[TOOL_RENDER_CACHE] = { width, mode: effectiveToolBackgroundMode(), lines: rendered };
 			return rendered;
 		}
 
@@ -819,14 +993,14 @@ function patchGlobalToolBorders(): void {
 
 		const { textLines, imageLines } = splitRenderedImageBlock(rendered.slice(start, end + 1));
 		if (imageLines.length > 0) {
-			(this as any)[TOOL_RENDER_CACHE] = { width, mode: toolBackgroundMode, lines: rendered };
+			(this as any)[TOOL_RENDER_CACHE] = { width, mode: effectiveToolBackgroundMode(), lines: rendered };
 			return rendered;
 		}
 		const core = textLines.map((line) => clampLineWidth(normalizeLeadingCheckGlyph(line), width));
 		const spacerLine = " ".repeat(width);
 		let result: string[];
 
-		if (toolBackgroundMode === "outlines") {
+		if (effectiveToolBackgroundMode() === "outlines") {
 			const ruleWidth = Math.max(1, width);
 			const framed = core.length > 0 ? [borderLine(ruleWidth), ...core, borderLine(ruleWidth)] : [];
 			result = [spacerLine, ...framed, ...imageLines];
@@ -834,7 +1008,7 @@ function patchGlobalToolBorders(): void {
 			result = [spacerLine, ...core, ...imageLines];
 		}
 
-		(this as any)[TOOL_RENDER_CACHE] = { width, mode: toolBackgroundMode, lines: result };
+		(this as any)[TOOL_RENDER_CACHE] = { width, mode: effectiveToolBackgroundMode(), lines: result };
 		return result;
 	};
 
@@ -1115,6 +1289,7 @@ function patchCustomMessageRender(): void {
 	if (typeof originalRender !== "function") return;
 	proto.render = function patchedCustomMessageRender(width: number) {
 		const lines = originalRender.call(this, width);
+		if (!featureEnabled("customMessages")) return lines;
 		return Array.isArray(lines) ? lines.map(normalizeLeadingCheckGlyph) : lines;
 	};
 	proto[CUSTOM_MESSAGE_PATCH_FLAG] = true;
@@ -1127,6 +1302,7 @@ function patchCompactionSummaryMessages(): void {
 	if (typeof originalUpdateDisplay !== "function") return;
 	proto.updateDisplay = function patchedCompactionSummaryDisplay() {
 		originalUpdateDisplay.call(this);
+		if (!featureEnabled("compactionSummary")) return;
 		const summary = this.expanded && Array.isArray(this.children)
 			? this.children[this.children.length - 1]
 			: undefined;
@@ -1254,6 +1430,7 @@ function patchUserMessageRender(): void {
 	const originalRender = proto.render;
 	if (typeof originalRender !== "function") return;
 	proto.render = function patchedUserMessageRender(width: number) {
+		if (!featureEnabled("userMessages")) return originalRender.call(this, width);
 		// Duck-typed, not instanceof: the extension and pi can resolve separate
 		// copies of pi-tui, which makes instanceof fail across the boundary.
 		for (const child of (this as any).children ?? []) {
@@ -1297,6 +1474,7 @@ function patchAssistantMessages(): void {
 	if (proto[ASSISTANT_PATCH_FLAG]) return;
 	const originalUpdateContent = proto.updateContent;
 	proto.updateContent = function patchedUpdateContent(message: any) {
+		if (!featureEnabled("assistantMessages")) return originalUpdateContent.call(this, message);
 		if (!(this as any)[WORKED_START_KEY]) {
 			(this as any)[WORKED_START_KEY] = Date.now();
 		}
@@ -1397,7 +1575,7 @@ function patchReadImageExpansion(): void {
 	proto.updateDisplay = function patchedReadImageUpdateDisplay(...args: any[]) {
 		const result = originalUpdateDisplay.apply(this, args);
 		const hasImage = Array.isArray(this.result?.content) && this.result.content.some((block: any) => block?.type === "image");
-		if (this.toolName === "read" && hasImage && this.expanded !== true) {
+		if (this.toolName === "read" && hasImage && this.expanded !== true && !presentationOverrideSkipped("read")) {
 			removeImageChildren(this);
 			clearToolRenderCache(this);
 		}
@@ -1416,10 +1594,12 @@ function patchToolRowIndent(): void {
 	const originalUpdateDisplay = proto.updateDisplay;
 	if (typeof originalUpdateDisplay !== "function") return;
 	proto.updateDisplay = function patchedToolIndentUpdateDisplay(...args: any[]) {
-		for (const box of [this.contentBox, this.contentText]) {
-			if (box && box.paddingX !== 0) {
-				box.paddingX = 0;
-				box.invalidate?.();
+		if (featureEnabled("toolBackground")) {
+			for (const box of [this.contentBox, this.contentText]) {
+				if (box && box.paddingX !== 0) {
+					box.paddingX = 0;
+					box.invalidate?.();
+				}
 			}
 		}
 		return originalUpdateDisplay.apply(this, args);
@@ -1437,12 +1617,17 @@ function patchToolExecutionRenderers(): void {
 
 	if (typeof originalHasRendererDefinition === "function") {
 		proto.hasRendererDefinition = function patchedHasRendererDefinition() {
-			return originalHasRendererDefinition.call(this) || shouldUseGenericToolRenderer(this?.toolName);
+			const toolName = typeof this?.toolName === "string" ? this.toolName : "";
+			if (toolPresentationSkipped(toolName)) return originalHasRendererDefinition.call(this);
+			return originalHasRendererDefinition.call(this) || shouldUseGenericToolRenderer(toolName);
 		};
 	}
 
 	proto.getCallRenderer = function patchedGetCallRenderer() {
 		const toolName = typeof this?.toolName === "string" ? this.toolName : "";
+		if (toolPresentationSkipped(toolName)) {
+			return typeof originalGetCallRenderer === "function" ? originalGetCallRenderer.call(this) : undefined;
+		}
 		if (toolName === "apply_patch") {
 			return (args: any, theme: Theme, ctx: any) =>
 				renderApplyPatchCall(args, theme, ctx, (path: string) => shortPath(ctx.cwd ?? process.cwd(), path));
@@ -1455,6 +1640,9 @@ function patchToolExecutionRenderers(): void {
 
 	proto.getResultRenderer = function patchedGetResultRenderer() {
 		const toolName = typeof this?.toolName === "string" ? this.toolName : "";
+		if (toolPresentationSkipped(toolName)) {
+			return typeof originalGetResultRenderer === "function" ? originalGetResultRenderer.call(this) : undefined;
+		}
 		if (toolName === "apply_patch") {
 			return (result: any, options: any, theme: Theme, ctx: any) =>
 				renderApplyPatchResult({ content: result.content, details: result.details }, options.isPartial, theme, ctx);
@@ -2186,6 +2374,10 @@ let diffThemePreview: string | null | undefined;
 
 function loadDiffConfig(): DiffUserConfig {
 	const settings = readSettings().values;
+	// `diffPresentation: false` ignores diffTheme/diffColors (and any live
+	// picker preview) entirely, so diffs always reset to Claude's built-in
+	// default palette — existing style settings stay subordinate to the gate.
+	if (!featureEnabled("diffPresentation")) return {};
 	return {
 		diffTheme: diffThemePreview === undefined ? settings.diffTheme : (diffThemePreview ?? undefined),
 		diffColors: settings.diffColors,
@@ -2459,7 +2651,9 @@ function autoDeriveBgFromTheme(theme: any): void {
 const _explicitFgFields = new Set<"fgAdd" | "fgDel" | "fgDim" | "fgLnum" | "fgRule" | "fgStripe" | "fgSafeMuted">();
 
 function applyThemePaletteIfNeeded(theme: any): void {
-	if (!theme) return;
+	// `themeColors: false` makes this a complete no-op (native pi theme shows
+	// through), including the accent override below.
+	if (!theme || !featureEnabled("themeColors")) return;
 	// Runs before the adaptive/cache guards: the accent override applies even with
 	// adaptive colors off, and re-checks its setting on every call.
 	applyAccentOverride(theme);
@@ -4726,21 +4920,22 @@ function renderOpenAiToolResult(name: string, result: any, expanded: boolean, is
 // ===========================================================================
 
 export default function (pi: ExtensionAPI): void {
-	patchToolRenderCacheInvalidation();
-	patchReadImageExpansion();
-	patchGlobalToolBorders();
-	patchCustomMessageRender();
-	patchCompactionSummaryMessages();
-	patchUserMessageRender();
-	patchAssistantMessages();
-	patchToolRowIndent();
-	patchToolExecutionRenderers();
-	patchEditorBorderColor();
-	applyDiffPalette();
-	registerThinkingLabels(pi);
-	registerFullscreenTui(pi);
+	if (compatibilityGloballyDisabled()) return;
+	if (featureEnabled("toolPresentation")) patchToolRenderCacheInvalidation();
+	if (!presentationOverrideSkipped("read")) patchReadImageExpansion();
+	if (featureEnabled("toolBackground") || featureEnabled("inspectionGroups") || featureEnabled("bashStacking")) patchGlobalToolBorders();
+	if (featureEnabled("customMessages")) patchCustomMessageRender();
+	if (featureEnabled("compactionSummary")) patchCompactionSummaryMessages();
+	if (featureEnabled("userMessages")) patchUserMessageRender();
+	if (featureEnabled("assistantMessages")) patchAssistantMessages();
+	if (featureEnabled("toolBackground")) patchToolRowIndent();
+	if (featureEnabled("toolPresentation")) patchToolExecutionRenderers();
+	if (featureEnabled("footer")) patchEditorBorderColor();
+	if (featureEnabled("diffPresentation")) applyDiffPalette();
+	if (featureEnabled("assistantMessages")) registerThinkingLabels(pi);
+	if (featureEnabled("fullscreenTui")) registerFullscreenTui(pi);
 
-	pi.registerCommand("claudify", {
+	if (featureEnabled("settingsCommand")) pi.registerCommand("claudify", {
 		description: "Open the Claudify settings screen",
 		async handler(_args, ctx) {
 			if (ctx.mode !== "tui" || !ctx.hasUI) {
@@ -4813,15 +5008,15 @@ export default function (pi: ExtensionAPI): void {
 		if (!ctx.hasUI) return;
 		applyToolBackgroundMode(ctx.ui.theme);
 		applyThemePaletteIfNeeded(ctx.ui.theme);
-		applyHiddenThinkingLabel(ctx);
-		installClaudeFooter(ctx, pi);
+		if (featureEnabled("assistantMessages")) applyHiddenThinkingLabel(ctx);
+		if (featureEnabled("footer")) installClaudeFooter(ctx, pi);
 	});
 
 	pi.on("turn_start", async (_event, ctx) => {
 		if (!ctx.hasUI) return;
 		applyToolBackgroundMode(ctx.ui.theme);
 		applyThemePaletteIfNeeded(ctx.ui.theme);
-		applyHiddenThinkingLabel(ctx);
+		if (featureEnabled("assistantMessages")) applyHiddenThinkingLabel(ctx);
 	});
 
 	const cwd = process.cwd();
@@ -4833,7 +5028,7 @@ export default function (pi: ExtensionAPI): void {
 	};
 
 	const readTool = createReadTool(cwd);
-	pi.registerTool({
+	if (shouldRegisterBuiltinToolOverride(pi, "read")) pi.registerTool({
 		name: "read",
 		label: "read",
 		description: readTool.description,
@@ -4882,7 +5077,7 @@ export default function (pi: ExtensionAPI): void {
 	});
 
 	const bashTool = createBashTool(cwd);
-	pi.registerTool({
+	if (shouldRegisterBuiltinToolOverride(pi, "bash")) pi.registerTool({
 		name: "bash",
 		label: "bash",
 		description: bashTool.description,
@@ -4941,7 +5136,7 @@ export default function (pi: ExtensionAPI): void {
 	});
 
 	const grepTool = createGrepTool(cwd);
-	pi.registerTool({
+	if (shouldRegisterBuiltinToolOverride(pi, "grep")) pi.registerTool({
 		name: "grep",
 		label: "grep",
 		description: grepTool.description,
@@ -4979,7 +5174,7 @@ export default function (pi: ExtensionAPI): void {
 	});
 
 	const findTool = createFindTool(cwd);
-	pi.registerTool({
+	if (shouldRegisterBuiltinToolOverride(pi, "find")) pi.registerTool({
 		name: "find",
 		label: "find",
 		description: findTool.description,
@@ -5028,7 +5223,7 @@ export default function (pi: ExtensionAPI): void {
 	});
 
 	const lsTool = createLsTool(cwd);
-	pi.registerTool({
+	if (shouldRegisterBuiltinToolOverride(pi, "ls")) pi.registerTool({
 		name: "ls",
 		label: "ls",
 		description: lsTool.description,
@@ -5077,7 +5272,7 @@ export default function (pi: ExtensionAPI): void {
 	});
 
 	const writeTool = createWriteTool(cwd);
-	pi.registerTool({
+	if (shouldRegisterBuiltinToolOverride(pi, "write")) pi.registerTool({
 		name: "write",
 		label: "write",
 		description: writeTool.description,
@@ -5192,7 +5387,7 @@ export default function (pi: ExtensionAPI): void {
 	});
 
 	const editTool = createEditTool(cwd);
-	pi.registerTool({
+	if (shouldRegisterBuiltinToolOverride(pi, "edit")) pi.registerTool({
 		name: "edit",
 		label: "edit",
 		description: editTool.description,
@@ -5303,7 +5498,7 @@ export default function (pi: ExtensionAPI): void {
 			if (!isOpenAiToolCandidate(tool)) continue;
 			const record = tool as Record<string, unknown>;
 			const name = typeof record.name === "string" ? record.name : "";
-			if (!name || wrappedOpenAiTools.has(name)) continue;
+			if (!name || wrappedOpenAiTools.has(name) || toolPresentationSkipped(name)) continue;
 			const execute = typeof record.execute === "function" ? (record.execute as any) : null;
 			if (!execute) continue;
 			const rawLabel = typeof record.label === "string" ? record.label.trim() : "";
@@ -5344,13 +5539,11 @@ export default function (pi: ExtensionAPI): void {
 		}
 		for (const tool of allTools) {
 			if (!isMcpToolCandidate(tool)) continue;
-			// Record every MCP tool and its server, even ones already wrapped or with
-			// no execute() to wrap: rendering identifies MCP calls from this registry,
-			// since a direct tool's name (`get_me`) can carry no trace of MCP at all.
-			noteMcpTool(tool);
 			const record = tool as Record<string, unknown>;
 			const name = typeof record.name === "string" ? record.name : "";
-			if (!name || wrappedMcpTools.has(name)) continue;
+			if (!name || wrappedMcpTools.has(name) || toolPresentationSkipped(name)) continue;
+			// Record enabled MCP tools and their server before installing presentation.
+			noteMcpTool(tool);
 			const execute = typeof record.execute === "function" ? (record.execute as any) : null;
 			if (!execute) continue;
 			const label = typeof record.label === "string" ? record.label : name === "mcp" ? "MCP" : `MCP ${name}`;

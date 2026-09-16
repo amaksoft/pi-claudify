@@ -1,4 +1,40 @@
 {
+  "compatibility": {
+    "enabled": true,
+    "features": {
+      "settingsCommand": true,
+      "fullscreenTui": true,
+      "themeColors": true,
+      "assistantMessages": true,
+      "userMessages": true,
+      "customMessages": true,
+      "compactionSummary": true,
+      "toolPresentation": true,
+      "toolBackground": true,
+      "diffPresentation": true,
+      "inspectionGroups": true,
+      "bashStacking": true,
+      "mouseInteraction": true,
+      "spinner": true,
+      "footer": true,
+      "banner": true,
+      "promptPointer": true
+    },
+    "tools": {
+      "default": true,
+      "read": true,
+      "write": true,
+      "edit": true,
+      "bash": true,
+      "grep": true,
+      "find": true,
+      "ls": true,
+      "apply_patch": true,
+      "mcp:*": true,
+      "openai:*": true,
+      "generic:*": true
+    }
+  },
   "toolBackground": "transparent",
   "readOutputMode": "preview",
   "searchOutputMode": "preview",
@@ -25,8 +61,8 @@
   ],
   "spinnerVerbMode": "append",
   "messageStyle": "claude",
-  "assistantPrefix": "⏺",
-  "thinkingPrefix": "✻",
+  "assistantPrefix": "\u23fa",
+  "thinkingPrefix": "\u273b",
   "messageSpacing": "comfortable",
   "hiddenThinkingLabel": "Pondering...",
   "workedVerbs": [

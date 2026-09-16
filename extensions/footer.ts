@@ -4,6 +4,7 @@ import { basename, dirname } from "node:path";
 import { Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 
+import { settingsFeatureEnabled } from "./domain/compatibility.ts";
 import { readSettings, type SettingsFile } from "./settings.ts";
 
 // Claude Code-style statusline footer + pinned-gray input border.
@@ -638,7 +639,8 @@ export class ClaudeFooterComponent {
  */
 export function installClaudeFooter(ctx: any, pi?: any): void {
 	if (!ctx?.hasUI || typeof ctx.ui?.setFooter !== "function") return;
-	if (resolveFooterSettings(readSettings().values).style !== "claude") {
+	const settings = readSettings().values;
+	if (!settingsFeatureEnabled(settings, "footer") || resolveFooterSettings(settings).style !== "claude") {
 		ctx.ui.setFooter(undefined);
 		return;
 	}
@@ -733,7 +735,8 @@ export function patchEditorBorderColor(): void {
 	proto.getThinkingBorderColor = function patchedThinkingBorderColor(level: unknown): (str: string) => string {
 		const passthrough = original.call(this, level);
 		return (str: string): string => {
-			if (resolveFooterSettings(readSettings().values).editorBorder !== "gray") return passthrough(str);
+			const settings = readSettings().values;
+			if (!settingsFeatureEnabled(settings, "footer") || resolveFooterSettings(settings).editorBorder !== "gray") return passthrough(str);
 			try {
 				return this.fg("borderMuted", str);
 			} catch {

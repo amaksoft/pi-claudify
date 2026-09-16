@@ -1,7 +1,12 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Loader } from "@earendil-works/pi-tui";
 
+import { parseCompatibilityConfig, resolveCompatibilityFeatureEnabled } from "./domain/compatibility.ts";
 import { readSettings } from "./settings.ts";
+
+function spinnerFeatureEnabled(): boolean {
+	return resolveCompatibilityFeatureEnabled(parseCompatibilityConfig(readSettings().values.compatibility), "spinner");
+}
 
 // ---------------------------------------------------------------------------
 // Patch built-in Loader with Claude/OpenBrawd-style glyphs.
@@ -322,7 +327,18 @@ function unrefTimer(timer: ReturnType<typeof setTimeout> | null | undefined): vo
 	(timer as any)?.unref?.();
 }
 
-(Loader.prototype as any).updateDisplay = function patchedUpdateDisplay() {
+interface LoaderPatchHooks {
+	updateDisplay(this: any): void;
+	start(this: any): void;
+	stop(this: any): void;
+}
+interface LoaderPatchRegistry {
+	original: LoaderPatchHooks;
+	hooks?: LoaderPatchHooks;
+}
+const LOADER_PATCH_REGISTRY_KEY = Symbol.for("pi-claudify:spinner-loader-patch-registry");
+
+function customUpdateDisplay(this: any): void {
 	applyThemeColors(this.ui?.theme);
 	const frame = OB_FRAMES[this.currentFrame % OB_FRAMES.length];
 	const message = typeof this.message === "string" && RAW_ANSI_RE.test(this.message)
@@ -330,46 +346,69 @@ function unrefTimer(timer: ReturnType<typeof setTimeout> | null | undefined): vo
 		: this.messageColorFn(this.message);
 	const glyphColor = shimmerActive() ? shimmerGlyphAnsi(shimmerElapsedMs()) : CLAUDE_ORANGE;
 	const nextText = `${glyphColor}${frame}${RESET} ${message}`;
-	if ((this as any)[LOADER_LAST_TEXT] === nextText) return;
-	(this as any)[LOADER_LAST_TEXT] = nextText;
+	if (this[LOADER_LAST_TEXT] === nextText) return;
+	this[LOADER_LAST_TEXT] = nextText;
 	this.setText(nextText);
-	if (this.ui && !(this.ui as any).stopped) {
+	if (this.ui && !this.ui.stopped) {
 		(globalThis as any)[ACTIVE_UI_SYMBOL] = this.ui;
 		this.ui.requestRender();
 	}
-};
+}
 
-Loader.prototype.start = function patchedStart() {
+function customStart(this: any): void {
 	this.stop();
-	(this as any)[LOADER_ACTIVE] = true;
-	const generation = ((this as any)[LOADER_GENERATION] ?? 0) + 1;
-	(this as any)[LOADER_GENERATION] = generation;
-	delete (this as any)[LOADER_LAST_TEXT];
-	(this as any).updateDisplay();
+	this[LOADER_ACTIVE] = true;
+	const generation = (this[LOADER_GENERATION] ?? 0) + 1;
+	this[LOADER_GENERATION] = generation;
+	delete this[LOADER_LAST_TEXT];
+	this.updateDisplay();
 	const scheduleNext = () => {
-		if ((this as any)[LOADER_ACTIVE] !== true || (this as any)[LOADER_GENERATION] !== generation) return;
-		const intervalMs = getLoaderIntervalMs(this);
+		if (this[LOADER_ACTIVE] !== true || this[LOADER_GENERATION] !== generation) return;
 		const timer = setTimeout(() => {
-			(this as any).intervalId = null;
-			if ((this as any)[LOADER_ACTIVE] !== true || (this as any)[LOADER_GENERATION] !== generation) return;
-			(this as any).currentFrame = ((this as any).currentFrame + 1) % OB_FRAMES.length;
-			(this as any).updateDisplay();
+			this.intervalId = null;
+			if (this[LOADER_ACTIVE] !== true || this[LOADER_GENERATION] !== generation) return;
+			this.currentFrame = (this.currentFrame + 1) % OB_FRAMES.length;
+			this.updateDisplay();
 			scheduleNext();
-		}, intervalMs);
+		}, getLoaderIntervalMs(this));
 		unrefTimer(timer);
-		(this as any).intervalId = timer;
+		this.intervalId = timer;
 	};
 	scheduleNext();
-};
+}
 
-Loader.prototype.stop = function patchedStop() {
-	(this as any)[LOADER_ACTIVE] = false;
-	(this as any)[LOADER_GENERATION] = ((this as any)[LOADER_GENERATION] ?? 0) + 1;
-	if ((this as any).intervalId) {
-		clearTimeout((this as any).intervalId);
-		(this as any).intervalId = null;
+function customStop(this: any): void {
+	this[LOADER_ACTIVE] = false;
+	this[LOADER_GENERATION] = (this[LOADER_GENERATION] ?? 0) + 1;
+	if (this.intervalId) {
+		clearTimeout(this.intervalId);
+		this.intervalId = null;
 	}
-};
+}
+
+function installSpinnerLoaderPatch(enabled: boolean): void {
+	const root = globalThis as Record<PropertyKey, unknown>;
+	let registry = root[LOADER_PATCH_REGISTRY_KEY] as LoaderPatchRegistry | undefined;
+	if (!registry) {
+		registry = {
+			original: {
+				updateDisplay: (Loader.prototype as any).updateDisplay,
+				start: Loader.prototype.start,
+				stop: Loader.prototype.stop,
+			},
+		};
+		root[LOADER_PATCH_REGISTRY_KEY] = registry;
+		for (const method of ["updateDisplay", "start", "stop"] as const) {
+			(Loader.prototype as any)[method] = function stableSpinnerLoaderMethod(this: any, ...args: any[]) {
+				const active = (globalThis as Record<PropertyKey, unknown>)[LOADER_PATCH_REGISTRY_KEY] as LoaderPatchRegistry;
+				return (active.hooks?.[method] ?? active.original[method]).call(this, ...args as []);
+			};
+		}
+	}
+	registry.hooks = enabled ? { updateDisplay: customUpdateDisplay, start: customStart, stop: customStop } : undefined;
+}
+
+installSpinnerLoaderPatch(spinnerFeatureEnabled());
 
 // ---------------------------------------------------------------------------
 // Spinner verbs — fun/whimsical loading messages (different set from OpenBrawd)
@@ -627,6 +666,7 @@ const TURN_COMPLETION_MS = 2_500;
 
 
 export default function (pi: ExtensionAPI) {
+	if (!spinnerFeatureEnabled()) return;
 	let agentStartTime = 0;
 	let turnStartTime = 0;
 	let refreshTimer: ReturnType<typeof setTimeout> | null = null;

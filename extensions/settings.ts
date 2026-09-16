@@ -2,6 +2,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFil
 import { join } from "node:path";
 
 import type { MessageSpacing, MessageStyle, WorkedVerbMode } from "./message-chrome.ts";
+import type { CompatibilityConfig } from "./domain/compatibility.ts";
 
 export type SettingsFileStatus = "ok" | "missing" | "invalid";
 export type SpinnerVerbMode = "append" | "replace";
@@ -20,6 +21,13 @@ export interface SettingsFile {
 	bashSemanticDisplay?: boolean;
 	readOnlyToolGrouping?: boolean;
 	readOnlyToolGroupLimit?: number;
+	/**
+	 * Legacy exact-name tool skip list, kept for backward compatibility. A name
+	 * here behaves like `compatibility.tools[name] = false` unless a more
+	 * specific `compatibility.tools[name]` entry overrides it — see
+	 * extensions/domain/compatibility.ts.
+	 */
+	skipToolOverrides?: string[];
 	showTruncationHints?: boolean;
 	diffCollapsedLines?: number;
 	diffTheme?: string;
@@ -47,6 +55,12 @@ export interface SettingsFile {
 	editorBorder?: "gray" | "thinking";
 	accentColor?: "claude" | "theme" | `#${string}`;
 	userMessageBox?: "theme" | "claude" | "off" | `#${string}`;
+	/**
+	 * Backward-compatible feature/tool gating. Absent means current (fully
+	 * enabled) behavior — see README.md "Compatibility control" and
+	 * extensions/domain/compatibility.ts for the parsing/resolution rules.
+	 */
+	compatibility?: CompatibilityConfig;
 }
 
 export interface SettingsFileInfo {
