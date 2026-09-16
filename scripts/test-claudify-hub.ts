@@ -157,7 +157,8 @@ for (const label of [
 	"MCP output",
 	"Bash output",
 	"Preview lines",
-	"Collapsed Bash lines",
+	"Bash preview lines",
+	"Running Bash preview",
 	"Stack consecutive Bash",
 	"Semantic Bash display",
 	"Group read-only tools",
@@ -226,11 +227,19 @@ assert.equal(written.toolBackground, "outlines", "the enum persists its canonica
 assert.equal(written.spinnerColor, "legacy-color", "writing preserves a legacy alias value under its canonical key");
 assert.ok(!Object.hasOwn(written, "spinnerVerbColor"), "writing drops the legacy alias key");
 
-for (let index = 0; index < 5; index++) settingsScreen.handleInput("down");
+for (let index = 0; index < 6; index++) settingsScreen.handleInput("down");
 assert.match(render(settingsScreen), /^\s*❯ Stack consecutive Bash\s+true/m, "boolean navigation reaches the expected row");
 settingsScreen.handleInput("enter");
 assert.match(render(settingsScreen), /^\s*❯ Stack consecutive Bash\s+false/m, "toggling a boolean updates the assembled render");
 assert.equal(readWrittenSettings().bashStackConsecutive, false, "the boolean change persists immediately");
+
+settingsScreen.handleInput("up");
+assert.match(render(settingsScreen), /^\s*❯ Running Bash preview\s+head/m, "new enum row reachable and shows the default");
+settingsScreen.handleInput("right");
+assert.match(render(settingsScreen), /^\s*❯ Running Bash preview\s+tail/m, "cycling the enum updates the assembled render");
+settingsScreen.handleInput("left");
+assert.match(render(settingsScreen), /^\s*❯ Running Bash preview\s+head/m, "cycling back restores the default");
+assert.equal(readWrittenSettings().bashRunningPreview, "head", "the enum round-trips through settings");
 
 settingsScreen.handleInput("up");
 settingsScreen.handleInput("up");

@@ -65,9 +65,11 @@ type EditableSettingsKey =
 	| "bashOutputMode"
 	| "previewLines"
 	| "bashCollapsedLines"
+	| "bashRunningPreview"
 	| "bashStackConsecutive"
 	| "bashSemanticDisplay"
 	| "readOnlyToolGrouping"
+	| "groupShellCommands"
 	| "readOnlyToolGroupLimit"
 	| "expandedPreviewMaxLines"
 	| "messageStyle"
@@ -311,10 +313,18 @@ const TOOL_OUTPUT_ROWS: readonly ImmediateRowDefinition[] = [
 	{
 		kind: "number",
 		key: "bashCollapsedLines",
-		label: "Collapsed Bash lines",
-		description: "Limits output lines shown by Bash preview mode before expansion.",
+		label: "Bash preview lines",
+		description: "Caps streaming and collapsed Bash previews; settled expanded rows use Expanded preview max lines.",
 		defaultValue: 10,
 		min: 0,
+	},
+	{
+		kind: "enum",
+		key: "bashRunningPreview",
+		label: "Running Bash preview",
+		description: "Shows the head or the tail of streaming output while a command runs.",
+		values: ["head", "tail"],
+		defaultValue: "head",
 	},
 	{
 		kind: "boolean",
@@ -335,6 +345,13 @@ const TOOL_OUTPUT_ROWS: readonly ImmediateRowDefinition[] = [
 		key: "readOnlyToolGrouping",
 		label: "Group read-only tools",
 		description: "Groups Read, search, list, MCP, and Bash calls into Claude summaries.",
+		defaultValue: true,
+	},
+	{
+		kind: "boolean",
+		key: "groupShellCommands",
+		label: "Group shell commands",
+		description: "Off keeps Bash calls as their own rows instead of folding them into the summary.",
 		defaultValue: true,
 	},
 	{

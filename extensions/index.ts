@@ -602,6 +602,11 @@ function shouldStackConsecutiveBash(): boolean {
 	return featureEnabled("bashStacking") && readSettings().values.bashStackConsecutive !== false;
 }
 
+/** Claude parity by default; off keeps shell rows visible without expanding. */
+function shellGroupingEnabled(): boolean {
+	return readSettings().values.groupShellCommands !== false;
+}
+
 function readOnlyToolGroupingEnabled(): boolean {
 	return featureEnabled("inspectionGroups") && readSettings().values.readOnlyToolGrouping !== false;
 }
@@ -644,27 +649,17 @@ function isReadOnlyInspectionToolExecution(value: unknown): boolean {
 	// or failing MCP tool exactly like a read-only one — there is no separate row.
 	if (isMcpToolName(rec.toolName)) return true;
 	// Claude Code aggregates every shell command ("running 1 shell command"), not
-	// just the ones that look like file reads.
-	return rec.toolName === "bash";
+	// just the ones that look like file reads — so that is the default. Turning
+	// groupShellCommands off keeps shell calls as their own always-visible rows:
+	// aggregation is recoverable (ctrl+o shows the command), but ctrl+o opens the
+	// whole transcript, so a user who wants to see commands as they happen has no
+	// per-row alternative.
+	if (rec.toolName === "bash") return shellGroupingEnabled();
+	return false;
 }
 
 function isMcpToolExecution(value: unknown): boolean {
 	return isToolExecutionLike(value) && isMcpToolName(toolComponentRecord(value).toolName);
-}
-
-/**
- * Claude Code aggregates read-only tools at *any* count — a single read renders as
- * `⏺ Reading 1 file…` and collapses to `Read 1 file`, never as `⏺ Read(path)`.
- * One groupable child is therefore enough to engage the group.
- *
- * Expanding a tool (ctrl+o) drops it out of the group via
- * isReadOnlyInspectionToolExecution, which is how the hidden detail — the full
- * path, command, or pattern — is brought back. Claude Code does the same on click.
- *
- * Captured: docs/plans/2026-07-14-tool-row-conformance-audit.md
- */
-function hasConsecutiveReadOnlyInspectionToolChildren(children: unknown[]): boolean {
-	return children.some(isReadOnlyInspectionToolExecution);
 }
 
 function plural(count: number, noun: string): string {
@@ -794,9 +789,20 @@ function bashInspectionCommand(value: unknown): string {
 	return summarizeText(typeof command === "string" ? command : String(command), 80);
 }
 
-/** A tool is settled once it has a result — running tools keep the group expanded. */
-function isSettledInspectionTool(value: unknown): boolean {
-	return !!toolComponentRecord(value).result;
+/**
+ * A tool is settled once it has a NON-partial result.
+ *
+ * pi assigns `.result` when execution STARTS and streams into it with
+ * `isPartial === true` (replacing the object per update); completion flips
+ * `isPartial` to false, and restored history rows are already false. So
+ * result-presence alone reads "settled" for the entire run, which collapsed the
+ * aggregate a frame after it appeared and made the active "Running…" header
+ * effectively unreachable.
+ * Capture: docs/plans/2026-09-07-inspection-group-interaction.md
+ */
+export function isSettledInspectionTool(value: unknown): boolean {
+	const rec = toolComponentRecord(value);
+	return !!rec.result && rec.isPartial !== true;
 }
 
 function bashReadInspectionStatus(value: unknown): string {
@@ -830,6 +836,14 @@ function mcpServersInGroup(group: unknown[]): string[] {
  */
 function summarizeReadOnlyInspectionTool(value: unknown): string {
 	const rec = toolComponentRecord(value);
+	// Paths and patterns are model output just like commands, and this row prints
+	// them verbatim: an ESC(0 in a path survives the row's SGR reset and redraws
+	// everything below as line art, while visibleWidth measures those bytes as
+	// zero and lets the row overflow the terminal.
+	return sanitizeToolText(inspectionTargetText(rec, value));
+}
+
+function inspectionTargetText(rec: { toolName?: unknown }, value: unknown): string {
 	if (rec.toolName === "read") return readInspectionTarget(value);
 	if (rec.toolName === "grep") return grepInspectionTarget(value);
 	if (rec.toolName === "find") return findInspectionTarget(value);
@@ -841,25 +855,49 @@ function summarizeReadOnlyInspectionTool(value: unknown): string {
  * Once every tool in the group has settled, Claude Code drops the header and the
  * ⎿ rows and leaves a single dim past-tense line, indented, with no bullet.
  */
-function renderCollapsedInspectionGroup(kinds: InspectionKind[], servers: string[], width: number): string[] {
-	const summary = `${CLAUDE_COLLAPSED_INDENT}${WORKED_LINE_FG}${describeInspectionsDone(kinds, servers)}${RESET}`;
-	const core = wrapMarkedLine(summary, width).map((line) => padToWidth(line, width));
-	if (effectiveToolBackgroundMode() === "outlines") return [" ".repeat(width), borderLine(width), ...core, borderLine(width)];
-	if (effectiveToolBackgroundMode() === "transparent") return [" ".repeat(width), ...core];
-	return core;
+function fitInspectionLine(line: string, width: number): string[] {
+	if (width <= 0) return [];
+	return wrapMarkedLine(line.replace(/\t/g, "   "), width)
+		.map((part) => padToWidth(visibleWidth(part) > width ? truncateToWidth(part, width, "") : part, width));
 }
 
-function renderInspectionGroup(group: unknown[], width: number): string[] {
+function renderCollapsedInspectionGroup(
+	kinds: InspectionKind[],
+	servers: string[],
+	width: number,
+	span?: { lead: number; count: number },
+): string[] {
+	syncToolBackgroundMode();
+	// Keep the captured grammar byte-for-byte: no invented click/ctrl+o hint.
+	// Clickability is a capability of the component, not prose in its content.
+	const summary = `${CLAUDE_COLLAPSED_INDENT}${WRAP_MARK}${WORKED_LINE_FG}${describeInspectionsDone(kinds, servers)}${RESET}`;
+	const core = fitInspectionLine(summary, width);
+	let lead = 0;
+	let framed: string[];
+	if (effectiveToolBackgroundMode() === "outlines") {
+		framed = [" ".repeat(width), borderLine(width), ...core, borderLine(width)];
+		lead = 2;
+	} else if (effectiveToolBackgroundMode() === "transparent") {
+		framed = [" ".repeat(width), ...core];
+		lead = 1;
+	} else {
+		framed = core;
+	}
+	if (span) {
+		span.lead = lead;
+		span.count = core.length;
+	}
+	return framed;
+}
+
+function renderActiveInspectionGroup(group: unknown[], width: number, span?: { lead: number; count: number }): string[] {
 	syncToolBackgroundMode();
 	// MCP calls contribute a clause to the header but never a ⎿ row of their own.
 	const targets = group.filter((entry) => !isMcpToolExecution(entry));
-	const limit = readOnlyToolGroupLimit();
-	const shown = targets.slice(0, limit);
+	const shown = targets.slice(0, readOnlyToolGroupLimit());
 	const remaining = targets.length - shown.length;
 	const kinds = group.map(inspectionKind);
 	const servers = mcpServersInGroup(group);
-	const settled = group.every(isSettledInspectionTool);
-	if (settled) return renderCollapsedInspectionGroup(kinds, servers, width);
 	const core: string[] = [`${WRAP_MARK}${CLAUDE_TOOL_GLYPH} ${describeInspectionsActive(kinds, servers)}`];
 	for (const entry of shown) {
 		core.push(`${TOOL_RULE}${CLAUDE_RESULT_PREFIX}${TRANSPARENT_RESET}${WRAP_MARK}${summarizeReadOnlyInspectionTool(entry)}`);
@@ -867,40 +905,242 @@ function renderInspectionGroup(group: unknown[], width: number): string[] {
 	if (remaining > 0) {
 		core.push(`${TOOL_RULE}${CLAUDE_RESULT_PREFIX}${TRANSPARENT_RESET}${WRAP_MARK}… +${remaining} more`);
 	}
-	const renderedCore = core.flatMap((line) => wrapMarkedLine(line, width)).map((line) => padToWidth(line, width));
-	if (effectiveToolBackgroundMode() === "outlines") return [" ".repeat(width), borderLine(width), ...renderedCore, borderLine(width)];
-	if (effectiveToolBackgroundMode() === "transparent") return [" ".repeat(width), ...renderedCore];
-	return renderedCore;
+	const rendered = core.flatMap((line) => fitInspectionLine(line, width));
+	let lead = 0;
+	let framed: string[];
+	if (effectiveToolBackgroundMode() === "outlines") {
+		framed = [" ".repeat(width), borderLine(width), ...rendered, borderLine(width)];
+		lead = 2;
+	} else if (effectiveToolBackgroundMode() === "transparent") {
+		framed = [" ".repeat(width), ...rendered];
+		lead = 1;
+	} else {
+		framed = rendered;
+	}
+	// The active header AND its target rows are one interactive block: clicking
+	// `$ command` must dissolve into the native running row just like ctrl+o.
+	if (span) { span.lead = lead; span.count = rendered.length; }
+	return framed;
 }
 
-function renderWithGroupedReadOnlyInspectionTools(container: any, width: number): string[] | null {
-	const children = Array.isArray(container?.children) ? container.children : null;
-	if (!children || !hasConsecutiveReadOnlyInspectionToolChildren(children)) return null;
+/**
+ * The host writes mouseLayout only from Container.render. A component that
+ * paints lines its children did not produce must install the geometry it
+ * actually painted, or Container.handleMouse invents hit regions by rendering
+ * invisible children at their native heights.
+ *
+ * This field is present in pi-tui >=0.85 and absent in the repo's older test
+ * dependency. Feature-detected assignment keeps older hosts working while the
+ * component's own handleMouse remains directly testable.
+ */
+/**
+ * Re-anchor per-child heights after the border patch trims blanks and adds
+ * framing. Leading trimmed blanks belonged to the first child's top, trailing
+ * blanks to the last child's bottom; framing lines (spacer, borders) belong to
+ * the block, so the top count goes to the first child and the bottom border to
+ * the last. Pure and unit-tested: the render path supplies measured inputs and
+ * never adjusts them inline.
+ */
+export function anchorFramedHeights(
+	naturalHeights: number[],
+	leadingBlanks: number,
+	trailingBlanks: number,
+	topFraming: number,
+	bottomFraming: number,
+): number[] {
+	const heights = [...naturalHeights];
+	if (heights.length === 0) return heights;
+	heights[0] = Math.max(0, heights[0] - leadingBlanks + topFraming);
+	heights[heights.length - 1] = Math.max(0, heights[heights.length - 1] - trailingBlanks + bottomFraming);
+	return heights;
+}
 
-	const rendered: string[] = [];
-	let group: unknown[] = [];
-	let previousWasBash = false;
-	const flushGroup = () => {
-		if (group.length === 0) return;
-		// Even a lone read-only tool renders as the aggregate — it has no row of its own.
-		rendered.push(...renderInspectionGroup(group, width));
-		previousWasBash = false;
-		group = [];
+function installMouseLayout(
+	component: any,
+	layout: { width: number; children: Array<{ component: unknown; height: number }> } | undefined,
+): void {
+	try {
+		component.mouseLayout = layout;
+	} catch {
+		/* older/read-only host: keyboard expansion still works */
+	}
+}
+
+/**
+ * A real transcript component for one consecutive run of aggregatable tools.
+ *
+ * Collapsed/active lines belong to this component, so a fullscreen click has a
+ * real target. Opening marks every member expanded through pi's public method;
+ * the next reconciliation dissolves the wrapper into native rows, preserving
+ * links, output, per-tool status and the host's own rendering. ctrl+o duck-types
+ * setExpanded on transcript children, so keyboard and pointer share this path.
+ */
+export class InspectionGroupComponent extends Container {
+	private readonly members: unknown[];
+	private lastHeight = 0;
+	private summaryStart = 0;
+	private summaryEnd = 0;
+
+	constructor(members: unknown[]) {
+		super();
+		this.members = [...members];
+		for (const member of this.members) {
+			try { this.addChild(member as any); } catch { /* malformed child: validates() will degrade */ }
+		}
+	}
+
+	getMembers(): unknown[] {
+		return [...this.members];
+	}
+
+	validates(): boolean {
+		return this.members.length > 0 && this.members.every(
+			(member) => isReadOnlyInspectionToolExecution(member) && !(member as any)?.hideComponent,
+		);
+	}
+
+	private renderMembers(width: number): string[] {
+		const lines: string[] = [];
+		for (const member of this.members) {
+			try {
+				if (typeof (member as any)?.render === "function") lines.push(...(member as any).render(width));
+			} catch { /* one bad member must not blank its siblings */ }
+		}
+		return lines;
+	}
+
+	render(width: number): string[] {
+		try {
+			// The ⎿ gutter leaves no useful body in panes this narrow. Native rows
+			// are the honest fallback and retain every detail.
+			if (width < 24 || !this.validates()) {
+				const lines = this.renderMembers(width);
+				this.lastHeight = lines.length;
+				this.summaryStart = 0;
+				this.summaryEnd = 0;
+				installMouseLayout(this, undefined);
+				return lines;
+			}
+
+			let lines: string[];
+			if (!this.members.every(isSettledInspectionTool)) {
+				const span = { lead: 0, count: 0 };
+				lines = renderActiveInspectionGroup(this.members, width, span);
+				this.summaryStart = span.lead;
+				this.summaryEnd = span.lead + span.count;
+			} else {
+				const span = { lead: 0, count: 0 };
+				lines = renderCollapsedInspectionGroup(
+					this.members.map(inspectionKind),
+					mcpServersInGroup(this.members),
+					width,
+					span,
+				);
+				this.summaryStart = span.lead;
+				this.summaryEnd = span.lead + span.count;
+			}
+			this.lastHeight = lines.length;
+			// We painted all lines; members painted none. Never fabricate invisible
+			// member hit regions for this shape.
+			installMouseLayout(this, { width, children: [] });
+			return lines;
+		} catch {
+			const lines = this.renderMembers(width);
+			this.lastHeight = lines.length;
+			this.summaryStart = 0;
+			this.summaryEnd = 0;
+			installMouseLayout(this, undefined);
+			return lines;
+		}
+	}
+
+	handleMouse(event: any): { handled: true } | undefined {
+		const button = event?.button;
+		const isPrimary = button === "left" || button === 0 || button === "primary" || button === undefined;
+		if (
+			event?.type === "click" && isPrimary && this.validates() &&
+			typeof event?.y === "number" && event.y >= this.summaryStart && event.y < this.summaryEnd
+		) {
+			this.setExpanded(true);
+			return { handled: true };
+		}
+		return undefined;
+	}
+
+	get isExpandable(): boolean {
+		return true;
+	}
+
+	setExpanded(expanded: boolean): void {
+		for (const member of this.members) {
+			try {
+				const setter = (member as any)?.setExpanded;
+				if (typeof setter === "function") setter.call(member, expanded);
+				else {
+					(member as any).expanded = expanded;
+					(member as any).invalidate?.();
+				}
+			} catch { /* one member must not block the rest */ }
+		}
+		try { this.invalidate(); } catch { /* host may not expose invalidation */ }
+	}
+}
+
+/** Fold consecutive groupable rows into real components. Idempotent per render. */
+export function ensureInspectionGroups(container: any): void {
+	const children = Array.isArray(container?.children) ? container.children : null;
+	if (!children?.length) return;
+
+	let changed = false;
+	const next: unknown[] = [];
+	let run: unknown[] = [];
+	let reusable: InspectionGroupComponent | null = null;
+
+	const sameMembers = (group: InspectionGroupComponent, members: unknown[]): boolean => {
+		const current = group.getMembers();
+		return current.length === members.length && current.every((member, index) => member === members[index]);
+	};
+	const flush = () => {
+		if (!run.length) {
+			reusable = null;
+			return;
+		}
+		const members = run;
+		const prior = reusable;
+		run = [];
+		reusable = null;
+		// Claude Code captures singletons (`Read 1 file`), so every non-empty run
+		// gets a component — clickability must not disappear at count one.
+		if (prior && sameMembers(prior, members)) next.push(prior);
+		else {
+			next.push(new InspectionGroupComponent(members));
+			changed = true;
+		}
 	};
 
 	for (const child of children) {
-		if (isReadOnlyInspectionToolExecution(child)) {
-			group.push(child);
-			continue;
+		if (child instanceof InspectionGroupComponent) {
+			if (child.validates()) {
+				if (!reusable) reusable = child;
+				run.push(...child.getMembers());
+			} else {
+				flush();
+				next.push(...child.getMembers());
+				try { child.clear(); } catch { /* release ownership best-effort */ }
+				changed = true;
+			}
+		} else if (isReadOnlyInspectionToolExecution(child) && !(child as any)?.hideComponent) {
+			run.push(child);
+		} else {
+			flush();
+			next.push(child);
 		}
-		flushGroup();
-		const currentIsBash = isBashToolExecution(child);
-		const childLines = typeof child?.render === "function" ? child.render(width) : [];
-		rendered.push(...(currentIsBash && previousWasBash ? dropLeadingSpacerLine(childLines) : childLines));
-		previousWasBash = currentIsBash;
 	}
-	flushGroup();
-	return rendered;
+	flush();
+	if (!changed) return;
+	// Preserve the array identity: host code may retain a reference to children.
+	children.length = 0;
+	children.push(...next);
 }
 
 function hasConsecutiveBashToolChildren(children: unknown[]): boolean {
@@ -917,20 +1157,26 @@ function dropLeadingSpacerLine(lines: string[]): string[] {
 	return lines.length > 0 && isBlankLine(lines[0]) ? lines.slice(1) : lines;
 }
 
-function renderWithStackedConsecutiveBash(container: any, width: number): string[] | null {
+function renderWithStackedConsecutiveBash(
+	container: any,
+	width: number,
+): { lines: string[]; layout: Array<{ component: unknown; height: number }> } | null {
 	if (!shouldStackConsecutiveBash()) return null;
 	const children = Array.isArray(container?.children) ? container.children : null;
 	if (!children || !hasConsecutiveBashToolChildren(children)) return null;
 
-	const rendered: string[] = [];
+	const lines: string[] = [];
+	const layout: Array<{ component: unknown; height: number }> = [];
 	let previousWasBash = false;
 	for (const child of children) {
 		const currentIsBash = isBashToolExecution(child);
 		const childLines = typeof child?.render === "function" ? child.render(width) : [];
-		rendered.push(...(currentIsBash && previousWasBash ? dropLeadingSpacerLine(childLines) : childLines));
+		const painted = currentIsBash && previousWasBash ? dropLeadingSpacerLine(childLines) : childLines;
+		lines.push(...painted);
+		layout.push({ component: child, height: painted.length });
 		previousWasBash = currentIsBash;
 	}
-	return rendered;
+	return { lines, layout };
 }
 
 function isTerminalImageLine(line: string): boolean {
@@ -964,10 +1210,17 @@ function patchGlobalToolBorders(): void {
 	const originalRender = proto.render;
 	proto.render = function patchedContainerRender(width: number): string[] {
 		if (!isToolExecutionLike(this)) {
-			const grouped = renderWithGroupedReadOnlyInspectionTools(this, width);
-			if (grouped) return grouped;
+			// Fold runs into components before the host composes the container. Its
+			// original render then owns the parent mouseLayout, while each wrapper
+			// owns the geometry of the lines it paints.
+			try { ensureInspectionGroups(this); } catch { /* native rows are the fallback */ }
 			const stacked = renderWithStackedConsecutiveBash(this, width);
-			if (stacked) return stacked;
+			if (stacked) {
+				// This path still bypasses originalRender; preserve the geometry of the
+				// spacer lines we actually dropped so rows below stay clickable.
+				installMouseLayout(this, { width, children: stacked.layout });
+				return stacked.lines;
+			}
 		}
 
 		if (isToolExecutionLike(this)) {
@@ -1008,6 +1261,24 @@ function patchGlobalToolBorders(): void {
 			result = [spacerLine, ...core, ...imageLines];
 		}
 
+		// The host hit-tests clicks from mouseLayout, which originalRender wrote
+		// for the UNFRAMED lines. We trimmed blanks and added framing, so without
+		// an update every painted line below this row routes off by the framing
+		// height (header clicks miss while result clicks still toggle). Re-anchor
+		// first/last child heights to what we actually painted; framing lines
+		// belong to the block, so the whole row stays clickable.
+		try {
+			const layout = (this as any).mouseLayout;
+			const kids = Array.isArray((this as any).children) ? (this as any).children : [];
+			if (layout && layout.width === width && Array.isArray(layout.children) && layout.children.length === kids.length && kids.length > 0) {
+				const natural = layout.children.map((entry: any) => (typeof entry?.height === "number" ? entry.height : 0));
+				const topFraming = 1 + (toolBackgroundMode === "outlines" && core.length > 0 ? 1 : 0);
+				const bottomFraming = toolBackgroundMode === "outlines" && core.length > 0 ? 1 : 0;
+				const heights = anchorFramedHeights(natural, start, rendered.length - 1 - end, topFraming, bottomFraming);
+				installMouseLayout(this, { width, children: kids.map((component: unknown, index: number) => ({ component, height: heights[index] ?? 0 })) });
+			}
+		} catch { /* hit-testing keeps the host layout */ }
+
 		(this as any)[TOOL_RENDER_CACHE] = { width, mode: effectiveToolBackgroundMode(), lines: result };
 		return result;
 	};
@@ -1019,6 +1290,93 @@ function summarizeText(text: string, max = 60): string {
 	const oneLine = text.replace(/\n/g, " ").trim();
 	if (oneLine.length <= max) return oneLine;
 	return `${oneLine.slice(0, Math.max(0, max - 3))}...`;
+}
+
+/**
+ * Strip terminal control bytes from model-supplied text before it enters a row.
+ *
+ * Applies to every string a model can steer into the transcript: shell commands,
+ * MCP parameters, and the paths/patterns in a group's ⎿ target rows.
+ *
+ * A command is model output, so it can carry escape sequences. Resetting SGR is
+ * not enough: a charset shift (ESC(0) survives a reset and turns later rows into
+ * line-drawing glyphs, and OSC/DCS envelopes can swallow the rest of the line.
+ * visibleWidth ignores these bytes when measuring, so anything left here makes
+ * pi's width accounting disagree with the terminal.
+ * Capture: docs/plans/2026-09-07-inspection-group-interaction.md
+ */
+/** Marks where bytes were removed, so a strip can never read as "nothing was here". */
+const SANITIZED_MARK = "\ufffd";
+
+/**
+ * Ordered rewrite rules for sanitizeToolText, built once.
+ *
+ * Order matters: terminated envelopes must go before the bare-ESC rule, or the
+ * catch-all breaks an envelope into text that reads as content. Hoisted to
+ * module scope because this runs per row per frame, and one of these is built
+ * from WRAP_MARK — recompiling it on every call showed up as avoidable work on
+ * large payloads. Global regexes are safe to share here: String.replace resets
+ * lastIndex, unlike test/exec.
+ */
+const SANITIZE_RULES: Array<readonly [RegExp, string]> = [
+	// Properly terminated envelopes carry no readable text: drop them whole.
+	[/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, ""],
+	[/\u001b[P_^X][\s\S]*?\u001b\\/g, ""],
+	// An UNTERMINATED envelope must not swallow the rest of the string: two bytes
+	// (ESC X) would erase a destructive tail and leave a row that looks complete —
+	// `echo hello <ESC>X && rm -rf ~/x` reading as `echo hello`. Strip the
+	// introducer, mark it, keep the text.
+	[/\u001b[P_^X]/g, SANITIZED_MARK],
+	[/\u001b\[[0-9;:?]*[ -\/]*[@-~]/g, ""],
+	// Charset designators are three bytes (ESC ( 0). Dropping only ESC and the
+	// intermediate would strand the final byte as a literal digit in the path.
+	[/\u001b[()*+$][0-~]/g, ""],
+	[/\u001b#[0-9]/g, ""],
+	[/\u001b/g, SANITIZED_MARK],
+	[new RegExp(WRAP_MARK, "g"), ""],
+	// Newline and tab are NOT in the C0 range below, and a row prints them
+	// verbatim: a path containing "\n⏺ Bash(echo safe)" forges a whole fake tool
+	// row. Fold every line/whitespace control to a space rather than deleting it,
+	// so the text stays readable and stays on one row.
+	[/[\u0009-\u000d\u0085\u2028\u2029]/g, " "],
+	[/[\u0000-\u001f\u007f-\u009f]/g, ""],
+	// Bidi overrides reorder the row without changing its bytes, so
+	// `echo hi <U+202E>...` can display as `rm -rf /`. Zero-width characters split
+	// a command invisibly (`r<ZWSP>m`). Neither belongs in an audit row.
+	[/[\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g, ""],
+];
+
+export function sanitizeToolText(text: unknown): string {
+	let out = typeof text === "string" ? text : String(text ?? "");
+	// Fast path: the overwhelming majority of paths and commands are clean ASCII.
+	if (!SANITIZE_SCAN.test(out)) return out;
+	for (const [pattern, replacement] of SANITIZE_RULES) out = out.replace(pattern, replacement);
+	return out;
+}
+
+/**
+ * Cheap pre-check: does this text contain anything the rules would rewrite?
+ * Must stay in sync with SANITIZE_RULES — WRAP_MARK (U+E000) is in here because
+ * it is a Private Use character, not a control one, so a text carrying only the
+ * wrap marker would otherwise skip sanitizing altogether.
+ */
+const SANITIZE_SCAN = new RegExp(
+	`[\\u0000-\\u001f\\u007f-\\u009f\\u200b-\\u200f\\u202a-\\u202e\\u2066-\\u2069\\u2028\\u2029\\ufeff${WRAP_MARK}]`,
+);
+
+
+/**
+ * The command text for a Bash header. Collapsed clips to 72 columns like Claude
+ * Code; expanded (ctrl+o) returns the whole command, which Text wraps to width
+ * against toolHeader's WRAP_MARK hanging indent.
+ *
+ * Without the expanded case the command was unrecoverable in EVERY state —
+ * clipped in the in-flight target row and clipped again in the settled header —
+ * so an aggregated `rm -rf … && curl … | sh` could not be read back at all.
+ */
+function bashHeaderCommand(command: unknown, expanded: boolean): string {
+	const flat = sanitizeToolText(command).replace(/\s+/g, " ").trim();
+	return expanded ? flat : summarizeText(flat, 72);
 }
 
 function hashText(text: string): string {
@@ -2073,6 +2431,10 @@ function expandedPreviewLimit(): number {
 function bashCollapsedLimit(): number {
 	const value = readSettings().values.bashCollapsedLines;
 	return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.floor(value) : 10;
+}
+
+function bashRunningPreview(): "head" | "tail" {
+	return getMode(readSettings().values.bashRunningPreview, ["head", "tail"] as const, "head");
 }
 
 function bashOutputMode(): "opencode" | "summary" | "preview" {
@@ -4019,7 +4381,11 @@ function renderGenericToolCall(name: string, args: any, theme: Theme, ctx: any):
 	syncToolCallStatus(ctx);
 	ctx.state._openAiPatchFiles = [];
 	const sp = (path: string) => shortPath(ctx.cwd ?? process.cwd(), path);
-	const summary = stableCallSummary(ctx, "_callSummary", () => summarizeGenericToolCall(name, args, theme, sp));
+	// Per-state cache keys: argsComplete latches the built summary, so one shared
+	// key would pin the collapsed text and expanding could never reveal params.
+	const summary = stableCallSummary(ctx, ctx.expanded ? "_callSummaryExpanded" : "_callSummary", () =>
+		summarizeGenericToolCall(name, args, theme, sp, ctx.expanded === true),
+	);
 	return makeText(ctx.lastComponent, toolHeader(genericToolLabel(name), summary, theme, toolStatusDot(ctx, theme)));
 }
 
@@ -4578,13 +4944,74 @@ function mcpServerForComponent(value: unknown): string {
  * Only reached when grouping is switched off — Claude Code shows no per-call MCP
  * row at all, so the aggregate clause normally renders instead of this.
  */
-function summarizeMcpToolCall(name: string, args: any, theme: Theme): string {
+/**
+ * The effective MCP parameters as one compact line, or "" when there are none.
+ *
+ * Proxy mode carries them as a JSON *string* in `args.args`; direct mode passes
+ * them as the argument object itself, where `tool`/`server` are routing keys
+ * rather than parameters. Unparseable JSON is shown verbatim — whatever the
+ * model sent is what ran, so it must be readable even when malformed.
+ */
+/** Keys that address an MCP call rather than parameterise it (see getStringArg use above). */
+const MCP_ROUTING_KEYS = new Set(["tool", "args", "server", "connect", "search", "action", "describe"]);
+
+function mcpCallArgsText(name: string, args: any): string {
+	const render = (value: unknown): string => {
+		if (value === undefined || value === null) return "";
+		if (typeof value === "string") {
+			const trimmed = value.trim();
+			if (!trimmed) return "";
+			// Proxy mode sends "{}" for a no-parameter call: an empty envelope, not a
+			// parameter worth a slot in the header.
+			try {
+				const parsed = JSON.parse(trimmed);
+				if (parsed && typeof parsed === "object" && Object.keys(parsed).length === 0) return "";
+			} catch {
+				/* malformed: fall through and show it verbatim */
+			}
+			return trimmed;
+		}
+		try {
+			const json = JSON.stringify(value);
+			return !json || json === "{}" || json === "[]" ? "" : json;
+		} catch {
+			return "";
+		}
+	};
+	let text: string;
+	if (name === "mcp") {
+		text = render(args?.args);
+		if (!text) {
+			// Routing keys address the call; they are not parameters of it. Leaving
+			// them in undid the empty-envelope suppression above and printed
+			// `MCP(forgejo:get_my_user_info {"server":"forgejo"})` for a call that
+			// takes no parameters at all — the most common MCP row there is.
+			const rest: Record<string, unknown> = {};
+			for (const [key, value] of Object.entries((args ?? {}) as Record<string, unknown>)) {
+				if (!MCP_ROUTING_KEYS.has(key)) rest[key] = value;
+			}
+			text = render(rest);
+		}
+	} else {
+		text = render(args);
+	}
+	return sanitizeToolText(text).replace(/\s+/g, " ").trim();
+}
+
+function summarizeMcpToolCall(name: string, args: any, theme: Theme, expanded = false): string {
 	const server = mcpServerName(name, args);
+	// Expanded (ctrl+o) appends the parameters. Collapsed, an MCP call is hidden
+	// behind a server name, and the header showed only `server:tool` — so what a
+	// mutating call actually did (`{"state":"cancelled"}`) was unreadable in every
+	// state. Claude Code shows MCP parameters in the row, so this is parity, and
+	// the collapsed line is untouched.
+	const params = expanded ? mcpCallArgsText(name, args) : "";
+	const withParams = (head: string): string => (params ? `${head} ${theme.fg("muted", params)}` : head);
 
 	// A direct tool: the call *is* the MCP tool, so name it.
 	if (name !== "mcp") {
 		const original = mcpToolOriginals.get(name) ?? name;
-		return server ? `${server}:${original}` : original;
+		return withParams(server ? `${server}:${original}` : original);
 	}
 
 	const tool = getStringArg(args, "tool", "describe");
@@ -4592,14 +5019,14 @@ function summarizeMcpToolCall(name: string, args: any, theme: Theme): string {
 		// Strip the server prefix the qualified name already carries, so the row
 		// reads `plane:list_work_items`, not `plane:plane_list_work_items`.
 		const bare = server && tool.startsWith(`${server}_`) ? tool.slice(server.length + 1) : tool;
-		return server ? `${server}:${bare}` : bare;
+		return withParams(server ? `${server}:${bare}` : bare);
 	}
 	const other = getStringArg(args, "connect", "search", "action", "server");
 	return other ? summarizeText(other, 72) : theme.fg("muted", "status");
 }
 
-function summarizeGenericToolCall(name: string, args: any, theme: Theme, sp: (path: string) => string): string {
-	if (isMcpToolName(name)) return summarizeMcpToolCall(name, args, theme);
+function summarizeGenericToolCall(name: string, args: any, theme: Theme, sp: (path: string) => string, expanded = false): string {
+	if (isMcpToolName(name)) return summarizeMcpToolCall(name, args, theme, expanded);
 	return summarizeOpenAiToolCall(name, args, theme, sp);
 }
 
@@ -5088,8 +5515,16 @@ export default function (pi: ExtensionAPI): void {
 		renderCall(args, theme, ctx) {
 			syncToolCallStatus(ctx);
 			const semantic = bashSemanticDisplayEnabled() ? classifyBashCommandForDisplay(args.command ?? "") : null;
-			const summary = stableCallSummary(ctx, "_callSummary", () => {
-				if (!semantic) return summarizeText(args.command, 72);
+			// Distinct cache keys per state: one shared key would pin whichever
+			// text was built first (argsComplete latches it), so expanding could
+			// never widen the clipped summary.
+			const summary = stableCallSummary(ctx, ctx.expanded ? "_callSummaryExpanded" : "_callSummary", () => {
+				if (!semantic) return bashHeaderCommand(args.command, ctx.expanded === true);
+				// A read-like command renders as its target (`nl -ba f | sed -n '1,200p'`
+				// shows as `f (lines 1-200)`), which is friendlier but hides what ran.
+				// Expanding must still reach the command, or the semantic path would be
+				// the one place aggregation stays unrecoverable.
+				if (ctx.expanded === true) return bashHeaderCommand(args.command, true);
 				const path = sp(semantic.path);
 				return semantic.rangeLabel ? `${path} ${theme.fg("muted", `(${semantic.rangeLabel})`)}` : path;
 			});
@@ -5103,7 +5538,28 @@ export default function (pi: ExtensionAPI): void {
 			if (isPartial) {
 				setupBlinkTimer(ctx);
 				const running = semantic?.kind === "read" ? "Reading" : "Running";
-				return makeText(ctx.lastComponent, withBranch(theme.fg("warning", `${running}... (${nonEmpty.length} lines)`), theme));
+				let text = theme.fg("warning", `${running}... (${nonEmpty.length} lines)`);
+				// Running output is ALWAYS a bounded preview, even after a click or
+				// ctrl+o dissolves the aggregate into a native Bash row. Expansion
+				// changes the interaction surface, not the streaming-output budget;
+				// settled expanded output has its own expandedPreviewMaxLines setting.
+				if (nonEmpty.length > 0) {
+					const limit = bashCollapsedLimit();
+					if (bashRunningPreview() === "tail") {
+						const tail = nonEmpty.slice(-limit);
+						const lines = tail.map((line) => theme.fg("dim", line));
+						// Without this, a truncated tail reads as the whole output —
+						// the count in the header is not enough to say lines are hidden.
+						if (tail.length < nonEmpty.length) lines.unshift(theme.fg("muted", `… +${nonEmpty.length - tail.length} earlier lines`));
+						text += `\n${lines.join("\n")}`;
+					} else {
+						const head = nonEmpty.slice(0, limit);
+						const lines = head.map((line) => theme.fg("dim", line));
+						if (head.length < nonEmpty.length) lines.push(theme.fg("muted", `… +${nonEmpty.length - head.length} more lines`));
+						text += `\n${lines.join("\n")}`;
+					}
+				}
+				return makeText(ctx.lastComponent, withBranch(text, theme));
 			}
 			clearBlinkTimer(ctx);
 			setToolStatus(ctx, ctx.isError ? "error" : "success");

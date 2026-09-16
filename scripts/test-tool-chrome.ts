@@ -6,6 +6,11 @@ import { initTheme } from "../node_modules/@earendil-works/pi-coding-agent/dist/
 
 import extension from "../extensions/index.ts";
 
+import { useSandboxHome } from "./sandbox-home.ts";
+
+// Assert default rendering, not the settings of whoever runs the suite.
+useSandboxHome("cc-chrome");
+
 // Chrome captured from Claude Code's raw TTY stream:
 // docs/plans/2026-07-13-current-cc-grammar.md
 const CC_DOT_PENDING = "\x1b[38;2;153;153;153m";

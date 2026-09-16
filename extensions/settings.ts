@@ -17,9 +17,11 @@ export interface SettingsFile {
 	expandedPreviewMaxLines?: number;
 	bashOutputMode?: "opencode" | "summary" | "preview";
 	bashCollapsedLines?: number;
+	bashRunningPreview?: "head" | "tail";
 	bashStackConsecutive?: boolean;
 	bashSemanticDisplay?: boolean;
 	readOnlyToolGrouping?: boolean;
+	groupShellCommands?: boolean;
 	readOnlyToolGroupLimit?: number;
 	/**
 	 * Legacy exact-name tool skip list, kept for backward compatibility. A name
