@@ -4,7 +4,7 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import { BannerComponent, truncatePath } from "../extensions/banner.ts";
 
 const identityTheme = {
-	name: "claude-code-dark",
+	name: "dark",
 	getColorMode: () => "truecolor",
 	fg: (_key: string, text: string) => text,
 	bold: (text: string) => text,

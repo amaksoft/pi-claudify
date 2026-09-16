@@ -305,11 +305,19 @@ const pickerScreen = new ClaudifyScreen(
 );
 pickerScreen.handleInput("enter");
 let themeSection = render(pickerScreen);
-for (const label of ["Adaptive colors", "Diff palette", "Tool chrome", "Diff theme", "Startup banner", "Banner frame", "Prompt pointer"]) {
+for (const label of ["Color source", "Markdown style", "Adaptive colors", "Diff palette", "Tool chrome", "Diff theme", "Startup banner", "Banner frame", "Prompt pointer"]) {
 	assert.ok(themeSection.includes(label), `Theme renders ${label}`);
 }
-assert.match(themeSection, /^\s*Diff palette\s+claude[ \t]*$/m, "a self-evident claude-valued enum renders no redundant marker");
+assert.match(themeSection, /^\s*❯ Color source\s+claude\s+✓ Claude[ \t]*$/m, "Claude colors are the top-level default");
+assert.match(themeSection, /^\s*Markdown style\s+claude\s+✓ Claude[ \t]*$/m, "Claude Markdown is the top-level default");
+assert.match(themeSection, /^\s*Diff palette\s+claude[ \t]*$/m, "a self-evident claude-valued advanced enum renders no redundant marker");
 assert.doesNotMatch(themeSection, /coming soon/, "Theme no longer renders its placeholder");
+pickerScreen.handleInput("enter");
+assert.equal(readWrittenSettings().colorSource, "theme", "Color source commits immediately");
+pickerScreen.handleInput("down");
+pickerScreen.handleInput("enter");
+assert.equal(readWrittenSettings().markdownStyle, "pi", "Markdown style commits immediately");
+pickerScreen.handleInput("down");
 pickerScreen.handleInput("enter");
 assert.equal(readWrittenSettings().themeAdaptive, false, "Theme adaptive commits immediately");
 pickerScreen.handleInput("down");
@@ -324,10 +332,10 @@ assert.equal(readWrittenSettings().accentColor, "#12ABEF", "a custom accent comm
 assert.deepEqual(pickerChanges.at(-1), ["accentColor", "#12ABEF"], "a custom accent reaches the host for live reflection");
 pickerScreen.handleInput("down");
 pickerScreen.handleInput("enter");
-assert.equal(readWrittenSettings().diffPalette, "theme", "Diff palette commits immediately");
+assert.equal(readWrittenSettings().diffPalette, "theme", "Diff palette remains an explicit grammar-and-color override");
 pickerScreen.handleInput("down");
 pickerScreen.handleInput("enter");
-assert.equal(readWrittenSettings().toolChrome, "theme", "Tool chrome commits immediately");
+assert.equal(readWrittenSettings().toolChrome, "theme", "Tool chrome remains an explicit grammar-and-color override");
 pickerScreen.handleInput("down");
 pickerScreen.handleInput("enter");
 assert.ok(render(pickerScreen).includes("Enter to select · Esc to cancel"), "opening a Picker renders the captured footer");
@@ -364,8 +372,12 @@ const diffScreen = new ClaudifyScreen(
 );
 diffScreen.handleInput("down");
 diffScreen.handleInput("enter");
-assert.match(render(diffScreen), /^\s*❯ Collapsed Write lines\s+10[ \t]*$/m, "a preference row renders its default with no Claude marker");
+assert.match(render(diffScreen), /^\s*❯ Syntax highlighting\s+true[ \t]*$/m, "diff syntax highlighting defaults on");
 assert.doesNotMatch(render(diffScreen), /coming soon/, "Diffs no longer renders its placeholder");
+diffScreen.handleInput("enter");
+assert.equal(readWrittenSettings().diffSyntaxHighlighting, false, "diff syntax highlighting toggles immediately");
+diffScreen.handleInput("down");
+assert.match(render(diffScreen), /^\s*❯ Collapsed Write lines\s+10[ \t]*$/m, "a preference row renders its default with no Claude marker");
 diffScreen.handleInput("right");
 assert.equal(readWrittenSettings().diffCollapsedLines, 11, "collapsed diff lines commits immediately");
 for (let index = 0; index < 12; index++) diffScreen.handleInput("left");
@@ -829,7 +841,7 @@ assert.match(render(resilientScreen), new RegExp(missingKey), "the unresolved ke
 
 // --- Claude accent override (docs/plans/2026-07-16-cc-accent-color.md) -------
 
-const { applyAccentOverride, applyToolBackgroundMode, isBundledClaudeTheme } = await import("../extensions/index.ts");
+const { applyAccentOverride, applyToolBackgroundMode } = await import("../extensions/index.ts");
 const { clearSettingsCache } = await import("../extensions/settings.ts");
 
 // Fakes mirror real pi themes: fgColors hold READY-MADE ANSI ESCAPES (theme.fg
@@ -885,18 +897,6 @@ clearSettingsCache();
 applyAccentOverride(forwardingProxy);
 assert.equal(proxiedInstance.fgColors.accent, PI_TEAL, "accentColor=theme restores pi's own accent even when the Proxy identity applies the change");
 assert.equal(proxiedInstance.fgColors.mdCode, PI_TEAL, "accent aliases restore through the Proxy identity too");
-
-writeFileSync(settingsPath, "{}");
-clearSettingsCache();
-const bundledAccent = "\x1b[38;2;17;34;51m";
-const bundledFake = { name: "claude-code-dark", mode: "truecolor", fgColors: { accent: bundledAccent, mdCode: bundledAccent, text: "\x1b[38;2;212;212;212m" } };
-assert.equal(isBundledClaudeTheme(bundledFake), true);
-applyAccentOverride(bundledFake);
-assert.equal(bundledFake.fgColors.accent, bundledAccent, "bundled native theme owns its accent when no override is explicit");
-writeFileSync(settingsPath, JSON.stringify({ accentColor: "claude" }));
-clearSettingsCache();
-applyAccentOverride(bundledFake);
-assert.equal(bundledFake.fgColors.accent, CC_LAVENDER_TC, "explicit claudify accent overrides a bundled theme intentionally");
 
 writeFileSync(settingsPath, "{}");
 clearSettingsCache();

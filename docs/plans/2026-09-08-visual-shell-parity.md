@@ -24,10 +24,11 @@ The six `claude-code-*` themes are ordinary Pi theme assets, selected through
 Pi's native theme setting. There is no second theme store or picker.
 
 When a bundled theme is active and a claudify color setting is absent, the theme
-owns accent, diff palette and tool colors. Explicit `accentColor`, `diffPalette`
-or `toolChrome` values intentionally override only their named surfaces. This
-makes the relationship replacement/extension rather than two implicit palettes
-fighting over the same tokens.
+owns the base accent and tool colors. Explicit `accentColor` or `toolChrome`
+values intentionally override only their named surfaces. Diff grammar remains
+Claude-unified regardless of active theme; only an explicit `diffPalette:
+"theme"` opts into theme-derived colors and the legacy split layout. This keeps
+theme selection from silently changing transcript structure.
 
 The copied MIT theme assets retain their source attribution in `theme/LICENSE`.
 Current-Pi-required `scrollbarTrack` was added to all six assets.

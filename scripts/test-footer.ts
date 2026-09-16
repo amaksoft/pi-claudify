@@ -85,7 +85,7 @@ assert.equal(projectNameFrom("/tmp/scratch/", null), "scratch", "a trailing slas
 
 // --- buildFooterLine: the statusline script's grammar, byte-for-byte ---------
 
-const BLUE = "\x1b[0;34m";
+const BLUE = "\x1b[38;5;75m";
 const GREEN = "\x1b[0;32m";
 const YELLOW = "\x1b[0;33m";
 const CYAN = "\x1b[0;36m";
@@ -116,6 +116,19 @@ assert.equal(
 		+ `${LEVEL_7}Week: 70% ▓▓▓▓▓▓▓░░░ → Reset: 08:00 PM${RESET}`,
 	"colored mode reproduces the captured context and provider-usage grammar",
 );
+
+// Actual footer components pass the active theme; colored mode uses semantic
+// theme tokens instead of unreadable basic ANSI blue on dark terminals.
+const semanticTheme = {
+	getFgAnsi(key: string) {
+		return ({ accent: "<accent>", success: "<success>", warning: "<warning>", error: "<error>", dim: "<dim>" } as Record<string, string>)[key];
+	},
+};
+const themedFooter = buildFooterLine({ ...fullData, usage: [] }, colored, semanticTheme);
+assert.ok(themedFooter.startsWith("  <accent>claudify"), "directory uses the active theme accent");
+assert.match(themedFooter, /<success>⎇ master/, "branch uses theme success");
+assert.match(themedFooter, /<warning>Fable 5/, "model uses theme warning");
+assert.match(themedFooter, /<dim> │ /, "separator uses theme dim");
 
 // The effort suffix rides inside the model segment, sharing its color.
 assert.ok(

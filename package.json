@@ -29,6 +29,7 @@
     "extensions/banner.ts",
     "extensions/bash-preview.ts",
     "extensions/builtin-contracts.ts",
+    "extensions/claude-palette.ts",
     "extensions/claudify-screen.ts",
     "extensions/diff-card.ts",
     "extensions/footer.ts",
@@ -42,25 +43,26 @@
     "extensions/mouse-layout.ts",
     "extensions/mutation-summary.ts",
     "extensions/pi-tool-adapter.ts",
+    "extensions/presentation-profile.ts",
     "extensions/prompt-editor.ts",
     "extensions/session-metrics.ts",
     "extensions/settings.ts",
     "extensions/spinner.ts",
     "extensions/terminal-sanitize.ts",
     "extensions/visual-preview.ts",
-    "extensions/write-snapshot.ts",
-    "theme"
+    "extensions/write-snapshot.ts"
   ],
   "scripts": {
     "bench:tools": "bun scripts/benchmark-tools.ts",
     "test:bash-display": "bun scripts/test-bash-display.ts",
     "test:message-chrome": "bun scripts/test-message-chrome.ts",
+    "test:markdown-rendering": "bun scripts/test-markdown-rendering.ts",
     "test:compaction": "bun scripts/test-compaction.ts",
     "test:settings-reader": "bun scripts/test-settings-reader.ts",
     "test:diff-body": "bun scripts/test-diff-body.ts",
     "test:inspection-summary": "bun scripts/test-inspection-summary.ts",
     "test:mutation-summary": "bun scripts/test-mutation-summary.ts",
-    "test": "bun scripts/test-settings-reader.ts && bun scripts/test-compatibility.ts && bun scripts/test-compatibility-control.ts && bun scripts/test-message-chrome.ts && bun scripts/test-compaction.ts && bun scripts/test-bash-display.ts && bun scripts/test-inspection-summary.ts && bun scripts/test-mutation-summary.ts && bun scripts/test-diff-body.ts && bun scripts/test-diff-persistence.ts && bun scripts/test-worked-verbs.ts && bun scripts/test-tool-chrome.ts && bun scripts/test-builtin-contracts.ts && bun scripts/test-tool-override-skip.ts && bun scripts/test-mcp-display.ts && bun scripts/test-readonly-aggregation.ts && bun scripts/test-inspection-groups.ts && bun scripts/test-spinner-cadence.ts && bun scripts/test-plane-refs.ts && bun scripts/test-claudify-hub.ts && bun scripts/test-themes.ts && bun scripts/test-banner.ts && bun scripts/test-prompt-editor.ts && bun scripts/test-fullscreen-tui.ts && bun scripts/test-footer.ts && bun scripts/test-session-metrics.ts",
+    "test": "bun scripts/test-settings-reader.ts && bun scripts/test-compatibility.ts && bun scripts/test-compatibility-control.ts && bun scripts/test-message-chrome.ts && bun scripts/test-markdown-rendering.ts && bun scripts/test-compaction.ts && bun scripts/test-bash-display.ts && bun scripts/test-inspection-summary.ts && bun scripts/test-mutation-summary.ts && bun scripts/test-diff-body.ts && bun scripts/test-diff-persistence.ts && bun scripts/test-worked-verbs.ts && bun scripts/test-tool-chrome.ts && bun scripts/test-builtin-contracts.ts && bun scripts/test-tool-override-skip.ts && bun scripts/test-mcp-display.ts && bun scripts/test-readonly-aggregation.ts && bun scripts/test-inspection-groups.ts && bun scripts/test-spinner-cadence.ts && bun scripts/test-plane-refs.ts && bun scripts/test-claudify-hub.ts && bun scripts/test-banner.ts && bun scripts/test-prompt-editor.ts && bun scripts/test-fullscreen-tui.ts && bun scripts/test-footer.ts && bun scripts/test-session-metrics.ts",
     "test:footer": "bun scripts/test-footer.ts",
     "test:fullscreen-tui": "bun scripts/test-fullscreen-tui.ts",
     "test:spinner-cadence": "bun scripts/test-spinner-cadence.ts",
@@ -73,7 +75,6 @@
     "test:inspection-groups": "bun scripts/test-inspection-groups.ts",
     "test:diff-persistence": "bun scripts/test-diff-persistence.ts",
     "test:builtin-contracts": "bun scripts/test-builtin-contracts.ts",
-    "test:themes": "bun scripts/test-themes.ts",
     "test:tool-override-skip": "bun scripts/test-tool-override-skip.ts",
     "test:banner": "bun scripts/test-banner.ts",
     "test:prompt-editor": "bun scripts/test-prompt-editor.ts",
@@ -81,7 +82,8 @@
     "test:compatibility": "bun scripts/test-compatibility.ts && bun scripts/test-compatibility-control.ts"
   },
   "dependencies": {
-    "@shikijs/cli": "^4.3.1",
+    "@shikijs/langs": "4.3.1",
+    "@shikijs/themes": "4.3.1",
     "diff": "^9.0.0",
     "shiki": "^4.3.1"
   },
@@ -94,9 +96,6 @@
     "extensions": [
       "./extensions/index.ts",
       "./extensions/spinner.ts"
-    ],
-    "themes": [
-      "./theme"
     ]
   },
   "devDependencies": {

@@ -172,10 +172,15 @@ const multiArgs = {
 };
 const multiResult = await pi.tools.get("edit").execute("live-multi", multiArgs, undefined, undefined, {});
 assert.equal(multiResult.details?._type, "multiEditInfo");
-assert.equal(multiResult.details?.parsedDiffs?.length, 2, "each edit persists its localized diff");
+assert.ok(multiResult.details?.aggregateDiff, "multi-edit persists one full-file diff");
+assert.equal(multiResult.details?.parsedDiffs?.length, 2, "operation diffs remain only as a compatibility fallback");
 const restoredMulti = restoredComponent(pi, "edit", "restored-multi", multiArgs, multiResult);
 const multiWide = await rendered(restoredMulti, 120);
-assert.match(multiWide.text, /2 edits/);
+assert.match(multiWide.text, /Added 2 lines, removed 2 lines/);
+assert.doesNotMatch(multiWide.text, /\(2 edits\)|Edit [12]\/2/, "Claude mode does not expose operation-level edit sections");
+assert.match(multiWide.text, /^\s*3 [-+]/m, "aggregate diff keeps the first real file line number");
+assert.match(multiWide.text, /^\s*25 [-+]/m, "aggregate diff keeps the second real file line number");
+assert.match(multiWide.text, /const line2 = 2;/, "aggregate diff retains surrounding context");
 assert.match(multiWide.text, /こんにちは🙂/);
 assert.match(multiWide.text, /こんばんは🚀/);
 assert.match(multiWide.text, /👨‍👩‍👧‍👦/);
@@ -193,6 +198,7 @@ assert.equal(multiWideAgain.text, multiWide.text, "multi-edit wide → narrow �
 // claudify's parsedDiffs. Exercise that compatibility path where available.
 if (typeof multiResult.details?.patch === "string" && /^@@/m.test(multiResult.details.patch)) {
 	const legacyMultiResult = JSON.parse(JSON.stringify(multiResult));
+	delete legacyMultiResult.details.aggregateDiff;
 	delete legacyMultiResult.details.parsedDiffs;
 	delete legacyMultiResult.details.editLines;
 	delete legacyMultiResult.details.language;

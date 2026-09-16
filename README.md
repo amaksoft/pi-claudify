@@ -44,10 +44,12 @@ A disabled tool is not registered, adapted, or grouped by Claudify; the host or 
 
 #### Theme
 
-The package ships six native Pi themes: dark/light, ANSI, and daltonized variants under the `claude-code-*` names. Select them through Pi's ordinary `/settings` theme picker; claudify deliberately does not maintain a second application-theme setting. When one is active, it owns the base accent, diff palette, and tool colors unless you explicitly set `accentColor`, `diffPalette`, or `toolChrome`; explicit claudify overrides always win. This keeps themes and renderer overrides composable instead of layering two implicit color systems.
+Claudify does not ship or select a Pi application theme. It layers Claude-specific transcript chrome over whichever theme the user already selected. **Color source** (`colorSource`, `claude` by default) switches Markdown, accent-linked surfaces, the default user-message box, and Spinner shimmer between captured Claude colors and the active Pi theme. **Markdown style** (`markdownStyle`, `claude` by default) independently switches transcript grammar such as hidden code fences, compact code indentation, literal `---` rules, and `▎` blockquotes. Explicit `accentColor` and `userMessageBox` values remain advanced per-surface overrides. `toolChrome` and `diffPalette` stay independent because they also change wording, links, and diff layout—not only color.
 
 The startup banner is Pi-branded and controlled by **Startup banner** (`bannerMode`: `off`, `onboarding`, or `always`). **Banner frame** (`bannerFrame`) switches between the responsive framed panel and the compact borderless form. The banner uses the active Pi theme and does not own a separate palette. **Prompt pointer** (`promptPointer`, default on) adds `❯` to Pi's editor only when another extension has not already installed a custom editor.
 
+- **Color source** (`colorSource`) chooses Claude or Pi-theme defaults for eligible semantic colors.
+- **Markdown style** (`markdownStyle`) chooses captured Claude or native Pi Markdown grammar.
 - **Adaptive colors** (`themeAdaptive`) controls whether borders, connectors, spinner accents, and eligible diff colors follow the active pi theme.
 - **Diff palette** (`diffPalette`) switches between the fixed Claude Code palette and theme-derived diff colors.
 - **Tool chrome** (`toolChrome`) switches between Claude-style status bullets and pi theme accents.
@@ -55,6 +57,7 @@ The startup banner is Pi-branded and controlled by **Startup banner** (`bannerMo
 
 #### Diffs
 
+- **Syntax highlighting** (`diffSyntaxHighlighting`, default on) uses the existing lazy Shiki pipeline for changed code. Turning it off keeps unified layout, line numbers, and add/remove colors while rendering code tokens plainly.
 - **Collapsed diff lines** (`diffCollapsedLines`) sets how many diff lines remain visible before a diff collapses.
 
 #### Spinner

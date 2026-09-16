@@ -4,7 +4,7 @@ import { ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
 import { Container, visibleWidth } from "@earendil-works/pi-tui";
 import { initTheme } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 
-import extension from "../extensions/index.ts";
+import extension, { sanitizeRenderedTextBlockLines } from "../extensions/index.ts";
 
 import { useSandboxHome } from "./sandbox-home.ts";
 
@@ -14,8 +14,8 @@ useSandboxHome("cc-chrome");
 // Chrome captured from Claude Code's raw TTY stream:
 // docs/plans/2026-07-13-current-cc-grammar.md
 const CC_DOT_PENDING = "\x1b[38;2;153;153;153m";
-const CC_DOT_SUCCESS = "\x1b[38;2;78;186;101m";
-const CC_DOT_ERROR = "\x1b[38;2;220;90;90m";
+const CC_DOT_SUCCESS = "\x1b[38;2;135;215;135m";
+const CC_DOT_ERROR = "\x1b[38;2;255;135;175m";
 const BOLD = "\x1b[1m";
 
 class FakePi {
@@ -64,6 +64,33 @@ function plainRender(component: { render(width: number): string[] }, width = 100
 		.map((line) => line.replace(/\x1b\]8;;[^\x07]*\x07/g, "").replace(/\x1b\[[0-9;]*m/g, "").replace(/\s+$/, ""))
 		.join("\n");
 }
+
+const nativeMarkdownRows = ["\x1b[38;2;128;128;128m```ts\x1b[39m", "  code", "│ quote"];
+assert.deepEqual(
+	sanitizeRenderedTextBlockLines(nativeMarkdownRows, "pi"),
+	nativeMarkdownRows,
+	"Pi-native Markdown style bypasses Claude grammar transformations",
+);
+
+assert.deepEqual(
+	sanitizeRenderedTextBlockLines([
+		"\x1b[38;2;128;128;128m```ts\x1b[39m",
+		"  \x1b[34mconst\x1b[39m value = 1;",
+		"\x1b[38;2;128;128;128m```\x1b[39m",
+		"\x1b[38;2;128;128;128m────────────────\x1b[39m",
+		"\x1b[38;2;128;128;128m│ \x1b[3mquote\x1b[0m",
+		"│ Alpha │ 42 │",
+	]),
+	[
+		"",
+		"\x1b[34mconst\x1b[39m value = 1;",
+		"",
+		"---",
+		"\x1b[38;2;128;128;128m▎ \x1b[3mquote\x1b[0m",
+		"│ Alpha │ 42 │",
+	],
+	"Claude message mode hides fences, dedents code, keeps literal HR, and uses ▎ quotes",
+);
 
 initTheme("dark", false);
 const pi = new FakePi();
@@ -134,6 +161,28 @@ assert.ok(writeRaw.includes(CC_DOT_PENDING) || writeRaw.includes("\x1b[38;2;153;
 
 const writePlain = writeRaw.replace(/\x1b\[[0-9;]*m/g, "").replace(/\x1b\]8;;[^\x07]*\x07/g, "");
 assert.match(writePlain, /⎿ {2}Wrote 2 lines to src\/c\.ts/);
+
+// Fresh Claude Code v2.1.266 detailed-transcript capture: successful reads use
+// `Read N lines`; successful Bash with output shows the output directly, with
+// no extra `Done (N lines)` row.
+const detailedRead = component(pi, "read", "chrome-read-detail", { path: "src/detail.ts" });
+detailedRead.updateResult({ content: [{ type: "text", text: "one\ntwo\n" }], details: {}, isError: false } as any, false);
+detailedRead.setExpanded(true);
+const detailedReadText = plainRender(detailedRead);
+assert.match(detailedReadText, /⎿ {2}Read 3 lines/);
+assert.doesNotMatch(detailedReadText, /lines loaded/);
+
+const detailedBash = component(pi, "bash", "chrome-bash-detail", { command: "printf color-bash" });
+detailedBash.updateResult({ content: [{ type: "text", text: "color-bash" }], details: {}, isError: false } as any, false);
+detailedBash.setExpanded(true);
+const detailedBashText = plainRender(detailedBash);
+assert.match(detailedBashText, /⎿ {2}color-bash/);
+assert.doesNotMatch(detailedBashText, /Done \(/);
+
+const detailedError = component(pi, "read", "chrome-read-error", { path: "missing.ts" });
+detailedError.updateResult({ content: [{ type: "text", text: "Error: File does not exist." }], details: {}, isError: true } as any, false);
+const detailedErrorRaw = detailedError.render(100).join("\n");
+assert.ok(detailedErrorRaw.split(CC_DOT_ERROR).length >= 3, "Claude error pink colors both bullet and error text");
 
 // --- Never-captured OpenAI-style surfaces, captured from Claude Code v2.1.211:
 // docs/plans/2026-07-15-uncaptured-surfaces-grammar.md

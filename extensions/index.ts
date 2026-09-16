@@ -40,10 +40,42 @@ import {
 } from "@earendil-works/pi-tui";
 
 import * as Diff from "diff";
-import type { BundledLanguage, BundledTheme } from "shiki";
+import { getSingletonHighlighter, type BundledLanguage, type BundledTheme } from "shiki";
+import bashLanguage from "@shikijs/langs/bash";
+import cLanguage from "@shikijs/langs/c";
+import cppLanguage from "@shikijs/langs/cpp";
+import csharpLanguage from "@shikijs/langs/csharp";
+import cssLanguage from "@shikijs/langs/css";
+import dartLanguage from "@shikijs/langs/dart";
+import goLanguage from "@shikijs/langs/go";
+import graphqlLanguage from "@shikijs/langs/graphql";
+import htmlLanguage from "@shikijs/langs/html";
+import javaLanguage from "@shikijs/langs/java";
+import javascriptLanguage from "@shikijs/langs/javascript";
+import jsonLanguage from "@shikijs/langs/json";
+import jsxLanguage from "@shikijs/langs/jsx";
+import kotlinLanguage from "@shikijs/langs/kotlin";
+import luaLanguage from "@shikijs/langs/lua";
+import markdownLanguage from "@shikijs/langs/markdown";
+import phpLanguage from "@shikijs/langs/php";
+import pythonLanguage from "@shikijs/langs/python";
+import rubyLanguage from "@shikijs/langs/ruby";
+import rustLanguage from "@shikijs/langs/rust";
+import scssLanguage from "@shikijs/langs/scss";
+import sqlLanguage from "@shikijs/langs/sql";
+import svelteLanguage from "@shikijs/langs/svelte";
+import swiftLanguage from "@shikijs/langs/swift";
+import tomlLanguage from "@shikijs/langs/toml";
+import tsxLanguage from "@shikijs/langs/tsx";
+import typescriptLanguage from "@shikijs/langs/typescript";
+import vueLanguage from "@shikijs/langs/vue";
+import xmlLanguage from "@shikijs/langs/xml";
+import yamlLanguage from "@shikijs/langs/yaml";
+import monokaiTheme from "@shikijs/themes/monokai";
 
 import { registerBanner } from "./banner.ts";
 import { bashHeaderCommand } from "./bash-preview.ts";
+import { CLAUDE_PALETTE } from "./claude-palette.ts";
 import { forwardedToolContract, hostToolSettings, skippedToolOverrides } from "./builtin-contracts.ts";
 import { ClaudifyScreen } from "./claudify-screen.ts";
 import { diffCard } from "./diff-card.ts";
@@ -74,6 +106,7 @@ import {
 	toolComponentRecord,
 } from "./pi-tool-adapter.ts";
 import { applyPromptPointer, registerPromptPointer } from "./prompt-editor.ts";
+import { resolveColorSource, resolveMarkdownStyle, resolveSurfaceColorSource } from "./presentation-profile.ts";
 import { registerSessionMetrics } from "./session-metrics.ts";
 import { getSettingsRevision, readSettings } from "./settings.ts";
 import { sanitizeToolText, WRAP_MARK } from "./terminal-sanitize.ts";
@@ -138,10 +171,12 @@ const CLAUDE_COLLAPSED_INDENT = "  ";
 
 // Status colors read off Claude Code's raw TTY stream. The bullet is the trust
 // signal: gray while the tool runs, green once it actually succeeded.
-const CC_DOT_PENDING = "\x1b[38;2;153;153;153m";
-const CC_DOT_SUCCESS = "\x1b[38;2;78;186;101m";
-const CC_DOT_ERROR = "\x1b[38;2;220;90;90m";
-const CC_GUTTER_FG = "\x1b[38;2;153;153;153m";
+const CC_DOT_PENDING = CLAUDE_PALETTE.status.pending;
+// Fresh Claude Code v2.1.266 dark capture: xterm 114 (#87D787) success,
+// xterm 211 (#FF87AF) error. Diff-removal red is a separate semantic color.
+const CC_DOT_SUCCESS = CLAUDE_PALETTE.status.success;
+const CC_DOT_ERROR = CLAUDE_PALETTE.status.error;
+const CC_GUTTER_FG = CLAUDE_PALETTE.gutter;
 const D_BOLD_ON = "\x1b[1m";
 const D_BOLD_OFF = "\x1b[22m";
 const FG_DEFAULT = "\x1b[39m";
@@ -391,10 +426,7 @@ function setThemeFg(theme: unknown, key: string, value: string): void {
 // renders as literal text and widens lines past the terminal, crashing pi's
 // renderer; shipped broken in 2.3.0). The 256-color indices are precomputed
 // with pi's own rgbTo256 quantizer (147 matches the live CC capture).
-const CC_ACCENT_ANSI = {
-	dark: { truecolor: "\x1b[38;2;177;185;249m", ansi256: "\x1b[38;5;147m" },
-	light: { truecolor: "\x1b[38;2;87;105;247m", ansi256: "\x1b[38;5;63m" },
-} as const;
+const CC_ACCENT_ANSI = CLAUDE_PALETTE.accent;
 // Every accent escape claudify has imposed on a theme. pi hands us the theme as
 // both the instance and a forwarding Proxy, so a second object identity arrives
 // with our override already installed; the snapshot guard must recognize it as
@@ -528,13 +560,13 @@ export function applyAccentOverride(theme: unknown): void {
 		originalThemeAccent.set(identity, { original: current, aliasKeys });
 	}
 	const snapshot = originalThemeAccent.get(identity);
-	const accentColor = readSettings().values.accentColor;
+	const settings = readSettings().values;
+	const accentColor = resolveSurfaceColorSource(settings, "accentColor");
 	const customAccent = storedHexColor(accentColor);
 	const colorMode = (theme as any).mode === "256color" ? "ansi256" : "truecolor";
-	// Native bundled themes own their token table unless the user explicitly asks
-	// claudify to override it. This prevents selecting a theme and then silently
-	// repainting that theme's accent with a second color system.
-	const themeOwnsAccent = accentColor === "theme" || (accentColor === undefined && isBundledClaudeTheme(theme));
+	// `theme` restores the active Pi theme's original accent; otherwise the
+	// explicit custom/Claude accent is the renderer-owned override.
+	const themeOwnsAccent = accentColor === "theme";
 	const target = themeOwnsAccent
 		? snapshot?.original ?? current
 		: customAccent
@@ -552,9 +584,9 @@ export function applyAccentOverride(theme: unknown): void {
 
 // Claude Code's settled user-message box, captured under 256 colors (237/239/231).
 // Capture + geometry: docs/plans/2026-07-16-cc-user-message-box.md.
-const CC_USER_BOX_BG = "\x1b[48;2;58;58;58m";
-const CC_USER_BOX_PREFIX_FG = "\x1b[38;2;78;78;78m";
-const CC_USER_BOX_TEXT_FG = "\x1b[38;2;255;255;255m";
+const CC_USER_BOX_BG = CLAUDE_PALETTE.userMessage.background;
+const CC_USER_BOX_PREFIX_FG = CLAUDE_PALETTE.userMessage.prefix;
+const CC_USER_BOX_TEXT_FG = CLAUDE_PALETTE.userMessage.text;
 const FG_DEFAULT_ANSI = "\x1b[39m";
 
 const originalUserMessageBg = new WeakMap<object, string>();
@@ -612,16 +644,26 @@ function stripRenderedHeadingMarkers(line: string): string {
 	return line.replace(/^((?:\x1b\[[0-9;]*m|[ \t])*)#{3,6}[ \t]*((?:\x1b\[[0-9;]*m)*)/, "$1$2");
 }
 
-function sanitizeRenderedTextBlockLines(lines: string[]): string[] {
+export function sanitizeRenderedTextBlockLines(lines: string[], style: "claude" | "pi" = "claude"): string[] {
+	if (style === "pi") return lines;
 	let inFence = false;
 	return lines.map((line) => {
 		const plain = stripAnsi(line).trimStart();
 		if (plain.startsWith("```")) {
 			inFence = !inFence;
-			return line;
+			// Claude hides language/opening and closing fence rows.
+			return "";
 		}
-		if (inFence) return line;
-		return stripRenderedHeadingMarkers(line).replace(/###/g, "");
+		if (inFence) {
+			// Pi's Markdown adds code indentation before message chrome adds its own
+			// continuation indent. Claude's fenced body starts at two columns total.
+			return line.replace(/^ {2}/, "");
+		}
+		if (/^─{3,}$/.test(plain.trim())) return "---";
+		// Pi tables also use │ at the left edge; a blockquote has exactly one pipe.
+		const pipeCount = (plain.match(/│/g) ?? []).length;
+		const quoted = pipeCount === 1 ? line.replace("│", "▎") : line;
+		return stripRenderedHeadingMarkers(quoted).replace(/###/g, "");
 	});
 }
 
@@ -1130,14 +1172,32 @@ function colorFirstTranscriptPrefix(lines: string[], prefixGlyph: string, colore
 	});
 }
 
-class DottedParagraph {
+export class DottedParagraph {
 	private md: InstanceType<typeof Markdown>;
+	private claudeMd: InstanceType<typeof Markdown>;
+	private claudeAccentMd: InstanceType<typeof Markdown>;
 	private cachedWidth?: number;
 	private cachedChromeKey?: string;
 	private cachedLines?: string[];
 
 	constructor(text: string, markdownTheme: ConstructorParameters<typeof Markdown>[3]) {
 		this.md = new Markdown(text, 0, 0, markdownTheme);
+		const defaultFg = (value: string) => `${FG_DEFAULT}${value}${FG_DEFAULT}`;
+		const claudeTheme: ConstructorParameters<typeof Markdown>[3] = {
+			...markdownTheme,
+			heading: defaultFg,
+			listBullet: defaultFg,
+			code: (value: string) => `${CLAUDE_PALETTE.inlineCode}${value}${FG_DEFAULT}`,
+			link: (value: string) => `${CLAUDE_PALETTE.link}${value}${FG_DEFAULT}`,
+		};
+		const claudeAccentTheme: ConstructorParameters<typeof Markdown>[3] = {
+			...claudeTheme,
+			// An explicit Accent remains the advanced override for these surfaces.
+			listBullet: markdownTheme.listBullet,
+			code: markdownTheme.code,
+		};
+		this.claudeMd = new Markdown(text, 0, 0, claudeTheme);
+		this.claudeAccentMd = new Markdown(text, 0, 0, claudeAccentTheme);
 	}
 
 	invalidate(): void {
@@ -1145,11 +1205,17 @@ class DottedParagraph {
 		this.cachedChromeKey = undefined;
 		this.cachedLines = undefined;
 		this.md.invalidate();
+		this.claudeMd.invalidate();
+		this.claudeAccentMd.invalidate();
 	}
 
 	render(width: number): string[] {
 		const settings = getMessageChromeSettings();
-		const chromeKey = messageChromeCacheKey(settings, "assistant");
+		const presentation = readSettings().values;
+		const markdownStyle = resolveMarkdownStyle(presentation);
+		const markdownColors = resolveColorSource(presentation);
+		const explicitAccent = presentation.accentColor !== undefined;
+		const chromeKey = `${messageChromeCacheKey(settings, "assistant")}:${markdownStyle}:${markdownColors}:${String(presentation.accentColor)}`;
 		if (this.cachedLines && this.cachedWidth === width && this.cachedChromeKey === chromeKey) return this.cachedLines;
 		const isClassic = settings.messageStyle === "classic";
 		const prefixGlyph = isClassic ? "●" : settings.assistantPrefix;
@@ -1162,7 +1228,10 @@ class DottedParagraph {
 			this.cachedLines = [prefix];
 			return this.cachedLines;
 		}
-		const lines = sanitizeRenderedTextBlockLines(this.md.render(width - prefixWidth));
+		const markdown = markdownColors === "claude"
+			? explicitAccent ? this.claudeAccentMd : this.claudeMd
+			: this.md;
+		const lines = sanitizeRenderedTextBlockLines(markdown.render(width - prefixWidth), markdownStyle);
 		const looksLikeTaskStatus = lines.some((line) => /\b(?:transcript:|No output\.|Wrapped up)/.test(stripAnsi(line)));
 		const rendered = settings.messageStyle === "classic"
 			? renderClassicPrefixedLines(lines, "●", looksLikeTaskStatus)
@@ -1350,9 +1419,10 @@ const USER_PREFIX_WIDTH = visibleWidth(`${DEFAULT_USER_PREFIX} `);
 type UserMessageBoxMode = "theme" | "claude" | "off" | CustomHexColor;
 
 function userMessageBoxMode(): UserMessageBoxMode {
-	const value = readSettings().values.userMessageBox;
+	const settings = readSettings().values;
+	const value = resolveSurfaceColorSource(settings, "userMessageBox");
 	if (value === "theme" || value === "claude" || value === "off") return value;
-	return storedHexColor(value) ?? "theme";
+	return storedHexColor(value) ?? "claude";
 }
 
 // Like cleanUserMessageLine, but without the transparent-background wrappers —
@@ -1684,6 +1754,10 @@ function resultSentence(theme: Theme, text: string): string {
 	return claudeChromeEnabled() ? `${FG_DEFAULT}${text}${RESET}` : theme.fg("muted", text);
 }
 
+function errorText(theme: Theme, text: string): string {
+	return claudeChromeEnabled() ? `${CC_DOT_ERROR}${text}${RESET}` : theme.fg("error", text);
+}
+
 function setToolStatus(ctx: any, status: "pending" | "success" | "error"): void {
 	ctx.state._toolStatus = status;
 }
@@ -1993,6 +2067,16 @@ function renderToolTextLines(text: string, width: number): string[] {
 	return new ToolText(text).render(width);
 }
 
+/** Diff builders already wrap and pad against the exact component width. Running
+ * those rows through Text again strips their styled trailing cells, so the green
+ * or red background ends at the last token instead of the terminal edge. */
+function renderPrewrappedDiffLines(text: string, width: number): string[] {
+	return text.split("\n").flatMap((line) => {
+		const clean = line.split(WRAP_MARK).join("");
+		return visibleWidth(clean) <= width ? [clean] : wrapTextWithAnsi(clean, width);
+	});
+}
+
 class ToolText extends Text {
 	private value = "";
 	private toolCachedValue?: string;
@@ -2278,11 +2362,13 @@ function visualPreviewText(
 	rows: number,
 	mode: VisualPreviewMode,
 	theme: Theme,
-	style: "dim" | "error",
+	style: "dim" | "error" | "claudeError",
 	options: { expandHint?: boolean; expandedCap?: boolean; laterQualifier?: "more" } = {},
 ): string {
 	const preview = selectVisualPreview(text, Math.max(10, width - visibleWidth(CLAUDE_RESULT_PREFIX)), rows, mode);
-	const lines = preview.rows.map((line) => theme.fg(style, line || " "));
+	const lines = preview.rows.map((line) => style === "claudeError"
+		? errorText(theme, line || " ")
+		: theme.fg(style, line || " "));
 	if (preview.hiddenPosition) {
 		const qualifier = preview.hiddenPosition === "earlier" ? " earlier" : options.laterQualifier ? ` ${options.laterQualifier}` : "";
 		const hint = options.expandHint ? " (ctrl+o to expand)" : "";
@@ -2489,19 +2575,6 @@ function themeBgRgb(theme: any, key: string): Rgb | null {
 // object is reused across renders within a single session unless the user
 // switches themes via the picker.
 let _themePaletteCacheTheme: unknown = null;
-const BUNDLED_CLAUDE_THEME_NAMES = new Set([
-	"claude-code-dark",
-	"claude-code-dark-ansi",
-	"claude-code-dark-daltonized",
-	"claude-code-light",
-	"claude-code-light-ansi",
-	"claude-code-light-daltonized",
-]);
-let activeBundledThemeOwnsColors = false;
-
-export function isBundledClaudeTheme(theme: unknown): boolean {
-	return BUNDLED_CLAUDE_THEME_NAMES.has(String((theme as any)?.name ?? ""));
-}
 
 function themeAdaptiveEnabled(): boolean {
 	const settings = readSettings().values;
@@ -2514,10 +2587,9 @@ function themeAdaptiveEnabled(): boolean {
  * to get the theme-derived tints back.
  */
 function claudeDiffPaletteEnabled(): boolean {
-	const value = readSettings().values.diffPalette;
-	if (value === "claude") return true;
-	if (value === "theme") return false;
-	return !activeBundledThemeOwnsColors;
+	// This setting also selects unified versus legacy split grammar, so a global
+	// color-source change must not alter it implicitly.
+	return readSettings().values.diffPalette !== "theme";
 }
 
 /**
@@ -2526,17 +2598,13 @@ function claudeDiffPaletteEnabled(): boolean {
  * paths. Set `toolChrome: "theme"` to keep the themed/accent-tinted rows.
  */
 function claudeChromeEnabled(): boolean {
-	const value = readSettings().values.toolChrome;
-	if (value === "claude") return true;
-	if (value === "theme") return false;
-	return !activeBundledThemeOwnsColors;
+	// Tool chrome changes wording and hyperlink grammar as well as color.
+	return readSettings().values.toolChrome !== "theme";
 }
 
 // Claude Code highlights diff content with a Monokai palette (fg 248,248,242,
 // keywords 102,217,239, numbers 190,132,255).
 let DIFF_THEME: BundledTheme = (process.env.DIFF_THEME as BundledTheme | undefined) ?? "monokai";
-let codeToAnsiLoader: Promise<any> | null = null;
-
 const SPLIT_MIN_WIDTH = 150;
 const SPLIT_MIN_CODE_WIDTH = 60;
 const SPLIT_MAX_WRAP_RATIO = 0.2;
@@ -2559,12 +2627,15 @@ const D_DIM = "\x1b[2m";
 // Claude Code's diff palette, read off the raw TTY stream. The line background is
 // painted across gutter and content; the changed token gets the brighter variant.
 // See docs/plans/2026-07-13-current-cc-grammar.md.
-const CC_BG_ADD = "\x1b[48;2;2;40;0m";
-const CC_BG_DEL = "\x1b[48;2;61;1;0m";
-const CC_BG_ADD_WORD = "\x1b[48;2;4;71;0m";
-const CC_BG_DEL_WORD = "\x1b[48;2;92;2;0m";
-const CC_FG_ADD = "\x1b[38;2;80;200;80m";
-const CC_FG_DEL = "\x1b[38;2;220;90;90m";
+// Fresh v2.1.266 capture uses xterm 22/52 line backgrounds and xterm 28
+// only for the changed word on additions. Store their exact RGB equivalents.
+const CC_BG_ADD = "\x1b[48;2;0;95;0m";
+const CC_BG_DEL = "\x1b[48;2;95;0;0m";
+const CC_BG_ADD_WORD = "\x1b[48;2;0;135;0m";
+const CC_BG_DEL_WORD = CC_BG_DEL;
+const CC_FG_ADD = "\x1b[38;2;95;215;95m";
+const CC_FG_DEL = "\x1b[38;2;215;95;95m";
+const CC_FG_DIFF_TEXT = "\x1b[38;2;255;255;255m";
 
 // Diff backgrounds default to Claude Code's palette; autoDeriveBgFromTheme only
 // overrides them when the user opts out of the Claude palette.
@@ -2677,7 +2748,6 @@ const _explicitFgFields = new Set<"fgAdd" | "fgDel" | "fgDim" | "fgLnum" | "fgRu
 
 function applyThemePaletteIfNeeded(theme: any): void {
 	if (!theme || !featureEnabled("themeColors")) return;
-	activeBundledThemeOwnsColors = isBundledClaudeTheme(theme);
 	// Runs before the adaptive/cache guards: the accent override applies even with
 	// adaptive colors off, and re-checks its setting on every call.
 	applyAccentOverride(theme);
@@ -3150,12 +3220,69 @@ function lang(filePath: string): BundledLanguage | undefined {
 	return EXT_LANG[extname(filePath).slice(1).toLowerCase()];
 }
 
+const SHIKI_LANGUAGES = [
+	bashLanguage, cLanguage, cppLanguage, csharpLanguage, cssLanguage, dartLanguage,
+	goLanguage, graphqlLanguage, htmlLanguage, javaLanguage, javascriptLanguage,
+	jsonLanguage, jsxLanguage, kotlinLanguage, luaLanguage, markdownLanguage,
+	phpLanguage, pythonLanguage, rubyLanguage, rustLanguage, scssLanguage,
+	sqlLanguage, svelteLanguage, swiftLanguage, tomlLanguage, tsxLanguage,
+	typescriptLanguage, vueLanguage, xmlLanguage, yamlLanguage,
+];
+let shikiHighlighterLoader: Promise<any> | null = null;
+
+interface ShikiAnsiToken {
+	content: string;
+	color?: string;
+	explanation?: Array<{ scopes?: Array<{ scopeName?: string }> }>;
+}
+
+function tokenHasScope(token: ShikiAnsiToken, fragment: string): boolean {
+	return token.explanation?.some((part) => part.scopes?.some((scope) => scope.scopeName?.includes(fragment))) === true;
+}
+
+function shikiTokenAnsi(token: ShikiAnsiToken, colorOverride?: string): string {
+	let color = (colorOverride ?? token.color)?.slice(0, 7).toLowerCase();
+	const isMonokaiOperator = color === "#f92672" && /^[^\p{L}\p{N}_$]+$/u.test(token.content);
+	if (isMonokaiOperator || color === "#f8f8f2") color = "#ffffff";
+	const fg = color ? hexToFgAnsi(color) : "";
+	// Claude's edit capture uses Monokai token colors without Monokai's optional
+	// italic keyword font style. Reset only foreground: 0m/49m would punch holes
+	// in the green row background between adjacent tokens.
+	return `${fg}${token.content}\x1b[39m`;
+}
+
+function shikiLineAnsi(tokens: ShikiAnsiToken[], language: BundledLanguage): string {
+	return tokens.map((token, index) => {
+		let color: string | undefined;
+		if (language === "json") {
+			const following = tokens.slice(index + 1).map((item) => item.content).join("").trimStart();
+			if (/^"[\s\S]*"$/.test(token.content.trim()) && following.startsWith(":")) color = "#a6e22e";
+			else if (/^(?:true|false|null)$/.test(token.content.trim())) color = "#f92672";
+		}
+		if (language === "python" && tokenHasScope(token, "support.function.builtin")) color = "#a6e22e";
+		return shikiTokenAnsi(token, color);
+	}).join("");
+}
+
 async function codeToAnsiLazy(code: string, language: BundledLanguage, theme: BundledTheme): Promise<string> {
-	if (!codeToAnsiLoader) {
-		codeToAnsiLoader = import("@shikijs/cli").then((mod) => mod.codeToANSI);
+	// Pi's extension sandbox cannot resolve Shiki's hidden dynamic theme/language
+	// imports. Statically declare registrations and initialize Shiki lazily. Shiki
+	// still owns parsing, scopes, and token colors; this function only serializes
+	// the returned tokens as SGR, replacing @shikijs/cli's tiny ANSI adapter.
+	if (theme !== "monokai") {
+		throw new Error(`Unsupported dynamically-loaded Shiki theme: ${theme}`);
 	}
-	const codeToAnsi = await codeToAnsiLoader;
-	return codeToAnsi(code, language, theme);
+	shikiHighlighterLoader ??= getSingletonHighlighter({
+		themes: [monokaiTheme],
+		langs: SHIKI_LANGUAGES as any,
+	});
+	const highlighter = await shikiHighlighterLoader;
+	const lines = highlighter.codeToTokensBase(code, {
+		lang: language,
+		theme: "monokai",
+		includeExplanation: language === "python",
+	});
+	return lines.map((line: ShikiAnsiToken[]) => shikiLineAnsi(line, language)).join("\n");
 }
 
 const hlCache = new Map<string, string[]>();
@@ -3177,6 +3304,7 @@ function touchCache(key: string, value: string[]): string[] {
 
 async function hlBlock(code: string, language: BundledLanguage | undefined): Promise<string[]> {
 	if (!code) return [""];
+	if (readSettings().values.diffSyntaxHighlighting === false) return code.split("\n");
 	if (!language || code.length > MAX_HL_CHARS) return code.split("\n");
 	const key = `${DIFF_THEME}\0${language}\0${code}`;
 	const hit = hlCache.get(key);
@@ -3185,7 +3313,8 @@ async function hlBlock(code: string, language: BundledLanguage | undefined): Pro
 		const ansi = normalizeShikiContrast(await codeToAnsiLazy(code, language, DIFF_THEME));
 		const out = (ansi.endsWith("\n") ? ansi.slice(0, -1) : ansi).split("\n");
 		return touchCache(key, out);
-	} catch {
+	} catch (error) {
+		if (process.env.PI_CLAUDIFY_DEBUG === "1") console.error("[claudify syntax-highlight]", error);
 		return code.split("\n");
 	}
 }
@@ -3310,7 +3439,7 @@ function renderWidthAwareDiff(
 			return withFinalBranchBlock(`${summary}\n${rendered}`, theme);
 		},
 		invalidate,
-		renderToolTextLines,
+		renderPrewrappedDiffLines,
 		withBranch(summary, theme),
 	);
 }
@@ -3509,7 +3638,7 @@ export async function renderUnified(
 		if (line.type === "ctx") {
 			const hl = oldHL[oldIndex] ?? line.content;
 			// Claude Code dims only the line number on context rows, not the code.
-			emitRow(line.newNum, " ", BG_BASE, dc.fgCtx, claude ? `${BG_BASE}${hl}` : `${BG_BASE}${D_DIM}${hl}`, BG_BASE);
+			emitRow(line.newNum, " ", BG_BASE, dc.fgCtx, claude ? `${BG_BASE}${CC_FG_DIFF_TEXT}${hl}\x1b[39m` : `${BG_BASE}${D_DIM}${hl}`, BG_BASE);
 			oldIndex++;
 			newIndex++;
 			index++;
@@ -3521,13 +3650,14 @@ export async function renderUnified(
 		const dels: Array<{ l: DiffLine; hl: string }> = [];
 		while (index < vis.length && vis[index].type === "del") {
 			const plain = vis[index].content;
-			dels.push({ l: vis[index], hl: claude ? plain : (oldHL[oldIndex] ?? plain) });
+			dels.push({ l: vis[index], hl: claude ? `${CC_FG_DIFF_TEXT}${plain}\x1b[39m` : (oldHL[oldIndex] ?? plain) });
 			oldIndex++;
 			index++;
 		}
 		const adds: Array<{ l: DiffLine; hl: string }> = [];
 		while (index < vis.length && vis[index].type === "add") {
-			adds.push({ l: vis[index], hl: newHL[newIndex] ?? vis[index].content });
+			const highlighted = newHL[newIndex] ?? vis[index].content;
+			adds.push({ l: vis[index], hl: claude ? `${CC_FG_DIFF_TEXT}${highlighted}\x1b[39m` : highlighted });
 			newIndex++;
 			index++;
 		}
@@ -3541,27 +3671,30 @@ export async function renderUnified(
 			: [];
 		const emphasized = pairable && pairs.every((p) => p.wd && p.wd.similarity >= WORD_DIFF_MIN_SIM);
 
+		const delMarker = claude ? dc.fgDel : `${dc.fgDel}${D_BOLD}`;
+		const addMarker = claude ? dc.fgAdd : `${dc.fgAdd}${D_BOLD}`;
 		if (emphasized && canHL) {
 			for (const { d, wd } of pairs) {
-				emitRow(d.l.oldNum, "-", BG_GUTTER_DEL, `${dc.fgDel}${D_BOLD}`, injectBg(d.hl, wd!.oldRanges, BG_DEL, BG_DEL_W), BG_DEL);
+				// Fresh Claude capture keeps deletions on one uniform red background.
+				emitRow(d.l.oldNum, "-", BG_GUTTER_DEL, delMarker, injectBg(d.hl, claude ? [] : wd!.oldRanges, BG_DEL, BG_DEL_W), BG_DEL);
 			}
 			for (const { a, wd } of pairs) {
-				emitRow(a.l.newNum, "+", BG_GUTTER_ADD, `${dc.fgAdd}${D_BOLD}`, injectBg(a.hl, wd!.newRanges, BG_ADD, BG_ADD_W), BG_ADD);
+				emitRow(a.l.newNum, "+", BG_GUTTER_ADD, addMarker, injectBg(a.hl, wd!.newRanges, BG_ADD, BG_ADD_W), BG_ADD);
 			}
 			continue;
 		}
 		if (emphasized && !canHL) {
 			const plainPairs = pairs.map(({ d, a }) => ({ d, a, pwd: plainWordDiff(d.l.content, a.l.content) }));
 			for (const { d, pwd } of plainPairs) {
-				emitRow(d.l.oldNum, "-", BG_GUTTER_DEL, `${dc.fgDel}${D_BOLD}`, `${BG_DEL}${pwd.old}`, BG_DEL);
+				emitRow(d.l.oldNum, "-", BG_GUTTER_DEL, delMarker, `${BG_DEL}${claude ? d.hl : pwd.old}`, BG_DEL);
 			}
 			for (const { a, pwd } of plainPairs) {
-				emitRow(a.l.newNum, "+", BG_GUTTER_ADD, `${dc.fgAdd}${D_BOLD}`, `${BG_ADD}${pwd.new}`, BG_ADD);
+				emitRow(a.l.newNum, "+", BG_GUTTER_ADD, addMarker, `${BG_ADD}${pwd.new}`, BG_ADD);
 			}
 			continue;
 		}
-		for (const d of dels) emitRow(d.l.oldNum, "-", BG_GUTTER_DEL, `${dc.fgDel}${D_BOLD}`, `${BG_DEL}${canHL ? d.hl : d.l.content}`, BG_DEL);
-		for (const a of adds) emitRow(a.l.newNum, "+", BG_GUTTER_ADD, `${dc.fgAdd}${D_BOLD}`, `${BG_ADD}${canHL ? a.hl : a.l.content}`, BG_ADD);
+		for (const d of dels) emitRow(d.l.oldNum, "-", BG_GUTTER_DEL, delMarker, `${BG_DEL}${canHL ? d.hl : d.l.content}`, BG_DEL);
+		for (const a of adds) emitRow(a.l.newNum, "+", BG_GUTTER_ADD, addMarker, `${BG_ADD}${canHL ? a.hl : a.l.content}`, BG_ADD);
 	}
 
 	if (!claude) out.push(diffRule(tw));
@@ -3829,6 +3962,53 @@ interface LocalizedEditDiff {
 	line: number;
 }
 
+function aggregateEditDiffFromContent(
+	rawContent: string,
+	operations: Array<{ oldText: string; newText: string }>,
+): ParsedDiff | null {
+	if (operations.length === 0) return null;
+	const normalizedContent = normalizeToLf(stripBomText(rawContent));
+	const normalizedOps = operations.map((edit) => ({
+		oldText: normalizeToLf(edit.oldText),
+		newText: normalizeToLf(edit.newText),
+	}));
+	const baseContent = normalizedOps.some((edit) => findEditMatch(normalizedContent, edit.oldText).usedFuzzyMatch)
+		? normalizeTextForFuzzyMatch(normalizedContent)
+		: normalizedContent;
+	const matches = normalizedOps.map((edit) => {
+		const match = findEditMatch(baseContent, edit.oldText);
+		if (!match.found || countFuzzyOccurrences(baseContent, edit.oldText) !== 1) return null;
+		return { matchIndex: match.index, matchLength: match.matchLength, newText: edit.newText };
+	});
+	if (matches.some((match) => match === null)) return null;
+	const ordered = [...(matches as Array<{ matchIndex: number; matchLength: number; newText: string }>)]
+		.sort((a, b) => a.matchIndex - b.matchIndex);
+	for (let index = 1; index < ordered.length; index++) {
+		const previous = ordered[index - 1];
+		if (previous.matchIndex + previous.matchLength > ordered[index].matchIndex) return null;
+	}
+	let nextContent = baseContent;
+	for (const match of [...ordered].reverse()) {
+		nextContent = `${nextContent.slice(0, match.matchIndex)}${match.newText}${nextContent.slice(match.matchIndex + match.matchLength)}`;
+	}
+	const diff = parseDiff(baseContent, nextContent);
+	return diff.lines.length > 0 ? diff : null;
+}
+
+async function computeAggregateEditDiff(
+	filePath: string,
+	operations: Array<{ oldText: string; newText: string }>,
+	cwd: string,
+): Promise<ParsedDiff | null> {
+	if (!filePath || operations.length === 0) return null;
+	try {
+		const rawContent = await readFileAsync(resolve(cwd, filePath), "utf8");
+		return aggregateEditDiffFromContent(rawContent, operations);
+	} catch {
+		return null;
+	}
+}
+
 async function computeLocalizedEditDiffs(filePath: string, operations: Array<{ oldText: string; newText: string }>, cwd: string): Promise<LocalizedEditDiff[] | null> {
 	if (!filePath || operations.length === 0) return null;
 	try {
@@ -3864,6 +4044,28 @@ async function computeLocalizedEditDiffs(filePath: string, operations: Array<{ o
 	} catch {
 		return null;
 	}
+}
+
+async function buildAggregateEditPreviewText(
+	theme: Theme,
+	language: BundledLanguage | undefined,
+	diff: ParsedDiff,
+	expanded: boolean,
+	width: number,
+): Promise<string> {
+	const rendered = await renderSplit(
+		diff,
+		language,
+		expanded ? MAX_PREVIEW_LINES : 32,
+		resolveDiffColors(theme),
+		diffContentWidth(width),
+	);
+	return withBranch(
+		`${resultSentence(theme, describeEdit(diff.added, diff.removed, ccEmphasis()))}\n${rendered}`,
+		theme,
+		false,
+		true,
+	);
 }
 
 async function buildEditPreviewText(
@@ -5092,6 +5294,11 @@ export default function (pi: ExtensionAPI): void {
 						keybindings,
 						() => done(undefined),
 						(key) => {
+							if (key === "colorSource") {
+								applyAccentOverride(ctx.ui.theme);
+								applyToolBackgroundMode(ctx.ui.theme);
+								bustSpinnerSettingsCache();
+							}
 							if (key === "toolBackground") {
 								toolBackgroundOverride = null;
 								applyToolBackgroundMode(ctx.ui.theme);
@@ -5108,6 +5315,7 @@ export default function (pi: ExtensionAPI): void {
 								|| key === "themeAdaptive") {
 								bustSpinnerSettingsCache();
 							}
+							if (key === "diffSyntaxHighlighting") clearHighlightCache();
 							if (key === "diffTheme" || key === "diffPalette" || key === "themeAdaptive") refreshDiffPalette();
 							// footerStyle installs/uninstalls the footer; the other footer/border
 							// keys are read at render time, so the requestRender below suffices.
@@ -5229,21 +5437,24 @@ export default function (pi: ExtensionAPI): void {
 			if (getFirstImageBlock(result)) return renderReadImageResult(result, expanded, theme, ctx);
 			const details = result.details as ReadToolDetails | undefined;
 			const content = result.content.find((block: any) => block?.type === "text");
-			if (content?.type !== "text") return makeText(ctx.lastComponent, withBranch(theme.fg("error", "No text content"), theme));
+			if (content?.type !== "text") return makeText(ctx.lastComponent, withBranch(errorText(theme, "No text content"), theme));
 			const lines = content.text.split("\n");
 			// A failed read is not content: reporting it as "1 line loaded" hides the error.
 			if (ctx.isError) {
 				const key = `read-error:${hashText(content.text)}:${expanded ? 1 : 0}`;
 				return widthAwareText(ctx.lastComponent, key, (width) => {
 					const rows = collapsedPreviewCount(expanded, previewLimit());
-					const preview = visualPreviewText(content.text, width, rows, "head", theme, "error", {
+					const preview = visualPreviewText(content.text, width, rows, "head", theme, "claudeError", {
 						expandHint: !expanded,
 						expandedCap: expanded,
 					});
-					return renderToolTextLines(withBranch(preview || theme.fg("error", "No text content"), theme), width);
+					return renderToolTextLines(withBranch(preview || errorText(theme, "No text content"), theme), width);
 				}, getSettingsRevision);
 			}
-			let text = theme.fg("muted", `${plural(lines.length, "line")} loaded`);
+			const readCount = claudeChromeEnabled()
+				? `Read ${D_BOLD_ON}${lines.length}${D_BOLD_OFF} ${lines.length === 1 ? "line" : "lines"}`
+				: `${plural(lines.length, "line")} loaded`;
+			let text = resultSentence(theme, readCount);
 			if (details?.truncation?.truncated) text += theme.fg("warning", " (truncated)");
 			if (!expanded) return makeText(ctx.lastComponent, withBranch(`${text}${theme.fg("muted", " (ctrl+o to expand)")}`, theme));
 			const key = `read-expanded:${hashText(content.text)}`;
@@ -5312,7 +5523,7 @@ export default function (pi: ExtensionAPI): void {
 			const exitCode = exitMatch ? Number.parseInt(exitMatch[1], 10) : null;
 			const isError = ctx.isError || (exitCode !== null && exitCode !== 0);
 			let text = isError
-				? theme.fg("error", exitCode !== null ? `Exit ${exitCode}` : "Failed")
+				? errorText(theme, exitCode !== null ? `Exit ${exitCode}` : "Failed")
 				: semantic?.kind === "read"
 					? `${theme.fg("success", "Read")} ${theme.fg("muted", `${nonEmpty.length} line${nonEmpty.length === 1 ? "" : "s"}`)}`
 					: `${theme.fg("success", "Done")}${theme.fg("muted", ` (${nonEmpty.length} lines)`)}`;
@@ -5341,8 +5552,13 @@ export default function (pi: ExtensionAPI): void {
 			const key = `bash-expanded:${hashText(output)}`;
 			return widthAwareText(ctx.lastComponent, key, (width) => {
 				const rows = expandedPreviewLimit();
-				const preview = visualPreviewText(nonEmpty.join("\n"), width, rows, "head", theme, isError ? "error" : "dim", { expandedCap: true });
-				return renderToolTextLines(withBranch(`${text}\n${preview}`, theme), width);
+				const preview = visualPreviewText(nonEmpty.join("\n"), width, rows, "head", theme, isError ? "claudeError" : "dim", { expandedCap: true });
+				// Claude's detailed transcript shows successful Bash output directly;
+				// it does not insert an extra "Done (N lines)" status row.
+				const body = isError || semantic?.kind === "read" || details?.truncation?.truncated
+					? `${text}\n${preview}`
+					: preview;
+				return renderToolTextLines(withBranch(body, theme), width);
 			}, getSettingsRevision);
 		},
 	});
@@ -5580,7 +5796,7 @@ export default function (pi: ExtensionAPI): void {
 						return withFinalBranchBlock(`${richSummary}\n${rendered}`, theme);
 					},
 					ctx.invalidate,
-					renderToolTextLines,
+					renderPrewrappedDiffLines,
 					withBranch(richSummary, theme),
 				);
 			}
@@ -5599,15 +5815,26 @@ export default function (pi: ExtensionAPI): void {
 			const runtimeCwd = ctx?.cwd ?? cwd;
 			const fp = params.path ?? (params as any).file_path ?? "";
 			const operations = getEditOperations(params);
+			const fullPath = fp ? resolve(runtimeCwd, fp) : "";
+			const before = fullPath ? captureWriteSnapshot(fullPath) : { kind: "unavailable" as const };
 			const localizedDiffs = operations.length === 1 ? await computeLocalizedEditDiffs(fp, operations, runtimeCwd) : null;
 			const result = await createEditToolDefinition(runtimeCwd).execute(toolCallId, params, signal, onUpdate, ctx);
 			if (operations.length === 0) return result;
+			const after = fullPath ? captureWriteSnapshot(fullPath) : { kind: "unavailable" as const };
 			const { diffs, summary, totalLines, totalHunks } = summarizeEditOperations(operations);
 			const baseDetails = (((result as any).details ?? {}) as Record<string, unknown>);
+			const snapshotDiff = before.kind === "content" && after.kind === "content" && before.content !== after.content
+				? parseDiff(before.content, after.content)
+				: null;
+			const aggregateDiff = snapshotDiff?.lines.length
+				? snapshotDiff
+				: parsePersistedEditPatch(baseDetails.patch);
 			if (operations.length === 1) {
 				const localized = localizedDiffs?.[0];
-				const editLine = localized?.line ?? (typeof baseDetails.firstChangedLine === "number" ? baseDetails.firstChangedLine : 0);
-				const diff = localized?.diff ?? diffs[0];
+				const diff = aggregateDiff ?? localized?.diff ?? diffs[0];
+				const editLine = getFirstChangedNewLine(diff)
+					|| localized?.line
+					|| (typeof baseDetails.firstChangedLine === "number" ? baseDetails.firstChangedLine : 0);
 				(result as any).details = {
 					...baseDetails,
 					_type: "editInfo",
@@ -5616,8 +5843,8 @@ export default function (pi: ExtensionAPI): void {
 					hunks: countDiffHunks(diff),
 					added: diff?.added ?? 0,
 					removed: diff?.removed ?? 0,
-					// Persist the render model with the tool result. ctx.state and the
-					// pre-edit filesystem are both gone after /reload or restart.
+					// Persist the full-file render model. ctx.state and the pre-edit
+					// filesystem are both gone after /reload or restart.
 					parsedDiff: diff,
 					language: lang(fp),
 				};
@@ -5628,10 +5855,13 @@ export default function (pi: ExtensionAPI): void {
 				_type: "multiEditInfo",
 				summary,
 				editCount: operations.length,
-				diffLineCount: totalLines,
-				hunks: totalHunks,
-				totalAdded: diffs.reduce((sum, diff) => sum + diff.added, 0),
-				totalRemoved: diffs.reduce((sum, diff) => sum + diff.removed, 0),
+				diffLineCount: aggregateDiff?.lines.length ?? totalLines,
+				hunks: aggregateDiff ? countDiffHunks(aggregateDiff) : totalHunks,
+				totalAdded: aggregateDiff?.added ?? diffs.reduce((sum, diff) => sum + diff.added, 0),
+				totalRemoved: aggregateDiff?.removed ?? diffs.reduce((sum, diff) => sum + diff.removed, 0),
+				aggregateDiff,
+				// Retain operation models solely as a bounded fallback for hosts where
+				// the source snapshot and standard patch are unavailable.
 				parsedDiffs: diffs,
 				editLines: diffs.map((diff) => getFirstChangedNewLine(diff)),
 				language: lang(fp),
@@ -5642,7 +5872,7 @@ export default function (pi: ExtensionAPI): void {
 			const fp = args?.path ?? (args as any)?.file_path ?? "";
 			const operations = getEditOperations(args);
 			const revealSummary = shouldRevealCallArgs(ctx) || (!!fp && hasOwnArg(args, "edits"));
-			const summary = stableCallSummary(ctx, "_callSummary", () => shouldRevealCallArgs(ctx) && operations.length > 1 ? `${spl(fp)} ${theme.fg("muted", `(${operations.length} edits)`)}` : spl(fp), revealSummary);
+			const summary = stableCallSummary(ctx, "_callSummary", () => spl(fp), revealSummary);
 			syncToolCallStatus(ctx);
 			const hdr = toolHeader("Update", summary, theme, toolStatusDot(ctx, theme));
 			// Before/during execution the call owns the preview. Once settled, the
@@ -5657,6 +5887,11 @@ export default function (pi: ExtensionAPI): void {
 				key,
 				placeholder,
 				async (width) => {
+					const aggregate = await computeAggregateEditDiff(fp, operations, ctx.cwd ?? cwd);
+					if (aggregate) {
+						const body = await buildAggregateEditPreviewText(theme, lang(fp), aggregate, ctx.expanded === true, width);
+						return `${hdr}\n${body}`;
+					}
 					const localized = await computeLocalizedEditDiffs(fp, operations, ctx.cwd ?? cwd).catch(() => null);
 					const diffs = localized?.map((entry) => entry.diff) ?? fallbackDiffs;
 					const lines = localized?.map((entry) => entry.line) ?? diffs.map(getFirstChangedNewLine);
@@ -5664,7 +5899,7 @@ export default function (pi: ExtensionAPI): void {
 					return `${hdr}\n${body}`;
 				},
 				ctx.invalidate,
-				renderToolTextLines,
+				renderPrewrappedDiffLines,
 				hdr,
 			);
 		},
@@ -5686,11 +5921,19 @@ export default function (pi: ExtensionAPI): void {
 			const details = ((result as any).details ?? {}) as Record<string, any>;
 			const operations = getEditOperations(ctx.args);
 			const fallback = operations.length > 0 ? summarizeEditOperations(operations) : null;
-			let diffs = Array.isArray(details.parsedDiffs)
-				? details.parsedDiffs.map(asParsedDiff).filter(Boolean) as ParsedDiff[]
-				: [];
-			let displayOperations = operations;
-			let lines = Array.isArray(details.editLines) ? details.editLines.filter((line: unknown) => typeof line === "number") : [];
+			const aggregatePersisted = asParsedDiff(details.aggregateDiff)
+				?? (details._type !== "multiEditInfo" ? asParsedDiff(details.parsedDiff) : null);
+			let diffs = aggregatePersisted
+				? [aggregatePersisted]
+				: Array.isArray(details.parsedDiffs)
+					? details.parsedDiffs.map(asParsedDiff).filter(Boolean) as ParsedDiff[]
+					: [];
+			let displayOperations = aggregatePersisted
+				? [operations[0] ?? { oldText: "", newText: "" }]
+				: operations;
+			let lines = aggregatePersisted
+				? [getFirstChangedNewLine(aggregatePersisted)]
+				: Array.isArray(details.editLines) ? details.editLines.filter((line: unknown) => typeof line === "number") : [];
 			const singlePersisted = asParsedDiff(details.parsedDiff);
 			if (diffs.length === 0 && singlePersisted) diffs = [singlePersisted];
 			if (diffs.length === 0) {
@@ -5718,9 +5961,11 @@ export default function (pi: ExtensionAPI): void {
 					ctx.lastComponent,
 					key,
 					placeholder,
-					(width) => buildEditPreviewText(theme, details.language ?? lang(ctx.args?.path ?? ""), displayOperations, diffs, lines, summary, ctx.expanded === true, width),
+					(width) => aggregatePersisted
+						? buildAggregateEditPreviewText(theme, details.language ?? lang(ctx.args?.path ?? ""), aggregatePersisted, ctx.expanded === true, width)
+						: buildEditPreviewText(theme, details.language ?? lang(ctx.args?.path ?? ""), displayOperations, diffs, lines, summary, ctx.expanded === true, width),
 					ctx.invalidate,
-					renderToolTextLines,
+					renderPrewrappedDiffLines,
 					withBranch(theme.fg("success", "Applied"), theme),
 				);
 			}

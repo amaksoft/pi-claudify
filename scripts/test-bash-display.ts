@@ -508,7 +508,7 @@ const cappedOut = cappedBox
 	.map((line) => line.replace(/\x1b\]8;;[^\x07]*\x07/g, "").replace(/\x1b\[[0-9;]*m/g, "").replace(/\s+$/, ""))
 	.join("\n");
 const cappedLines = cappedOut.split("\n").map((line) => line.trim());
-for (const tick of ["settled1", "settled5"]) assert.ok(cappedLines.includes(tick), `settled cap shows ${tick}`);
+for (const tick of ["settled1", "settled5"]) assert.ok(cappedLines.some((line) => line.endsWith(tick)), `settled cap shows ${tick}`);
 assert.ok(!cappedLines.includes("settled6"), "settled cap hides line 6");
 assert.match(cappedOut, /… \+10 lines/, "settled cap states the hidden remainder");
 assert.match(cappedOut, /display capped at 5 lines/, "settled cap names the configured ceiling");

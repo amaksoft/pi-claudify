@@ -11,7 +11,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
-bun run test                       # full suite (24 assembled-render/handler suites)
+bun run test                       # full suite (23 assembled-render/handler suites)
 bun scripts/test-claudify-hub.ts   # run one suite directly
 ```
 

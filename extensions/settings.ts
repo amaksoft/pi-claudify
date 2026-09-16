@@ -32,8 +32,11 @@ export interface SettingsFile {
 	skipToolOverrides?: string[];
 	showTruncationHints?: boolean;
 	diffCollapsedLines?: number;
+	diffSyntaxHighlighting?: boolean;
 	diffTheme?: string;
 	diffColors?: Record<string, string>;
+	colorSource?: "claude" | "theme";
+	markdownStyle?: "claude" | "pi";
 	diffPalette?: "claude" | "theme";
 	toolChrome?: "claude" | "theme";
 	themeAdaptive?: boolean;

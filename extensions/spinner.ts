@@ -2,6 +2,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Loader } from "@earendil-works/pi-tui";
 
 import { parseCompatibilityConfig, resolveCompatibilityFeatureEnabled } from "./domain/compatibility.ts";
+import { resolveSpinnerShimmer } from "./presentation-profile.ts";
 import { readSettings } from "./settings.ts";
 
 function spinnerFeatureEnabled(): boolean {
@@ -117,7 +118,7 @@ function readSpinnerSettings(): SpinnerSettings {
 	// CC's warm shimmer imposes its own fixed palette, so it only applies when the
 	// spinner is at its default color — a custom spinnerColor (or a live preview of
 	// one) means the user picked a static color and wins. Opt-out via spinnerShimmer.
-	const shimmer = raw.spinnerShimmer !== false && verbColor === "borderAccent";
+	const shimmer = resolveSpinnerShimmer(raw) && verbColor === "borderAccent";
 	const value: SpinnerSettings = {
 		adaptive,
 		verbColor,

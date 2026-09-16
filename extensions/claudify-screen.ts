@@ -18,6 +18,7 @@ import {
 	resolveMessageChromeSettings,
 	sanitizeWorkedVerbs,
 } from "./message-chrome.ts";
+import { resolveColorSource, resolveSurfaceColorSource } from "./presentation-profile.ts";
 import { readSettings, writeSettingsKey, type SettingsFile } from "./settings.ts";
 import {
 	MAX_CUSTOM_SPINNER_VERBS,
@@ -48,11 +49,14 @@ type VerbModeSettingsKey = "spinnerVerbMode" | "workedVerbMode";
 type VerbMode = "append" | "replace";
 
 type EditableSettingsKey =
+	| "colorSource"
+	| "markdownStyle"
 	| "themeAdaptive"
 	| "bannerMode"
 	| "bannerFrame"
 	| "promptPointer"
 	| "diffPalette"
+	| "diffSyntaxHighlighting"
 	| "diffTheme"
 	| "toolChrome"
 	| "diffCollapsedLines"
@@ -92,6 +96,8 @@ type EditableSettingsKey =
 	| "userMessageBox";
 
 const CLAUDE_AUTHENTIC: Partial<Record<EditableSettingsKey, string>> = {
+	colorSource: "claude",
+	markdownStyle: "claude",
 	// docs/plans/2026-07-13-mcp-grammar.md:13-17 — no per-call MCP result row or preview.
 	mcpOutputMode: "hidden",
 };
@@ -236,6 +242,24 @@ type ImmediateRowDefinition = EnumRowDefinition | BooleanRowDefinition | NumberR
 
 const THEME_ROWS: readonly ImmediateRowDefinition[] = [
 	{
+		kind: "enum",
+		key: "colorSource",
+		label: "Color source",
+		description: "Uses captured Claude colors or semantic colors from Pi's active theme by default.",
+		values: ["claude", "theme"],
+		defaultValue: "claude",
+		claudeValue: "claude",
+	},
+	{
+		kind: "enum",
+		key: "markdownStyle",
+		label: "Markdown style",
+		description: "Uses Claude's Markdown grammar or Pi's native fence, rule, and quote rendering.",
+		values: ["claude", "pi"],
+		defaultValue: "claude",
+		claudeValue: "claude",
+	},
+	{
 		kind: "boolean",
 		key: "themeAdaptive",
 		label: "Adaptive colors",
@@ -286,6 +310,13 @@ const BANNER_ROWS: readonly ImmediateRowDefinition[] = [
 ];
 
 const DIFF_ROWS: readonly ImmediateRowDefinition[] = [
+	{
+		kind: "boolean",
+		key: "diffSyntaxHighlighting",
+		label: "Syntax highlighting",
+		description: "Highlights changed code with Shiki; off keeps diff colors and layout only.",
+		defaultValue: true,
+	},
 	{
 		kind: "number",
 		key: "diffCollapsedLines",
@@ -566,7 +597,11 @@ function messageRows(settings: SettingsFile): SettingRow[] {
 			key: "userMessageBox",
 			label: "User message box",
 			description: "Styles user messages with theme, Claude gray, a custom color, or no box.",
-			value: effectiveColorTextValue(settings.userMessageBox, ["theme", "claude", "off"], "theme"),
+			value: effectiveColorTextValue(
+				resolveSurfaceColorSource(settings, "userMessageBox"),
+				["theme", "claude", "off"],
+				resolveColorSource(settings),
+			),
 		},
 	];
 }
@@ -591,6 +626,7 @@ function sectionRows(section: ClaudifySection, candidates: ClaudifyPickerCandida
 		return [...rows.slice(0, 2), colorRow, ...rows.slice(2)];
 	}
 	if (section.id === "theme") {
+		const colorSource = resolveColorSource(settings);
 		const themeRows = immediateRows(settings, THEME_ROWS);
 		const accentRow: SettingRow = {
 			// docs/plans/2026-07-16-cc-accent-color.md — CC lavender, pi theme accent, or custom hex.
@@ -598,15 +634,15 @@ function sectionRows(section: ClaudifySection, candidates: ClaudifyPickerCandida
 			key: "accentColor",
 			label: "Accent",
 			description: "Sets selection highlights plus accent-linked inline code and list bullets.",
-			value: effectiveColorTextValue(settings.accentColor, ["claude", "theme"], "claude"),
+			value: effectiveColorTextValue(resolveSurfaceColorSource(settings, "accentColor"), ["claude", "theme"], colorSource),
 		};
 		const diffTheme = typeof settings.diffTheme === "string" && candidates.diffThemes.includes(settings.diffTheme)
 			? settings.diffTheme
 			: undefined;
 		return [
-			...themeRows.slice(0, 1),
+			...themeRows.slice(0, 3),
 			accentRow,
-			...themeRows.slice(1),
+			...themeRows.slice(3),
 			{
 				kind: "picker",
 				key: "diffTheme",

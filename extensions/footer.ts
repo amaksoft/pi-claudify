@@ -37,7 +37,7 @@ export interface UsageWindowData {
 export const DEFAULT_FOOTER_COLOR = "#FF9200";
 
 const RESET = "\x1b[0m";
-const BLUE = "\x1b[0;34m";
+const BLUE = "\x1b[38;5;75m";
 const GREEN = "\x1b[0;32m";
 const YELLOW = "\x1b[0;33m";
 const CYAN = "\x1b[0;36m";
@@ -422,7 +422,18 @@ interface SegmentPalette {
 	readonly reset: string;
 }
 
-function paletteFor(settings: FooterSettings): SegmentPalette {
+function themeFgAnsi(theme: any, key: string, fallback: string): string {
+	try {
+		const direct = theme?.getFgAnsi?.(key);
+		if (typeof direct === "string") return direct;
+		const marker = "__CLAUDIFY_COLOR__";
+		const painted = theme?.fg?.(key, marker);
+		if (typeof painted === "string") return painted.replace(marker, "");
+	} catch { /* fallback below */ }
+	return fallback;
+}
+
+function paletteFor(settings: FooterSettings, theme?: any): SegmentPalette {
 	if (settings.colorMode === "monochrome") {
 		return {
 			dir: "",
@@ -452,16 +463,35 @@ function paletteFor(settings: FooterSettings): SegmentPalette {
 			reset: RESET,
 		};
 	}
+	if (!theme) {
+		return {
+			dir: BLUE,
+			branch: GREEN,
+			model: YELLOW,
+			contextCool: CYAN,
+			contextWarm: YELLOW,
+			contextHot: CONTEXT_HOT,
+			usageUnknown: YELLOW,
+			usageLevels: USAGE_LEVELS,
+			separator: GRAY,
+			reset: RESET,
+		};
+	}
+	const accent = themeFgAnsi(theme, "accent", BLUE);
+	const success = themeFgAnsi(theme, "success", GREEN);
+	const warning = themeFgAnsi(theme, "warning", YELLOW);
+	const error = themeFgAnsi(theme, "error", CONTEXT_HOT);
+	const dim = themeFgAnsi(theme, "dim", GRAY);
 	return {
-		dir: BLUE,
-		branch: GREEN,
-		model: YELLOW,
-		contextCool: CYAN,
-		contextWarm: YELLOW,
-		contextHot: CONTEXT_HOT,
-		usageUnknown: YELLOW,
-		usageLevels: USAGE_LEVELS,
-		separator: GRAY,
+		dir: accent,
+		branch: success,
+		model: warning,
+		contextCool: accent || CYAN,
+		contextWarm: warning,
+		contextHot: error,
+		usageUnknown: warning,
+		usageLevels: [success, success, success, warning, warning, warning, warning, error, error, error],
+		separator: dim,
 		reset: RESET,
 	};
 }
@@ -502,8 +532,8 @@ function resetTime(resetsAt: number | null): string | null {
 	}
 }
 
-export function buildFooterLine(data: FooterLineData, settings: FooterSettings): string {
-	const palette = paletteFor(settings);
+export function buildFooterLine(data: FooterLineData, settings: FooterSettings, theme?: any): string {
+	const palette = paletteFor(settings, theme);
 	const paint = (color: string, text: string): string => (color ? `${color}${text}${palette.reset}` : text);
 	const segments: string[] = [];
 
@@ -615,10 +645,12 @@ function sanitizeStatusText(text: string): string {
 export class ClaudeFooterComponent {
 	private readonly footerData: FooterDataLike;
 	private readonly sources: FooterSources;
+	private readonly theme: unknown;
 
-	constructor(footerData: FooterDataLike, sources: FooterSources) {
+	constructor(footerData: FooterDataLike, sources: FooterSources, theme?: unknown) {
 		this.footerData = footerData;
 		this.sources = sources;
+		this.theme = theme;
 	}
 
 	// pi-tui's Component contract declares invalidate() as required even though
@@ -645,6 +677,7 @@ export class ClaudeFooterComponent {
 				promptCount: session.promptCount,
 			},
 			settings,
+			this.theme,
 		);
 		const lines = [truncateToWidth(line, width, "…")];
 		// pi's stock footer surfaces other extensions' ctx.ui.setStatus lines;
@@ -673,7 +706,7 @@ export function installClaudeFooter(ctx: any, pi?: any): void {
 		ctx.ui.setFooter(undefined);
 		return;
 	}
-	ctx.ui.setFooter((tui: any, _theme: unknown, footerData: FooterDataLike) => {
+	ctx.ui.setFooter((tui: any, theme: unknown, footerData: FooterDataLike) => {
 		const registry = ctx.modelRegistry;
 		const usageSource = registry
 			&& typeof registry.isUsingOAuth === "function"
@@ -740,7 +773,7 @@ export function installClaudeFooter(ctx: any, pi?: any): void {
 				usageSource?.dispose();
 			},
 		};
-		return new ClaudeFooterComponent(footerData, sources);
+		return new ClaudeFooterComponent(footerData, sources, theme);
 	});
 }
 
