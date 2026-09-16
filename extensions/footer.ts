@@ -5,6 +5,7 @@ import { Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 
 import { settingsFeatureEnabled } from "./domain/compatibility.ts";
+import { getSessionMetrics } from "./session-metrics.ts";
 import { readSettings, type SettingsFile } from "./settings.ts";
 
 // Claude Code-style statusline footer + pinned-gray input border.
@@ -21,6 +22,8 @@ export interface FooterSettings {
 	readonly color: string;
 	readonly usageBar: boolean;
 	readonly effort: boolean;
+	readonly cost: boolean;
+	readonly sessionStats: boolean;
 	readonly editorBorder: EditorBorderMode;
 }
 
@@ -97,6 +100,8 @@ export function resolveFooterSettings(values: SettingsFile): FooterSettings {
 		color,
 		usageBar: values.footerUsageBar !== false,
 		effort: values.footerEffort !== false,
+		cost: values.footerCost !== false,
+		sessionStats: values.footerSessionStats !== false,
 		editorBorder: values.editorBorder === "thinking" ? "thinking" : "gray",
 	};
 }
@@ -399,6 +404,9 @@ export interface FooterLineData {
 	/** Percent of the current model's context window; null while tokens are unknown. */
 	readonly contextPercent: number | null;
 	readonly usage: readonly UsageWindowData[];
+	readonly sessionCost?: number;
+	readonly sessionElapsedMs?: number;
+	readonly promptCount?: number;
 }
 
 interface SegmentPalette {
@@ -470,6 +478,16 @@ function usageColor(palette: SegmentPalette, percent: number | null): string {
 	return palette.usageLevels[tier] ?? palette.usageUnknown;
 }
 
+function formatSessionDuration(ms: number): string {
+	const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+	const hours = Math.floor(totalSeconds / 3600);
+	const minutes = Math.floor((totalSeconds % 3600) / 60);
+	const seconds = totalSeconds % 60;
+	if (hours > 0) return `${hours}h ${minutes}m ${seconds}s`;
+	if (minutes > 0) return `${minutes}m ${seconds}s`;
+	return `${seconds}s`;
+}
+
 function resetTime(resetsAt: number | null): string | null {
 	if (resetsAt === null || !Number.isFinite(resetsAt) || resetsAt <= 0) return null;
 	try {
@@ -513,6 +531,13 @@ export function buildFooterLine(data: FooterLineData, settings: FooterSettings):
 		const reset = percent === null ? null : resetTime(window.resetsAt);
 		if (reset) text += ` → Reset: ${reset}`;
 		segments.push(paint(usageColor(palette, percent), text));
+	}
+	if (settings.cost && typeof data.sessionCost === "number" && data.sessionCost > 0) {
+		segments.push(paint(palette.separator, `$${data.sessionCost.toFixed(2)}`));
+	}
+	if (settings.sessionStats && typeof data.promptCount === "number" && data.promptCount > 0) {
+		const duration = formatSessionDuration(data.sessionElapsedMs ?? 0);
+		segments.push(paint(palette.separator, `${duration} · ${data.promptCount} ${data.promptCount === 1 ? "prompt" : "prompts"}`));
 	}
 
 	const separator = paint(palette.separator, " │ ");
@@ -606,6 +631,7 @@ export class ClaudeFooterComponent {
 
 	render(width: number): string[] {
 		const settings = resolveFooterSettings(readSettings().values);
+		const session = getSessionMetrics();
 		const line = buildFooterLine(
 			{
 				directory: this.sources.getDirectory(),
@@ -614,6 +640,9 @@ export class ClaudeFooterComponent {
 				effort: this.sources.getEffort(),
 				contextPercent: this.sources.getContextPercent(),
 				usage: this.sources.getUsage(),
+				sessionCost: session.cost,
+				sessionElapsedMs: Date.now() - session.startedAt,
+				promptCount: session.promptCount,
 			},
 			settings,
 		);

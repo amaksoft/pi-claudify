@@ -44,6 +44,10 @@ A disabled tool is not registered, adapted, or grouped by Claudify; the host or 
 
 #### Theme
 
+The package ships six native Pi themes: dark/light, ANSI, and daltonized variants under the `claude-code-*` names. Select them through Pi's ordinary `/settings` theme picker; claudify deliberately does not maintain a second application-theme setting. When one is active, it owns the base accent, diff palette, and tool colors unless you explicitly set `accentColor`, `diffPalette`, or `toolChrome`; explicit claudify overrides always win. This keeps themes and renderer overrides composable instead of layering two implicit color systems.
+
+The startup banner is Pi-branded and controlled by **Startup banner** (`bannerMode`: `off`, `onboarding`, or `always`). **Banner frame** (`bannerFrame`) switches between the responsive framed panel and the compact borderless form. The banner uses the active Pi theme and does not own a separate palette. **Prompt pointer** (`promptPointer`, default on) adds `❯` to Pi's editor only when another extension has not already installed a custom editor.
+
 - **Adaptive colors** (`themeAdaptive`) controls whether borders, connectors, spinner accents, and eligible diff colors follow the active pi theme.
 - **Diff palette** (`diffPalette`) switches between the fixed Claude Code palette and theme-derived diff colors.
 - **Tool chrome** (`toolChrome`) switches between Claude-style status bullets and pi theme accents.
@@ -75,7 +79,15 @@ Each verb editor has a mode row for **append** versus **replace**, an **Add…**
 - **Preview lines** (`previewLines`) and **Bash preview lines** (`bashCollapsedLines`) set collapsed visual-row budgets; **Running Bash preview** (`bashRunningPreview`) chooses the oldest (`head`) or newest (`tail`) live rows.
 - **Stack consecutive Bash** (`bashStackConsecutive`) and **Semantic Bash display** (`bashSemanticDisplay`) control Bash row layout and read-only command labeling.
 - **Group read-only tools** (`readOnlyToolGrouping`) and **Read-only group limit** (`readOnlyToolGroupLimit`) control inspection aggregation. **Group shell commands** (`groupShellCommands`) can keep Bash calls as always-visible native rows while other inspection calls remain grouped.
+- **Skip tool overrides** (`skipToolOverrides`, JSON-only string array) leaves selected built-ins such as `grep` or `find` owned by another extension. `PI_CLAUDIFY_SKIP_TOOL_OVERRIDES=grep,find` is the process-local equivalent. The legacy fork key `ccSkipToolOverrides` is accepted.
 - **Expanded preview max lines** (`expandedPreviewMaxLines`) caps fully expanded output.
+
+#### Footer
+
+- **Usage bar** (`footerUsageBar`) controls quota bars beside known provider percentages.
+- **Effort** (`footerEffort`) appends the active thinking level to the model segment.
+- **Session cost** (`footerCost`, default on) adds provider-reported accumulated cost.
+- **Session time and prompts** (`footerSessionStats`, default on) adds elapsed time and submitted prompt count, seeded consistently from resumed history.
 
 ### Migration from 1.x
 

@@ -2,6 +2,19 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
+const CORE_TOOL_NAMES = new Set(["read", "bash", "grep", "find", "ls", "write", "edit"]);
+
+export function skippedToolOverrides(values: Record<string, unknown>, envValue = process.env.PI_CLAUDIFY_SKIP_TOOL_OVERRIDES ?? ""): Set<string> {
+	const configured = Array.isArray(values.skipToolOverrides) ? values.skipToolOverrides : [];
+	const fromEnv = envValue.split(",");
+	return new Set(
+		[...configured, ...fromEnv]
+			.filter((value): value is string => typeof value === "string")
+			.map((value) => value.trim().toLowerCase())
+			.filter((value) => CORE_TOOL_NAMES.has(value)),
+	);
+}
+
 export interface HostToolSettings {
 	shellPath?: string;
 	commandPrefix?: string;

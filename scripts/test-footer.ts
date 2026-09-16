@@ -57,6 +57,8 @@ assert.deepEqual(defaults, {
 	color: "#FF9200",
 	usageBar: true,
 	effort: true,
+	cost: true,
+	sessionStats: true,
 	editorBorder: "gray",
 });
 assert.equal(resolveFooterSettings({ footerColor: "not-a-color" }).color, DEFAULT_FOOTER_COLOR, "invalid stored hex falls back");
@@ -132,6 +134,20 @@ assert.doesNotMatch(
 	buildFooterLine({ ...fullData, modelName: null, effort: "high" }, colored),
 	/high/,
 	"the suffix never renders without a model name to attach it to",
+);
+const withSessionMetrics = buildFooterLine(
+	{ ...fullData, sessionCost: 1.25, sessionElapsedMs: 65_000, promptCount: 2 },
+	{ ...colored, cost: true, sessionStats: true },
+);
+assert.match(withSessionMetrics, /\$1\.25/, "session cost is additive and opt-in");
+assert.match(withSessionMetrics, /1m 5s · 2 prompts/, "elapsed time and prompt count share one segment");
+assert.doesNotMatch(
+	buildFooterLine(
+		{ ...fullData, sessionCost: 1.25, sessionElapsedMs: 65_000, promptCount: 2 },
+		{ ...colored, cost: false, sessionStats: false },
+	),
+	/\$1\.25|2 prompts/,
+	"session metrics can be opted out",
 );
 
 // Context threshold tiers (≤50 cyan, ≤75 yellow, >75 the script's LEVEL_9 red).

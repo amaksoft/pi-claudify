@@ -49,6 +49,9 @@ type VerbMode = "append" | "replace";
 
 type EditableSettingsKey =
 	| "themeAdaptive"
+	| "bannerMode"
+	| "bannerFrame"
+	| "promptPointer"
 	| "diffPalette"
 	| "diffTheme"
 	| "toolChrome"
@@ -82,6 +85,8 @@ type EditableSettingsKey =
 	| "footerColor"
 	| "footerUsageBar"
 	| "footerEffort"
+	| "footerCost"
+	| "footerSessionStats"
 	| "editorBorder"
 	| "accentColor"
 	| "userMessageBox";
@@ -255,6 +260,31 @@ const THEME_ROWS: readonly ImmediateRowDefinition[] = [
 	},
 ];
 
+const BANNER_ROWS: readonly ImmediateRowDefinition[] = [
+	{
+		kind: "enum",
+		key: "bannerMode",
+		label: "Startup banner",
+		description: "Shows the full banner on first project/version, always, or not at all.",
+		values: ["off", "onboarding", "always"],
+		defaultValue: "onboarding",
+	},
+	{
+		kind: "boolean",
+		key: "bannerFrame",
+		label: "Banner frame",
+		description: "Uses the responsive framed welcome panel; off keeps the compact borderless banner.",
+		defaultValue: true,
+	},
+	{
+		kind: "boolean",
+		key: "promptPointer",
+		label: "Prompt pointer",
+		description: "Adds a Claude-style ❯ to Pi's editor when no other extension owns it.",
+		defaultValue: true,
+	},
+];
+
 const DIFF_ROWS: readonly ImmediateRowDefinition[] = [
 	{
 		kind: "number",
@@ -262,7 +292,7 @@ const DIFF_ROWS: readonly ImmediateRowDefinition[] = [
 		label: "Collapsed Write lines",
 		// Write-scoped by name, deliberately (CLFY-23). Only the write tool reads
 		// diffCollapsedLimit(); edit's collapsed diff renders a larger fixed budget
-		// (renderEditPreviewBody in index.ts). Claude Code never collapses edit diffs
+		// (buildEditPreviewText in index.ts). Claude Code never collapses edit diffs
 		// at all — it shows them in full (capture: docs/plans/2026-07-17-cc-edit-diff-collapse.md)
 		// — so the larger edit budget is the more CC-faithful of the two, and a generic
 		// "diff" label would promise a control the user cannot feel on Update rows.
@@ -291,7 +321,7 @@ const TOOL_OUTPUT_ROWS: readonly ImmediateRowDefinition[] = [
 		label: "MCP output",
 		description: "Hides MCP results, shows a status summary, or previews their payload.",
 		values: ["hidden", "summary", "preview"],
-		defaultValue: "preview",
+		defaultValue: "hidden",
 		claudeValue: CLAUDE_AUTHENTIC.mcpOutputMode,
 	},
 	{
@@ -405,6 +435,20 @@ const FOOTER_ROWS: readonly ImmediateRowDefinition[] = [
 		key: "footerEffort",
 		label: "Effort",
 		description: "Appends pi's thinking level to the model name, as in \"Fable 5 · high\".",
+		defaultValue: true,
+	},
+	{
+		kind: "boolean",
+		key: "footerCost",
+		label: "Session cost",
+		description: "Appends provider-reported accumulated cost for this session.",
+		defaultValue: true,
+	},
+	{
+		kind: "boolean",
+		key: "footerSessionStats",
+		label: "Session time and prompts",
+		description: "Appends elapsed session time and submitted prompt count.",
 		defaultValue: true,
 	},
 	{
@@ -574,6 +618,7 @@ function sectionRows(section: ClaudifySection, candidates: ClaudifyPickerCandida
 					...candidates.diffThemes.map((value) => ({ label: value, value })),
 				],
 			},
+			...immediateRows(settings, BANNER_ROWS),
 		];
 	}
 	if (section.id === "spinner") {

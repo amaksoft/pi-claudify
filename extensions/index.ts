@@ -42,8 +42,9 @@ import {
 import * as Diff from "diff";
 import type { BundledLanguage, BundledTheme } from "shiki";
 
+import { registerBanner } from "./banner.ts";
 import { bashHeaderCommand } from "./bash-preview.ts";
-import { forwardedToolContract, hostToolSettings } from "./builtin-contracts.ts";
+import { forwardedToolContract, hostToolSettings, skippedToolOverrides } from "./builtin-contracts.ts";
 import { ClaudifyScreen } from "./claudify-screen.ts";
 import { diffCard } from "./diff-card.ts";
 import { installClaudeFooter, normalizeHexColor, patchEditorBorderColor } from "./footer.ts";
@@ -72,6 +73,8 @@ import {
 	toolComponentCwd as componentCwd,
 	toolComponentRecord,
 } from "./pi-tool-adapter.ts";
+import { applyPromptPointer, registerPromptPointer } from "./prompt-editor.ts";
+import { registerSessionMetrics } from "./session-metrics.ts";
 import { getSettingsRevision, readSettings } from "./settings.ts";
 import { sanitizeToolText, WRAP_MARK } from "./terminal-sanitize.ts";
 import { selectVisualItems, selectVisualPreview, widthAwareText, type VisualPreviewMode } from "./visual-preview.ts";
@@ -528,7 +531,11 @@ export function applyAccentOverride(theme: unknown): void {
 	const accentColor = readSettings().values.accentColor;
 	const customAccent = storedHexColor(accentColor);
 	const colorMode = (theme as any).mode === "256color" ? "ansi256" : "truecolor";
-	const target = accentColor === "theme"
+	// Native bundled themes own their token table unless the user explicitly asks
+	// claudify to override it. This prevents selecting a theme and then silently
+	// repainting that theme's accent with a second color system.
+	const themeOwnsAccent = accentColor === "theme" || (accentColor === undefined && isBundledClaudeTheme(theme));
+	const target = themeOwnsAccent
 		? snapshot?.original ?? current
 		: customAccent
 			? ansiFromHex(theme, customAccent, "foreground")
@@ -536,7 +543,7 @@ export function applyAccentOverride(theme: unknown): void {
 			: CC_ACCENT_ANSI[isDarkTheme(theme) ? "dark" : "light"][colorMode];
 	// Register only values we impose, never a restored original: a theme whose own
 	// accent happens to equal some other theme's custom color must still snapshot.
-	if (accentColor !== "theme") appliedAccentValues.add(target);
+	if (!themeOwnsAccent) appliedAccentValues.add(target);
 	if (current !== target) setThemeFg(theme, "accent", target);
 	for (const key of snapshot?.aliasKeys ?? []) {
 		if (getThemeFg(theme, key) !== target) setThemeFg(theme, key, target);
@@ -2482,6 +2489,19 @@ function themeBgRgb(theme: any, key: string): Rgb | null {
 // object is reused across renders within a single session unless the user
 // switches themes via the picker.
 let _themePaletteCacheTheme: unknown = null;
+const BUNDLED_CLAUDE_THEME_NAMES = new Set([
+	"claude-code-dark",
+	"claude-code-dark-ansi",
+	"claude-code-dark-daltonized",
+	"claude-code-light",
+	"claude-code-light-ansi",
+	"claude-code-light-daltonized",
+]);
+let activeBundledThemeOwnsColors = false;
+
+export function isBundledClaudeTheme(theme: unknown): boolean {
+	return BUNDLED_CLAUDE_THEME_NAMES.has(String((theme as any)?.name ?? ""));
+}
 
 function themeAdaptiveEnabled(): boolean {
 	const settings = readSettings().values;
@@ -2494,7 +2514,10 @@ function themeAdaptiveEnabled(): boolean {
  * to get the theme-derived tints back.
  */
 function claudeDiffPaletteEnabled(): boolean {
-	return readSettings().values.diffPalette !== "theme";
+	const value = readSettings().values.diffPalette;
+	if (value === "claude") return true;
+	if (value === "theme") return false;
+	return !activeBundledThemeOwnsColors;
 }
 
 /**
@@ -2503,7 +2526,10 @@ function claudeDiffPaletteEnabled(): boolean {
  * paths. Set `toolChrome: "theme"` to keep the themed/accent-tinted rows.
  */
 function claudeChromeEnabled(): boolean {
-	return readSettings().values.toolChrome !== "theme";
+	const value = readSettings().values.toolChrome;
+	if (value === "claude") return true;
+	if (value === "theme") return false;
+	return !activeBundledThemeOwnsColors;
 }
 
 // Claude Code highlights diff content with a Monokai palette (fg 248,248,242,
@@ -2650,9 +2676,8 @@ function autoDeriveBgFromTheme(theme: any): void {
 const _explicitFgFields = new Set<"fgAdd" | "fgDel" | "fgDim" | "fgLnum" | "fgRule" | "fgStripe" | "fgSafeMuted">();
 
 function applyThemePaletteIfNeeded(theme: any): void {
-	// `themeColors: false` makes this a complete no-op (native pi theme shows
-	// through), including the accent override below.
 	if (!theme || !featureEnabled("themeColors")) return;
+	activeBundledThemeOwnsColors = isBundledClaudeTheme(theme);
 	// Runs before the adaptive/cache guards: the accent override applies even with
 	// adaptive colors off, and re-checks its setting on every call.
 	applyAccentOverride(theme);
@@ -4716,7 +4741,7 @@ function renderMcpToolResult(result: any, expanded: boolean, isPartial: boolean,
 	clearBlinkTimer(ctx);
 	setToolStatus(ctx, ctx.isError ? "error" : "success");
 
-	const mode = getMode(readSettings().values.mcpOutputMode, ["hidden", "summary", "preview"] as const, "preview");
+	const mode = getMode(readSettings().values.mcpOutputMode, ["hidden", "summary", "preview"] as const, "hidden");
 	if (mode === "hidden") return makeText(ctx.lastComponent, "");
 
 	const raw = getTextContent(result).trim();
@@ -5039,6 +5064,9 @@ export default function (pi: ExtensionAPI): void {
 	if (featureEnabled("diffPresentation")) applyDiffPalette();
 	if (featureEnabled("assistantMessages")) registerThinkingLabels(pi);
 	if (featureEnabled("fullscreenTui")) registerFullscreenTui(pi);
+	if (featureEnabled("footer")) registerSessionMetrics(pi);
+	if (featureEnabled("banner")) registerBanner(pi);
+	if (featureEnabled("promptPointer")) registerPromptPointer(pi);
 
 	if (featureEnabled("settingsCommand")) pi.registerCommand("claudify", {
 		description: "Open the Claudify settings screen",
@@ -5071,6 +5099,7 @@ export default function (pi: ExtensionAPI): void {
 							if (key === "hiddenThinkingLabel") applyHiddenThinkingLabel(ctx);
 							if (key === "accentColor") applyAccentOverride(ctx.ui.theme);
 							if (key === "userMessageBox") applyToolBackgroundMode(ctx.ui.theme);
+							if (key === "promptPointer") applyPromptPointer(ctx);
 							if (key === "spinnerColor"
 								|| key === "spinnerStatusColor"
 								|| key === "spinnerShimmer"
@@ -5131,20 +5160,52 @@ export default function (pi: ExtensionAPI): void {
 		if (!path || !claudeChromeEnabled()) return sp(path);
 		return linkedPath(cwd, sp(path), resolve(cwd, path));
 	};
+	const skippedOverrides = skippedToolOverrides(readSettings().values);
+	type RegisteredTool = Parameters<ExtensionAPI["registerTool"]>[0];
+	const pendingBuiltinOverrides: RegisteredTool[] = [];
+	const installedBuiltinOverrides = new Set<string>();
+	let canRegisterBuiltinsDuringFactory = false;
+	try {
+		// The real loader does not expose getAllTools during factory evaluation;
+		// test harnesses do. Registering early in production triggers an
+		// uncatchable ownership conflict with Meta's core tools after return.
+		canRegisterBuiltinsDuringFactory = Array.isArray((pi as any).getAllTools?.());
+	} catch { /* defer to session_start */ }
+	const registerBuiltinOverride = (definition: RegisteredTool): void => {
+		const name = String(definition?.name ?? "").toLowerCase();
+		if (!name || skippedOverrides.has(name) || toolPresentationSkipped(name)) {
+			if (name) shouldRegisterBuiltinToolOverride(pi, name); // restore a prior Claudify-owned builtin when disabled
+			return;
+		}
+		pendingBuiltinOverrides.push(definition);
+		if (canRegisterBuiltinsDuringFactory && shouldRegisterBuiltinToolOverride(pi, name)) {
+			pi.registerTool(definition);
+			installedBuiltinOverrides.add(name);
+		}
+	};
+	const installDeferredBuiltinOverrides = (): void => {
+		for (const definition of pendingBuiltinOverrides) {
+			const name = String(definition?.name ?? "").toLowerCase();
+			if (!name || installedBuiltinOverrides.has(name) || skippedOverrides.has(name) || toolPresentationSkipped(name)) continue;
+			if (!shouldRegisterBuiltinToolOverride(pi, name)) continue;
+			pi.registerTool(definition);
+			installedBuiltinOverrides.add(name);
+		}
+	};
 
 	const readTool = createReadToolDefinition(cwd);
-	if (shouldRegisterBuiltinToolOverride(pi, "read")) pi.registerTool({
+	registerBuiltinOverride({
 		name: "read",
 		label: "read",
 		description: readTool.description,
 		parameters: readTool.parameters,
 		...forwardedToolContract(readTool),
-		async execute(toolCallId, params, signal, onUpdate, ctx) {
+		async execute(toolCallId: string, params: any, signal: AbortSignal | undefined, onUpdate: any, ctx: any) {
 			const runtimeCwd = ctx?.cwd ?? cwd;
 			const { autoResizeImages } = hostToolSettings(runtimeCwd);
 			return createReadToolDefinition(runtimeCwd, { autoResizeImages }).execute(toolCallId, params, signal, onUpdate, ctx);
 		},
-		renderCall(args, theme, ctx) {
+		renderCall(args: any, theme: Theme, ctx: any) {
 			syncToolCallStatus(ctx);
 			const summary = stableCallSummary(ctx, "_callSummary", () => {
 				let value = spl(args.path ?? "");
@@ -5158,7 +5219,7 @@ export default function (pi: ExtensionAPI): void {
 			});
 			return makeText(ctx.lastComponent, toolHeader("Read", summary, theme, toolStatusDot(ctx, theme)));
 		},
-		renderResult(result, { expanded, isPartial }, theme, ctx) {
+		renderResult(result: any, { expanded, isPartial }: any, theme: Theme, ctx: any) {
 			if (isPartial) {
 				setupBlinkTimer(ctx);
 				return makeText(ctx.lastComponent, withBranch(theme.fg("dim", "Reading..."), theme));
@@ -5195,18 +5256,18 @@ export default function (pi: ExtensionAPI): void {
 	});
 
 	const bashTool = createBashToolDefinition(cwd);
-	if (shouldRegisterBuiltinToolOverride(pi, "bash")) pi.registerTool({
+	registerBuiltinOverride({
 		name: "bash",
 		label: "bash",
 		description: bashTool.description,
 		parameters: bashTool.parameters,
 		...forwardedToolContract(bashTool),
-		async execute(toolCallId, params, signal, onUpdate, ctx) {
+		async execute(toolCallId: string, params: any, signal: AbortSignal | undefined, onUpdate: any, ctx: any) {
 			const runtimeCwd = ctx?.cwd ?? cwd;
 			const { shellPath, commandPrefix } = hostToolSettings(runtimeCwd);
 			return createBashToolDefinition(runtimeCwd, { shellPath, commandPrefix }).execute(toolCallId, params, signal, onUpdate, ctx);
 		},
-		renderCall(args, theme, ctx) {
+		renderCall(args: any, theme: Theme, ctx: any) {
 			syncToolCallStatus(ctx);
 			const semantic = bashSemanticDisplayEnabled() ? classifyBashCommandForDisplay(args.command ?? "") : null;
 			// Distinct cache keys per state: one shared key would pin whichever
@@ -5224,10 +5285,10 @@ export default function (pi: ExtensionAPI): void {
 			});
 			return makeText(ctx.lastComponent, toolHeader(semantic?.label ?? "Bash", summary, theme, toolStatusDot(ctx, theme)));
 		},
-		renderResult(result, { expanded, isPartial }, theme, ctx) {
+		renderResult(result: any, { expanded, isPartial }: any, theme: Theme, ctx: any) {
 			const details = result.details as BashToolDetails | undefined;
-			const output = result.content[0]?.type === "text" ? result.content[0].text : "";
-			const nonEmpty = output.split("\n").filter((line) => line.trim().length > 0);
+			const output: string = result.content[0]?.type === "text" ? result.content[0].text : "";
+			const nonEmpty = output.split("\n").filter((line: string) => line.trim().length > 0);
 			const semantic = bashSemanticDisplayEnabled() ? classifyBashCommandForDisplay(ctx.args?.command ?? "") : null;
 			if (isPartial) {
 				setupBlinkTimer(ctx);
@@ -5287,17 +5348,17 @@ export default function (pi: ExtensionAPI): void {
 	});
 
 	const grepTool = createGrepToolDefinition(cwd);
-	if (shouldRegisterBuiltinToolOverride(pi, "grep")) pi.registerTool({
+	registerBuiltinOverride({
 		name: "grep",
 		label: "grep",
 		description: grepTool.description,
 		parameters: grepTool.parameters,
 		...forwardedToolContract(grepTool),
-		async execute(toolCallId, params, signal, onUpdate, ctx) {
+		async execute(toolCallId: string, params: any, signal: AbortSignal | undefined, onUpdate: any, ctx: any) {
 			const runtimeCwd = ctx?.cwd ?? cwd;
 			return createGrepToolDefinition(runtimeCwd).execute(toolCallId, params, signal, onUpdate, ctx);
 		},
-		renderCall(args, theme, ctx) {
+		renderCall(args: any, theme: Theme, ctx: any) {
 			syncToolCallStatus(ctx);
 			const summary = stableCallSummary(ctx, "_callSummary", () => {
 				let value = `\"${summarizeText(args.pattern, 40)}\"`;
@@ -5306,7 +5367,7 @@ export default function (pi: ExtensionAPI): void {
 			});
 			return makeText(ctx.lastComponent, toolHeader("Grep", summary, theme, toolStatusDot(ctx, theme)));
 		},
-		renderResult(result, { expanded, isPartial }, theme, ctx) {
+		renderResult(result: any, { expanded, isPartial }: any, theme: Theme, ctx: any) {
 			if (isPartial) {
 				setupBlinkTimer(ctx);
 				return makeText(ctx.lastComponent, withBranch(theme.fg("dim", "Searching..."), theme));
@@ -5314,9 +5375,9 @@ export default function (pi: ExtensionAPI): void {
 			clearBlinkTimer(ctx);
 			setToolStatus(ctx, ctx.isError ? "error" : "success");
 			const details = result.details as GrepToolDetails | undefined;
-			const matches = (result.content[0]?.type === "text" ? result.content[0].text : "")
+			const matches: string[] = (result.content[0]?.type === "text" ? result.content[0].text : "")
 				.split("\n")
-				.filter((line) => line.trim().length > 0);
+				.filter((line: string) => line.trim().length > 0);
 			if (matches.length === 0) return makeText(ctx.lastComponent, withBranch(theme.fg("muted", "no matches"), theme));
 			let text = theme.fg("muted", `${matches.length} matches`);
 			if (details?.truncation?.truncated) text += theme.fg("warning", " (truncated)");
@@ -5331,17 +5392,17 @@ export default function (pi: ExtensionAPI): void {
 	});
 
 	const findTool = createFindToolDefinition(cwd);
-	if (shouldRegisterBuiltinToolOverride(pi, "find")) pi.registerTool({
+	registerBuiltinOverride({
 		name: "find",
 		label: "find",
 		description: findTool.description,
 		parameters: findTool.parameters,
 		...forwardedToolContract(findTool),
-		async execute(toolCallId, params, signal, onUpdate, ctx) {
+		async execute(toolCallId: string, params: any, signal: AbortSignal | undefined, onUpdate: any, ctx: any) {
 			const runtimeCwd = ctx?.cwd ?? cwd;
 			return createFindToolDefinition(runtimeCwd).execute(toolCallId, params, signal, onUpdate, ctx);
 		},
-		renderCall(args, theme, ctx) {
+		renderCall(args: any, theme: Theme, ctx: any) {
 			syncToolCallStatus(ctx);
 			const summary = stableCallSummary(ctx, "_callSummary", () => {
 				let value = `\"${summarizeText(args.pattern, 40)}\"`;
@@ -5350,16 +5411,16 @@ export default function (pi: ExtensionAPI): void {
 			});
 			return makeText(ctx.lastComponent, toolHeader("Find", summary, theme, toolStatusDot(ctx, theme)));
 		},
-		renderResult(result, { expanded, isPartial }, theme, ctx) {
+		renderResult(result: any, { expanded, isPartial }: any, theme: Theme, ctx: any) {
 			if (isPartial) {
 				setupBlinkTimer(ctx);
 				return makeText(ctx.lastComponent, withBranch(theme.fg("dim", "Finding..."), theme));
 			}
 			clearBlinkTimer(ctx);
 			setToolStatus(ctx, ctx.isError ? "error" : "success");
-			const items = (result.content[0]?.type === "text" ? result.content[0].text : "")
+			const items: string[] = (result.content[0]?.type === "text" ? result.content[0].text : "")
 				.split("\n")
-				.filter((line) => line.trim().length > 0);
+				.filter((line: string) => line.trim().length > 0);
 			if (items.length === 0) return makeText(ctx.lastComponent, withBranch(theme.fg("muted", "no files found"), theme));
 			let text = theme.fg("muted", `${items.length} files`);
 			if (!expanded) return makeText(ctx.lastComponent, withBranch(`${text}${theme.fg("muted", " (ctrl+o to expand)")}`, theme));
@@ -5377,31 +5438,31 @@ export default function (pi: ExtensionAPI): void {
 	});
 
 	const lsTool = createLsToolDefinition(cwd);
-	if (shouldRegisterBuiltinToolOverride(pi, "ls")) pi.registerTool({
+	registerBuiltinOverride({
 		name: "ls",
 		label: "ls",
 		description: lsTool.description,
 		parameters: lsTool.parameters,
 		...forwardedToolContract(lsTool),
-		async execute(toolCallId, params, signal, onUpdate, ctx) {
+		async execute(toolCallId: string, params: any, signal: AbortSignal | undefined, onUpdate: any, ctx: any) {
 			const runtimeCwd = ctx?.cwd ?? cwd;
 			return createLsToolDefinition(runtimeCwd).execute(toolCallId, params, signal, onUpdate, ctx);
 		},
-		renderCall(args, theme, ctx) {
+		renderCall(args: any, theme: Theme, ctx: any) {
 			syncToolCallStatus(ctx);
 			const summary = stableCallSummary(ctx, "_callSummary", () => sp(args.path ?? "."));
 			return makeText(ctx.lastComponent, toolHeader("List", summary, theme, toolStatusDot(ctx, theme)));
 		},
-		renderResult(result, { expanded, isPartial }, theme, ctx) {
+		renderResult(result: any, { expanded, isPartial }: any, theme: Theme, ctx: any) {
 			if (isPartial) {
 				setupBlinkTimer(ctx);
 				return makeText(ctx.lastComponent, withBranch(theme.fg("dim", "Listing..."), theme));
 			}
 			clearBlinkTimer(ctx);
 			setToolStatus(ctx, ctx.isError ? "error" : "success");
-			const items = (result.content[0]?.type === "text" ? result.content[0].text : "")
+			const items: string[] = (result.content[0]?.type === "text" ? result.content[0].text : "")
 				.split("\n")
-				.filter((line) => line.trim().length > 0);
+				.filter((line: string) => line.trim().length > 0);
 			if (items.length === 0) return makeText(ctx.lastComponent, withBranch(theme.fg("muted", "empty directory"), theme));
 			let text = theme.fg("muted", `${items.length} entries`);
 			if (!expanded) return makeText(ctx.lastComponent, withBranch(`${text}${theme.fg("muted", " (ctrl+o to expand)")}`, theme));
@@ -5425,13 +5486,13 @@ export default function (pi: ExtensionAPI): void {
 	});
 
 	const writeTool = createWriteToolDefinition(cwd);
-	if (shouldRegisterBuiltinToolOverride(pi, "write")) pi.registerTool({
+	registerBuiltinOverride({
 		name: "write",
 		label: "write",
 		description: writeTool.description,
 		parameters: writeTool.parameters,
 		...forwardedToolContract(writeTool),
-		async execute(toolCallId, params, signal, onUpdate, ctx) {
+		async execute(toolCallId: string, params: any, signal: AbortSignal | undefined, onUpdate: any, ctx: any) {
 			const runtimeCwd = ctx?.cwd ?? cwd;
 			const fp = params.path ?? (params as any).file_path ?? "";
 			const fullPath = fp ? resolve(runtimeCwd, fp) : "";
@@ -5451,7 +5512,7 @@ export default function (pi: ExtensionAPI): void {
 			}
 			return result;
 		},
-		renderCall(args, theme, ctx) {
+		renderCall(args: any, theme: Theme, ctx: any) {
 			const fp = args?.path ?? (args as any)?.file_path ?? "";
 			const revealSummary = shouldRevealCallArgs(ctx) || (!!fp && hasOwnArg(args, "content"));
 			syncToolCallStatus(ctx);
@@ -5460,7 +5521,7 @@ export default function (pi: ExtensionAPI): void {
 			const hdr = toolHeader("Write", summary, theme, toolStatusDot(ctx, theme));
 			return makeText(ctx.lastComponent, hdr);
 		},
-		renderResult(result, { isPartial }, theme, ctx) {
+		renderResult(result: any, { isPartial }: any, theme: Theme, ctx: any) {
 			if (isPartial) {
 				setupBlinkTimer(ctx);
 				return makeText(ctx.lastComponent, withBranch(theme.fg("dim", "Writing..."), theme));
@@ -5528,13 +5589,13 @@ export default function (pi: ExtensionAPI): void {
 	});
 
 	const editTool = createEditToolDefinition(cwd);
-	if (shouldRegisterBuiltinToolOverride(pi, "edit")) pi.registerTool({
+	registerBuiltinOverride({
 		name: "edit",
 		label: "edit",
 		description: editTool.description,
 		parameters: editTool.parameters,
 		...forwardedToolContract(editTool),
-		async execute(toolCallId, params, signal, onUpdate, ctx) {
+		async execute(toolCallId: string, params: any, signal: AbortSignal | undefined, onUpdate: any, ctx: any) {
 			const runtimeCwd = ctx?.cwd ?? cwd;
 			const fp = params.path ?? (params as any).file_path ?? "";
 			const operations = getEditOperations(params);
@@ -5577,7 +5638,7 @@ export default function (pi: ExtensionAPI): void {
 			};
 			return result;
 		},
-		renderCall(args, theme, ctx) {
+		renderCall(args: any, theme: Theme, ctx: any) {
 			const fp = args?.path ?? (args as any)?.file_path ?? "";
 			const operations = getEditOperations(args);
 			const revealSummary = shouldRevealCallArgs(ctx) || (!!fp && hasOwnArg(args, "edits"));
@@ -5607,7 +5668,7 @@ export default function (pi: ExtensionAPI): void {
 				hdr,
 			);
 		},
-		renderResult(result, { isPartial }, theme, ctx) {
+		renderResult(result: any, { isPartial }: any, theme: Theme, ctx: any) {
 			if (isPartial) {
 				setupBlinkTimer(ctx);
 				return makeText(ctx.lastComponent, indentBranchBlock(withBranch(theme.fg("dim", "Editing..."), theme)));
@@ -5667,6 +5728,13 @@ export default function (pi: ExtensionAPI): void {
 			return makeText(ctx.lastComponent, indentBranchBlock(withBranch(theme.fg("success", "Applied"), theme)));
 		},
 	});
+
+	// Normal package loading performs ownership checks after the extension factory
+	// returns. Registering core overrides during the factory conflicts with Meta's
+	// built-ins; session_start is past that loader gate. before_agent_start is an
+	// idempotent fallback for hosts that rebuild their tool registry per run.
+	pi.on("session_start", async () => installDeferredBuiltinOverrides());
+	pi.on("before_agent_start", async () => installDeferredBuiltinOverrides());
 
 	const wrappedOpenAiTools = new Set<string>();
 	const registerOpenAiToolOverrides = (): void => {

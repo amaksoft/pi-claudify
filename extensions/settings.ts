@@ -54,15 +54,14 @@ export interface SettingsFile {
 	footerColor?: string;
 	footerUsageBar?: boolean;
 	footerEffort?: boolean;
+	footerCost?: boolean;
+	footerSessionStats?: boolean;
 	editorBorder?: "gray" | "thinking";
 	accentColor?: "claude" | "theme" | `#${string}`;
 	userMessageBox?: "theme" | "claude" | "off" | `#${string}`;
-	/**
-	 * Backward-compatible feature/tool gating. Absent means current (fully
-	 * enabled) behavior — see README.md "Compatibility control" and
-	 * extensions/domain/compatibility.ts for the parsing/resolution rules.
-	 */
-	compatibility?: CompatibilityConfig;
+	bannerMode?: "off" | "onboarding" | "always";
+	bannerFrame?: boolean;
+	promptPointer?: boolean;
 }
 
 export interface SettingsFileInfo {
@@ -109,6 +108,17 @@ function normalizeAliases(settings: Record<string, unknown>): SettingsFile {
 	}
 	delete normalized.spinnerVerbColor;
 	if (normalized.toolBackground === "border") normalized.toolBackground = "outlines";
+	if (!Object.prototype.hasOwnProperty.call(normalized, "skipToolOverrides")
+		&& Array.isArray(normalized.ccSkipToolOverrides)) {
+		normalized.skipToolOverrides = normalized.ccSkipToolOverrides;
+	}
+	delete normalized.ccSkipToolOverrides;
+	if (!Object.prototype.hasOwnProperty.call(normalized, "bannerMode")
+		&& (normalized.ccBannerMode === "off" || normalized.ccBannerMode === "onboarding" || normalized.ccBannerMode === "always")) {
+		normalized.bannerMode = normalized.ccBannerMode;
+	}
+	delete normalized.ccBannerMode;
+	delete normalized.ccBrandMark;
 	if (!Object.prototype.hasOwnProperty.call(normalized, "footerUsageBar")
 		&& Object.prototype.hasOwnProperty.call(normalized, "footerContextBar")) {
 		normalized.footerUsageBar = normalized.footerContextBar;

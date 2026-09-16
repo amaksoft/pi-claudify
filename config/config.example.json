@@ -38,7 +38,7 @@
   "toolBackground": "transparent",
   "readOutputMode": "preview",
   "searchOutputMode": "preview",
-  "mcpOutputMode": "preview",
+  "mcpOutputMode": "hidden",
   "previewLines": 8,
   "expandedPreviewMaxLines": 150,
   "bashOutputMode": "opencode",
@@ -71,5 +71,11 @@
     "Hacked",
     "Tinkered"
   ],
-  "workedVerbMode": "append"
+  "workedVerbMode": "append",
+  "skipToolOverrides": [],
+  "bannerMode": "onboarding",
+  "bannerFrame": true,
+  "promptPointer": true,
+  "footerCost": true,
+  "footerSessionStats": true
 }
