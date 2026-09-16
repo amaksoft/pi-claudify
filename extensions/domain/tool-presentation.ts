@@ -1,6 +1,10 @@
-export type CompatibleInspectionToolName = "read" | "grep" | "find" | "ls" | "bash" | "write" | "edit";
+export type CompatibleInspectionToolName = "read" | "grep" | "find" | "ls" | "bash" | "write" | "edit"
+	| "croncreate" | "cronlist" | "crondelete" | "askuserquestion";
 
-const COMPATIBLE_INSPECTION_TOOLS = new Set<CompatibleInspectionToolName>(["read", "grep", "find", "ls", "bash", "write", "edit"]);
+const COMPATIBLE_INSPECTION_TOOLS = new Set<CompatibleInspectionToolName>([
+	"read", "grep", "find", "ls", "bash", "write", "edit",
+	"croncreate", "cronlist", "crondelete", "askuserquestion",
+]);
 
 export interface ToolPresentationAdapter {
 	name: CompatibleInspectionToolName;
@@ -41,6 +45,10 @@ export function supportsInspectionCall(name: CompatibleInspectionToolName, args:
 				return typeof operation.oldText === "string" && typeof operation.newText === "string";
 			});
 		}
+		case "croncreate": return typeof record.cron === "string" && typeof record.prompt === "string";
+		case "cronlist": return true;
+		case "crondelete": return typeof record.id === "string";
+		case "askuserquestion": return Array.isArray(record.questions) && record.questions.length > 0;
 	}
 }
 
