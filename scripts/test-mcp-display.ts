@@ -6,6 +6,12 @@ import { initTheme } from "../node_modules/@earendil-works/pi-coding-agent/dist/
 
 import { describeInspectionsActive, describeInspectionsDone } from "../extensions/inspection-summary.ts";
 import extension, { mcpServerName } from "../extensions/index.ts";
+import { clearSettingsCache, writeSettingsKey } from "../extensions/settings.ts";
+
+import { useSandboxHome } from "./sandbox-home.ts";
+
+// Assert default rendering, not the settings of whoever runs the suite.
+useSandboxHome("cc-mcp");
 
 // Every expectation here is transcribed from a live capture of Claude Code
 // v2.1.x driven through cmux against four real MCP servers plus a purpose-built
@@ -98,6 +104,17 @@ class FakePi {
 	}
 }
 
+class PublicToolInfoPi extends FakePi {
+	override getAllTools(): any[] {
+		return [...this.tools.values()].map((definition) => ({
+			name: definition.name,
+			description: definition.description,
+			parameters: definition.parameters,
+			sourceInfo: { type: "extension", path: "fixture" },
+		}));
+	}
+}
+
 function tool(pi: FakePi, name: string, id: string, args: any, text: string, isError = false, settled = true): ToolExecutionComponent {
 	const definition = pi.tools.get(name);
 	assert.ok(definition, `${name} tool registered`);
@@ -128,6 +145,22 @@ function plain(lines: string[]): string {
 }
 
 initTheme("dark", false);
+
+// Real public ToolInfo is metadata-only. Provable mcp__ names still get MCP
+// presentation; ambiguous bare names remain native rather than replacing their
+// execution through unavailable private fields.
+const publicPi = new PublicToolInfoPi();
+publicPi.registerTool({ name: "mcp__plane__list", description: "List", execute: async () => ({}) });
+publicPi.registerTool({ name: "bare_list", description: "Bare", execute: async () => ({}) });
+extension(publicPi as any);
+await publicPi.fire("session_start");
+const publicPrefixed = new Container();
+publicPrefixed.addChild(tool(publicPi, "mcp__plane__list", "public-mcp", {}, "ok"));
+assert.match(plain(publicPrefixed.render(120)), /^ {2}Called plane$/m, "public mcp__ identity is sufficient for presentation");
+const publicBare = new Container();
+publicBare.addChild(tool(publicPi, "bare_list", "public-bare", {}, "ok"));
+assert.doesNotMatch(plain(publicBare.render(120)), /Called /, "ambiguous public bare tools fail closed to native/generic presentation");
+
 const pi = new FakePi();
 // pi-mcp-adapter exposes MCP two ways, and both must render the same.
 //   proxy mode:  one `mcp` tool, the real tool passed in its arguments
@@ -216,5 +249,134 @@ both.addChild(tool(pi, "plane_get_me", "x2", {}, "{}"));
 both.addChild(tool(pi, "mcp", "x3", { tool: "forgejo_get_my_user_info", args: "{}" }, "{}"));
 both.addChild(tool(pi, "bash", "x4", { command: "echo hi" }, "hi"));
 assert.match(plain(both.render(140)), /^ {2}Read 1 file, called plane, forgejo 2 times, ran 1 shell command$/m);
+
+// --- An aggregated MCP call must be recoverable in full. ---------------------
+
+// Collapsed, an MCP call is hidden behind a bare server name, and the expanded
+// header showed only `server:tool`. So a mutating call's parameters — what it
+// actually did — were unreadable in every state. Claude Code shows MCP
+// parameters in the row; the collapsed line is unchanged.
+const MUTATING_ARGS = JSON.stringify({
+	project_id: "8f3c1d22-7a44-4e1b-9c02-abcdef012345",
+	state: "cancelled",
+	comment: "Closing every open item in the sprint as obsolete",
+});
+
+function mcpRow(id: string, args: any, expand: boolean, name = "mcp"): string {
+	const component = tool(pi, name, id, args, "updated 41 items");
+	if (expand) component.setExpanded(true);
+	const box = new Container();
+	box.addChild(component);
+	return plain(box.render(120));
+}
+const squash = (text: string) => text.replace(/\s+/g, "");
+
+// Collapsed: still just the server name, with no trace of the parameters.
+const hiddenCall = mcpRow("rec-1", { tool: "plane_bulk_update_work_items", args: MUTATING_ARGS }, false);
+assert.match(hiddenCall, /^ {2}Called plane$/m);
+assert.doesNotMatch(hiddenCall, /cancelled|project_id/);
+
+// Expanded (proxy mode): the parameters, in full.
+const openedCall = mcpRow("rec-2", { tool: "plane_bulk_update_work_items", args: MUTATING_ARGS }, true);
+assert.match(openedCall, /⏺ MCP\(plane:bulk_update_work_items/);
+assert.ok(squash(openedCall).includes(squash(MUTATING_ARGS)), "expanding reveals the MCP parameters");
+const SPACED_ARGS = '{"command":"printf a  b","note":"x  y"}';
+const spacedCall = mcpRow("rec-space", { tool: "plane_run", args: SPACED_ARGS }, true);
+assert.ok(spacedCall.includes(SPACED_ARGS), "expanded MCP parameters preserve spaces inside string values");
+
+// Expanded (direct mode): the argument object *is* the parameters.
+const openedDirect = mcpRow("rec-3", { work_item_id: "cafe-1234", state: "cancelled" }, true, "plane_get_me");
+assert.match(openedDirect, /cancelled/, "direct-mode parameters are revealed too");
+
+// A call with no parameters must not grow an empty `{}` or a stray separator.
+const noArgs = mcpRow("rec-4", { tool: "forgejo_get_my_user_info", args: "{}" }, true);
+assert.match(noArgs, /⏺ MCP\(forgejo:get_my_user_info\)$/m);
+
+// Routing keys address the call; they are not parameters of it. Leaving them in
+// undoes the empty-envelope suppression and decorates the most common MCP row
+// there is — a call that takes no parameters at all.
+const routed = mcpRow("rec-9", { tool: "forgejo_get_my_user_info", server: "forgejo", args: "{}" }, true);
+assert.match(routed, /⏺ MCP\(forgejo:get_my_user_info\)$/m, "the server routing key is not a parameter");
+const routedMore = mcpRow("rec-10", { tool: "plane_list", server: "plane", connect: "x", args: "{}" }, true);
+assert.match(routedMore, /⏺ MCP\(plane:list\)$/m, "connect/search/action are routing keys too");
+// A real parameter alongside a routing key still shows.
+const routedReal = mcpRow("rec-11", { tool: "plane_list", server: "plane", args: '{"state":"open"}' }, true);
+assert.match(routedReal, /\{"state":"open"\}/, "real parameters survive routing-key filtering");
+assert.doesNotMatch(routedReal, /"server"/, "…without the routing key riding along");
+
+// Malformed JSON is shown verbatim: whatever the model sent is what ran.
+const malformed = mcpRow("rec-5", { tool: "plane_do_thing", args: '{"state": "cancel' }, true);
+assert.match(malformed, /\{"state": "cancel/, "unparseable parameters are still shown");
+
+// Parameters are model output, so escapes must never reach the row.
+const HOSTILE_PARAMS = 'x \u001b(0 \u001b[31m \u0000 y';
+const hostileComponent = tool(pi, "mcp", "rec-6", { tool: "plane_do_thing", args: HOSTILE_PARAMS }, "ok");
+hostileComponent.setExpanded(true);
+const hostileBox = new Container();
+hostileBox.addChild(hostileComponent);
+const hostileRaw = hostileBox.render(120).join("\n");
+assert.doesNotMatch(hostileRaw, /\u001b\(0/, "charset shift stripped from parameters");
+assert.doesNotMatch(hostileRaw, /\u0000/, "NUL stripped from parameters");
+// Escapes leave nothing behind — not even the charset designator's final byte,
+// which an ESC-plus-intermediate strip would strand as a literal "0".
+assert.match(
+	plain(hostileBox.render(120)),
+	/MCP\(plane:do_thing x {4}y\)/,
+	"readable parameter text and its ordinary spacing survive; escapes leave no residue",
+);
+
+// Server/routing labels can arrive in streamed model arguments too; sanitize
+// them before aggregate and expanded headers.
+const HOSTILE_SERVER = "plane\u001b(0\nFORGED";
+assert.equal(mcpServerName("mcp", { server: HOSTILE_SERVER }), "plane FORGED");
+const hostileServerArgs = { tool: "plane_list", server: HOSTILE_SERVER, args: "{}" };
+const hostileServerCollapsed = mcpRow("rec-server-collapsed", hostileServerArgs, false);
+assert.doesNotMatch(hostileServerCollapsed, /\u001b\(0|\nFORGED/, "aggregate server labels cannot inject terminal state or rows");
+assert.match(hostileServerCollapsed, /Called plane FORGED/, "aggregate preserves the readable server label");
+const hostileServerRow = mcpRow("rec-server", hostileServerArgs, true);
+assert.doesNotMatch(hostileServerRow, /\u001b\(0|\nFORGED/, "expanded server labels cannot inject terminal state or rows");
+assert.match(hostileServerRow, /plane FORGED:plane_list/, "readable server and tool labels survive sanitization");
+
+const stampedHostile = new ToolExecutionComponent(
+	"tag_list",
+	"stamped-hostile",
+	{},
+	{ showImages: false },
+	pi.tools.get("tag_list"),
+	{ requestRender() {}, previousLines: [] } as any,
+	process.cwd(),
+);
+stampedHostile.markExecutionStarted();
+stampedHostile.setArgsComplete();
+stampedHostile.updateResult({ content: [{ type: "text", text: "ok" }], details: { server: "obsidian\x1b(0\nFORGED" }, isError: false } as any, false);
+const stampedBox = new Container();
+stampedBox.addChild(stampedHostile);
+const stampedText = plain(stampedBox.render(120));
+assert.match(stampedText, /Called obsidian FORGED/, "adapter-stamped server metadata is sanitized too");
+assert.doesNotMatch(stampedText, /\x1b\(0|\nFORGED/);
+
+writeSettingsKey("mcpOutputMode", "preview");
+clearSettingsCache();
+try {
+	const hostilePayload = tool(pi, "mcp", "hostile-payload", { tool: "plane_list", args: "{}" }, "line\x1b(0\nnext\x1b]8;;https://evil.test\x07bad\x1b]8;;\x07", true);
+	hostilePayload.setExpanded(true);
+	const payloadBox = new Container();
+	payloadBox.addChild(hostilePayload);
+	const payloadRaw = payloadBox.render(120).join("\n");
+	assert.doesNotMatch(payloadRaw, /\x1b\(0|https:\/\/evil\.test/, "MCP preview payload is sanitized before theme styling");
+} finally {
+	writeSettingsKey("mcpOutputMode", "hidden");
+	clearSettingsCache();
+}
+
+// Collapsing again returns to the aggregate rather than stranding parameters.
+const reCollapsed = tool(pi, "mcp", "rec-8", { tool: "plane_bulk_update_work_items", args: MUTATING_ARGS }, "done");
+const reBox = new Container();
+reBox.addChild(reCollapsed);
+plain(reBox.render(120));
+reCollapsed.setExpanded(true);
+assert.ok(squash(plain(reBox.render(120))).includes(squash(MUTATING_ARGS)), "a collapsed render must not pin the summary");
+reCollapsed.setExpanded(false);
+assert.match(plain(reBox.render(120)), /^ {2}Called plane$/m, "re-collapsing restores the aggregate");
 
 console.log("mcp-display: all assertions passed");

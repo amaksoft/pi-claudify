@@ -18,7 +18,8 @@ import {
 	resolveMessageChromeSettings,
 	sanitizeWorkedVerbs,
 } from "./message-chrome.ts";
-import { readSettings, writeSettingsKey, type SettingsFile } from "./settings.ts";
+import { resolveColorSource, resolveSpinnerShimmer, resolveSurfaceColorSource } from "./presentation-profile.ts";
+import { DEFAULT_DIFF_COLLAPSED_LINES, DEFAULT_EXPANDED_PREVIEW_MAX_LINES, readSettings, writeSettingsKey, type SettingsFile } from "./settings.ts";
 import {
 	MAX_CUSTOM_SPINNER_VERBS,
 	MAX_SPINNER_VERB_LENGTH,
@@ -48,13 +49,20 @@ type VerbModeSettingsKey = "spinnerVerbMode" | "workedVerbMode";
 type VerbMode = "append" | "replace";
 
 type EditableSettingsKey =
+	| "colorSource"
+	| "markdownStyle"
 	| "themeAdaptive"
+	| "bannerMode"
+	| "bannerFrame"
+	| "promptPointer"
 	| "diffPalette"
+	| "diffSyntaxHighlighting"
 	| "diffTheme"
 	| "toolChrome"
 	| "diffCollapsedLines"
 	| "spinnerColor"
 	| "spinnerStatusColor"
+	| "spinnerPlacement"
 	| "spinnerShimmer"
 	| "spinnerVerbs"
 	| "spinnerVerbMode"
@@ -65,9 +73,11 @@ type EditableSettingsKey =
 	| "bashOutputMode"
 	| "previewLines"
 	| "bashCollapsedLines"
+	| "bashRunningPreview"
 	| "bashStackConsecutive"
 	| "bashSemanticDisplay"
 	| "readOnlyToolGrouping"
+	| "groupShellCommands"
 	| "readOnlyToolGroupLimit"
 	| "expandedPreviewMaxLines"
 	| "messageStyle"
@@ -80,11 +90,15 @@ type EditableSettingsKey =
 	| "footerColor"
 	| "footerUsageBar"
 	| "footerEffort"
+	| "footerCost"
+	| "footerSessionStats"
 	| "editorBorder"
 	| "accentColor"
 	| "userMessageBox";
 
 const CLAUDE_AUTHENTIC: Partial<Record<EditableSettingsKey, string>> = {
+	colorSource: "claude",
+	markdownStyle: "claude",
 	// docs/plans/2026-07-13-mcp-grammar.md:13-17 — no per-call MCP result row or preview.
 	mcpOutputMode: "hidden",
 };
@@ -106,6 +120,7 @@ interface EnumSettingRow extends SettingRowBase {
 interface BooleanSettingRow extends SettingRowBase {
 	readonly kind: "boolean";
 	readonly value: boolean;
+	readonly valueOrigin?: "explicit" | "inherited";
 }
 
 interface NumberSettingRow extends SettingRowBase {
@@ -229,6 +244,24 @@ type ImmediateRowDefinition = EnumRowDefinition | BooleanRowDefinition | NumberR
 
 const THEME_ROWS: readonly ImmediateRowDefinition[] = [
 	{
+		kind: "enum",
+		key: "colorSource",
+		label: "Color source",
+		description: "Uses captured Claude colors or semantic colors from Pi's active theme by default.",
+		values: ["claude", "theme"],
+		defaultValue: "claude",
+		claudeValue: "claude",
+	},
+	{
+		kind: "enum",
+		key: "markdownStyle",
+		label: "Markdown style",
+		description: "Uses Claude's Markdown grammar or Pi's native fence, rule, and quote rendering.",
+		values: ["claude", "pi"],
+		defaultValue: "claude",
+		claudeValue: "claude",
+	},
+	{
 		kind: "boolean",
 		key: "themeAdaptive",
 		label: "Adaptive colors",
@@ -253,19 +286,51 @@ const THEME_ROWS: readonly ImmediateRowDefinition[] = [
 	},
 ];
 
+const BANNER_ROWS: readonly ImmediateRowDefinition[] = [
+	{
+		kind: "enum",
+		key: "bannerMode",
+		label: "Startup banner",
+		description: "Shows the full banner on first project/version, always, or not at all.",
+		values: ["off", "onboarding", "always"],
+		defaultValue: "off",
+	},
+	{
+		kind: "boolean",
+		key: "bannerFrame",
+		label: "Banner frame",
+		description: "Uses the responsive framed welcome panel; off keeps the compact borderless banner.",
+		defaultValue: true,
+	},
+	{
+		kind: "boolean",
+		key: "promptPointer",
+		label: "Prompt pointer",
+		description: "Adds a Claude-style ❯ to Pi's editor when no other extension owns it.",
+		defaultValue: true,
+	},
+];
+
 const DIFF_ROWS: readonly ImmediateRowDefinition[] = [
+	{
+		kind: "boolean",
+		key: "diffSyntaxHighlighting",
+		label: "Syntax highlighting",
+		description: "Highlights changed code with Shiki; off keeps diff colors and layout only.",
+		defaultValue: true,
+	},
 	{
 		kind: "number",
 		key: "diffCollapsedLines",
 		label: "Collapsed Write lines",
 		// Write-scoped by name, deliberately (CLFY-23). Only the write tool reads
 		// diffCollapsedLimit(); edit's collapsed diff renders a larger fixed budget
-		// (renderEditPreviewBody in index.ts). Claude Code never collapses edit diffs
+		// (buildEditPreviewText in index.ts). Claude Code never collapses edit diffs
 		// at all — it shows them in full (capture: docs/plans/2026-07-17-cc-edit-diff-collapse.md)
 		// — so the larger edit budget is the more CC-faithful of the two, and a generic
 		// "diff" label would promise a control the user cannot feel on Update rows.
 		description: "Limits lines shown in collapsed Write diff previews.",
-		defaultValue: 10,
+		defaultValue: DEFAULT_DIFF_COLLAPSED_LINES,
 		min: 0,
 	},
 ];
@@ -289,7 +354,7 @@ const TOOL_OUTPUT_ROWS: readonly ImmediateRowDefinition[] = [
 		label: "MCP output",
 		description: "Hides MCP results, shows a status summary, or previews their payload.",
 		values: ["hidden", "summary", "preview"],
-		defaultValue: "preview",
+		defaultValue: "hidden",
 		claudeValue: CLAUDE_AUTHENTIC.mcpOutputMode,
 	},
 	{
@@ -311,10 +376,18 @@ const TOOL_OUTPUT_ROWS: readonly ImmediateRowDefinition[] = [
 	{
 		kind: "number",
 		key: "bashCollapsedLines",
-		label: "Collapsed Bash lines",
-		description: "Limits output lines shown by Bash preview mode before expansion.",
+		label: "Bash preview lines",
+		description: "Caps streaming and collapsed Bash previews; settled expanded rows use Expanded preview max lines.",
 		defaultValue: 10,
 		min: 0,
+	},
+	{
+		kind: "enum",
+		key: "bashRunningPreview",
+		label: "Running Bash preview",
+		description: "Shows the head or the tail of streaming output while a command runs.",
+		values: ["head", "tail"],
+		defaultValue: "head",
 	},
 	{
 		kind: "boolean",
@@ -338,6 +411,13 @@ const TOOL_OUTPUT_ROWS: readonly ImmediateRowDefinition[] = [
 		defaultValue: true,
 	},
 	{
+		kind: "boolean",
+		key: "groupShellCommands",
+		label: "Group shell commands",
+		description: "Off keeps Bash calls as their own rows instead of folding them into the summary.",
+		defaultValue: true,
+	},
+	{
 		kind: "number",
 		key: "readOnlyToolGroupLimit",
 		label: "Read-only group limit",
@@ -351,7 +431,7 @@ const TOOL_OUTPUT_ROWS: readonly ImmediateRowDefinition[] = [
 		key: "expandedPreviewMaxLines",
 		label: "Expanded preview max lines",
 		description: "Caps lines in expanded output previews that can otherwise grow unbounded.",
-		defaultValue: 4000,
+		defaultValue: DEFAULT_EXPANDED_PREVIEW_MAX_LINES,
 		min: 1,
 	},
 ];
@@ -388,6 +468,20 @@ const FOOTER_ROWS: readonly ImmediateRowDefinition[] = [
 		key: "footerEffort",
 		label: "Effort",
 		description: "Appends pi's thinking level to the model name, as in \"Fable 5 · high\".",
+		defaultValue: true,
+	},
+	{
+		kind: "boolean",
+		key: "footerCost",
+		label: "Session cost",
+		description: "Appends provider-reported accumulated cost for this session.",
+		defaultValue: true,
+	},
+	{
+		kind: "boolean",
+		key: "footerSessionStats",
+		label: "Session time and prompts",
+		description: "Appends elapsed session time and submitted prompt count.",
 		defaultValue: true,
 	},
 	{
@@ -505,7 +599,11 @@ function messageRows(settings: SettingsFile): SettingRow[] {
 			key: "userMessageBox",
 			label: "User message box",
 			description: "Styles user messages with theme, Claude gray, a custom color, or no box.",
-			value: effectiveColorTextValue(settings.userMessageBox, ["theme", "claude", "off"], "theme"),
+			value: effectiveColorTextValue(
+				resolveSurfaceColorSource(settings, "userMessageBox"),
+				["theme", "claude", "off"],
+				resolveColorSource(settings),
+			),
 		},
 	];
 }
@@ -530,6 +628,7 @@ function sectionRows(section: ClaudifySection, candidates: ClaudifyPickerCandida
 		return [...rows.slice(0, 2), colorRow, ...rows.slice(2)];
 	}
 	if (section.id === "theme") {
+		const colorSource = resolveColorSource(settings);
 		const themeRows = immediateRows(settings, THEME_ROWS);
 		const accentRow: SettingRow = {
 			// docs/plans/2026-07-16-cc-accent-color.md — CC lavender, pi theme accent, or custom hex.
@@ -537,15 +636,15 @@ function sectionRows(section: ClaudifySection, candidates: ClaudifyPickerCandida
 			key: "accentColor",
 			label: "Accent",
 			description: "Sets selection highlights plus accent-linked inline code and list bullets.",
-			value: effectiveColorTextValue(settings.accentColor, ["claude", "theme"], "claude"),
+			value: effectiveColorTextValue(resolveSurfaceColorSource(settings, "accentColor"), ["claude", "theme"], colorSource),
 		};
 		const diffTheme = typeof settings.diffTheme === "string" && candidates.diffThemes.includes(settings.diffTheme)
 			? settings.diffTheme
 			: undefined;
 		return [
-			...themeRows.slice(0, 1),
+			...themeRows.slice(0, 3),
 			accentRow,
-			...themeRows.slice(1),
+			...themeRows.slice(3),
 			{
 				kind: "picker",
 				key: "diffTheme",
@@ -557,6 +656,7 @@ function sectionRows(section: ClaudifySection, candidates: ClaudifyPickerCandida
 					...candidates.diffThemes.map((value) => ({ label: value, value })),
 				],
 			},
+			...immediateRows(settings, BANNER_ROWS),
 		];
 	}
 	if (section.id === "spinner") {
@@ -568,6 +668,15 @@ function sectionRows(section: ClaudifySection, candidates: ClaudifyPickerCandida
 			? settings.spinnerStatusColor
 			: "muted";
 		return [
+			{
+				kind: "enum",
+				key: "spinnerPlacement",
+				label: "Spinner placement",
+				description: "Shows working status above the prompt like Claude, or inside Pi's input border.",
+				value: settings.spinnerPlacement === "input" ? "input" : "above",
+				values: ["above", "input"],
+				claudeValue: "above",
+			},
 			{
 				kind: "picker",
 				key: "spinnerColor",
@@ -613,7 +722,8 @@ function sectionRows(section: ClaudifySection, candidates: ClaudifyPickerCandida
 				key: "spinnerShimmer",
 				label: "Warm shimmer",
 				description: "Animates the Spinner: warms salmon→gold, then loops a sweep and a breathing pulse. Default Spinner color only.",
-				value: settings.spinnerShimmer !== false,
+				value: resolveSpinnerShimmer(settings),
+				valueOrigin: typeof settings.spinnerShimmer === "boolean" ? "explicit" : "inherited",
 			},
 		];
 	}
@@ -1111,11 +1221,19 @@ export class ClaudifyScreen extends Container implements Focusable {
 		const footer = [...new Text(this.footerLine, 3, 0).render(width), ...rule()];
 
 		const rows = this.tui.terminal?.rows;
-		const naturalHeight = head.length + body.length + footer.length;
-		const targetHeight = rows ? rows - PANEL_HEIGHT_RESERVE : 0;
-		const gap = Math.max(1, targetHeight - naturalHeight);
+		if (!rows) return [...head, ...body, "", ...footer];
+		const targetHeight = Math.max(head.length + footer.length, rows - PANEL_HEIGHT_RESERVE);
+		const bodyBudget = Math.max(0, targetHeight - head.length - footer.length);
+		let visibleBody = body;
+		if (body.length > bodyBudget) {
+			const selected = Math.max(0, body.findIndex((row) => row.includes("❯")));
+			const start = Math.max(0, Math.min(selected - Math.floor(bodyBudget / 2), body.length - bodyBudget));
+			visibleBody = body.slice(start, start + bodyBudget);
+		}
+		const naturalHeight = head.length + visibleBody.length + footer.length;
+		const gap = Math.max(0, targetHeight - naturalHeight);
 
-		return [...head, ...body, ...Array<string>(gap).fill(""), ...footer];
+		return [...head, ...visibleBody, ...Array<string>(gap).fill(""), ...footer];
 	}
 
 	private subtitle(): string {
@@ -1164,7 +1282,11 @@ export class ClaudifyScreen extends Container implements Focusable {
 			const label = themedText(this.theme, "text", row.label.padEnd(labelWidth));
 			const displayValue = row.kind === "verbs"
 				? `${row.value.length} custom · ${row.mode}`
-				: row.kind === "picker" && row.value === undefined ? "none" : String(row.value);
+				: row.kind === "picker" && row.value === undefined
+					? "none"
+					: row.kind === "boolean" && row.valueOrigin
+						? `${row.value} (${row.valueOrigin})`
+						: String(row.value);
 			const value = row.kind === "picker" && row.key !== "diffTheme"
 				? themedByKey(this.theme, String(row.value), displayValue)
 				: themedText(this.theme, "text", displayValue);

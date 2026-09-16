@@ -2,6 +2,11 @@ import assert from "node:assert/strict";
 
 import { describeInspectionsActive, describeInspectionsDone } from "../extensions/inspection-summary.ts";
 
+import { useSandboxHome } from "./sandbox-home.ts";
+
+// Assert default rendering, not the settings of whoever runs the suite.
+useSandboxHome("cc-inspection");
+
 // Verbatim from a live Claude Code v2.1.207 capture — see
 // docs/plans/2026-07-13-current-cc-grammar.md.
 assert.equal(

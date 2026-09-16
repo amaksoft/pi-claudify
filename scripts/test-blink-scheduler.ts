@@ -1,0 +1,22 @@
+import assert from "node:assert/strict";
+import { BlinkScheduler } from "../extensions/host/blink-scheduler.ts";
+
+const scheduler = new BlinkScheduler(2, 10);
+const states = Array.from({ length: 3 }, () => ({} as any));
+const invalidations = [0, 0, 0];
+states.forEach((state, index) => scheduler.start({ state, invalidate: () => { invalidations[index] += 1; } }));
+assert.equal(scheduler.trackedCount(), 3);
+assert.equal(states[0]._blinkActive, false, "oldest entry falls outside the bounded active set");
+assert.equal(states[1]._blinkActive, true);
+assert.equal(states[2]._blinkActive, true);
+await new Promise((resolve) => setTimeout(resolve, 25));
+assert.ok(invalidations[1] > 0 && invalidations[2] > 0, "one timer invalidates active rows");
+scheduler.stop({ state: {} });
+assert.equal(scheduler.trackedCount(), 3, "stopping an untracked context is a no-op");
+scheduler.stop({ state: states[2] });
+assert.equal(states[2]._blinkActive, false);
+assert.equal(states[0]._blinkActive, true, "the next newest row becomes active after a stop");
+scheduler.clear();
+assert.equal(scheduler.trackedCount(), 0);
+assert.equal(states.every((state) => state._blinkActive === false), true);
+console.log("blink scheduler tests passed");

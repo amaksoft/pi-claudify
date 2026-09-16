@@ -1,6 +1,6 @@
+import { trackedTempDir } from "./sandbox-home.ts";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { Theme } from "@earendil-works/pi-coding-agent";
@@ -9,7 +9,7 @@ import { initTheme, theme } from "../node_modules/@earendil-works/pi-coding-agen
 // Grammar + captures: docs/plans/2026-07-16-cc-input-box-footer.md.
 process.env.TZ = "UTC";
 
-const sandbox = mkdtempSync(join(tmpdir(), "claudify-footer-"));
+const sandbox = trackedTempDir("claudify-footer");
 const home = join(sandbox, "home");
 const settingsPath = join(home, ".pi", "settings.json");
 mkdirSync(join(home, ".pi"), { recursive: true });
@@ -57,6 +57,8 @@ assert.deepEqual(defaults, {
 	color: "#FF9200",
 	usageBar: true,
 	effort: true,
+	cost: true,
+	sessionStats: true,
 	editorBorder: "gray",
 });
 assert.equal(resolveFooterSettings({ footerColor: "not-a-color" }).color, DEFAULT_FOOTER_COLOR, "invalid stored hex falls back");
@@ -83,7 +85,7 @@ assert.equal(projectNameFrom("/tmp/scratch/", null), "scratch", "a trailing slas
 
 // --- buildFooterLine: the statusline script's grammar, byte-for-byte ---------
 
-const BLUE = "\x1b[0;34m";
+const BLUE = "\x1b[38;5;75m";
 const GREEN = "\x1b[0;32m";
 const YELLOW = "\x1b[0;33m";
 const CYAN = "\x1b[0;36m";
@@ -115,6 +117,19 @@ assert.equal(
 	"colored mode reproduces the captured context and provider-usage grammar",
 );
 
+// Actual footer components pass the active theme; colored mode uses semantic
+// theme tokens instead of unreadable basic ANSI blue on dark terminals.
+const semanticTheme = {
+	getFgAnsi(key: string) {
+		return ({ accent: "<accent>", success: "<success>", warning: "<warning>", error: "<error>", dim: "<dim>" } as Record<string, string>)[key];
+	},
+};
+const themedFooter = buildFooterLine({ ...fullData, usage: [] }, colored, semanticTheme);
+assert.ok(themedFooter.startsWith("  <accent>claudify"), "directory uses the active theme accent");
+assert.match(themedFooter, /<success>⎇ master/, "branch uses theme success");
+assert.match(themedFooter, /<warning>Fable 5/, "model uses theme warning");
+assert.match(themedFooter, /<dim> │ /, "separator uses theme dim");
+
 // The effort suffix rides inside the model segment, sharing its color.
 assert.ok(
 	buildFooterLine({ ...fullData, effort: "high" }, colored).includes(`${YELLOW}Fable 5 · high${RESET}`),
@@ -132,6 +147,30 @@ assert.doesNotMatch(
 	buildFooterLine({ ...fullData, modelName: null, effort: "high" }, colored),
 	/high/,
 	"the suffix never renders without a model name to attach it to",
+);
+const withSessionMetrics = buildFooterLine(
+	{ ...fullData, sessionCost: 1.25, sessionCostAvailable: true, sessionElapsedMs: 65_000, promptCount: 2 },
+	{ ...colored, cost: true, sessionStats: true },
+);
+assert.match(withSessionMetrics, /\$1\.25/, "session cost is additive and opt-in");
+assert.match(withSessionMetrics, /1m 5s · 2 prompts/, "elapsed time and prompt count share one segment");
+assert.match(
+	buildFooterLine({ ...fullData, sessionCost: 0, sessionCostAvailable: true }, { ...colored, cost: true }),
+	/\$0\.00/,
+	"an available zero cost remains distinguishable from unavailable cost",
+);
+assert.doesNotMatch(
+	buildFooterLine({ ...fullData, sessionCost: 0, sessionCostAvailable: false }, { ...colored, cost: true }),
+	/\$0\.00/,
+	"unavailable cost stays hidden",
+);
+assert.doesNotMatch(
+	buildFooterLine(
+		{ ...fullData, sessionCost: 1.25, sessionCostAvailable: true, sessionElapsedMs: 65_000, promptCount: 2 },
+		{ ...colored, cost: false, sessionStats: false },
+	),
+	/\$1\.25|2 prompts/,
+	"session metrics can be opted out",
 );
 
 // Context threshold tiers (≤50 cyan, ≤75 yellow, >75 the script's LEVEL_9 red).
@@ -384,6 +423,21 @@ const rendered = component.render(200);
 assert.equal(rendered[0], "  project │ ⎇ main │ Fable 5 │ Ctx: 25% │ Week: 50% ▓▓▓▓▓░░░░░ → Reset: 08:00 PM");
 assert.deepEqual(rendered.slice(1), ["  a status line", "  MCP: 0/8 servers", "  z status"], "extension statuses render sorted, sanitized, and stripped of baked colors");
 assert.ok(component.render(20)[0].replace(/\x1b\[[0-9;]*m/g, "").length <= 20, "lines truncate to the viewport");
+let idleRepaints = 0;
+const timedComponent = new ClaudeFooterComponent(fakeFooterData, {
+	getDirectory: () => "project",
+	getBranch: () => null,
+	getModelName: () => "Fable 5",
+	getEffort: () => null,
+	getContextPercent: () => 0,
+	getUsage: () => [],
+}, undefined, () => { idleRepaints++; });
+await new Promise((resolve) => setTimeout(resolve, 1_050));
+assert.ok(idleRepaints >= 1, "idle session clock schedules its own repaint");
+timedComponent.dispose();
+const repaintsAfterDispose = idleRepaints;
+await new Promise((resolve) => setTimeout(resolve, 1_050));
+assert.equal(idleRepaints, repaintsAfterDispose, "disposing the footer stops idle repainting");
 
 // --- installClaudeFooter ------------------------------------------------------
 

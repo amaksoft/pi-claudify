@@ -1,7 +1,18 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Loader } from "@earendil-works/pi-tui";
 
+import { parseCompatibilityConfig, resolveCompatibilityFeatureEnabled } from "./domain/compatibility.ts";
+import { resolveSpinnerShimmer } from "./presentation-profile.ts";
 import { readSettings } from "./settings.ts";
+import { sanitizeToolContent } from "./terminal-sanitize.ts";
+
+// Structural compatibility controls are re-read by each extension generation.
+// The stable Loader wrapper below resolves its active hooks through global
+// state, so `/reload` can turn the feature into a native pass-through without
+// stacking another prototype patch.
+function spinnerFeatureEnabled(): boolean {
+	return resolveCompatibilityFeatureEnabled(parseCompatibilityConfig(readSettings().values.compatibility), "spinner");
+}
 
 // ---------------------------------------------------------------------------
 // Patch built-in Loader with Claude/OpenBrawd-style glyphs.
@@ -33,8 +44,7 @@ let _spinnerSettingsCache: { value: SpinnerSettings; expires: number } | null = 
 const SPINNER_SETTINGS_TTL_MS = 1_000;
 export const MAX_CUSTOM_SPINNER_VERBS = 200;
 export const MAX_SPINNER_VERB_LENGTH = 48;
-const ANSI_ESCAPE_SEQUENCE_RE = /\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\))/g;
-const CONTROL_CHARS_RE = /[\u0000-\u001F\u007F-\u009F]/g;
+const spinnerGraphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 // Cross-extension bust signal: the Claudify screen in index.ts bumps this
 // counter and we drop the cache when it changes.
 const SPINNER_BUST_KEY = Symbol.for("pi-claudify:spinner-settings-bust");
@@ -44,12 +54,10 @@ let _spinnerLastBust = 0;
 
 function sanitizeSpinnerVerb(value: unknown): string | null {
 	if (typeof value !== "string") return null;
-	const cleaned = value
-		.replace(ANSI_ESCAPE_SEQUENCE_RE, "")
-		.replace(CONTROL_CHARS_RE, "")
-		.trim();
+	const cleaned = sanitizeToolContent(value).trim();
 	if (!cleaned) return null;
-	return Array.from(cleaned).slice(0, MAX_SPINNER_VERB_LENGTH).join("");
+	const graphemes = Array.from(spinnerGraphemeSegmenter.segment(cleaned), ({ segment }) => segment);
+	return graphemes.slice(0, MAX_SPINNER_VERB_LENGTH).join("");
 }
 
 export function sanitizeSpinnerVerbs(value: unknown): string[] {
@@ -112,7 +120,7 @@ function readSpinnerSettings(): SpinnerSettings {
 	// CC's warm shimmer imposes its own fixed palette, so it only applies when the
 	// spinner is at its default color — a custom spinnerColor (or a live preview of
 	// one) means the user picked a static color and wins. Opt-out via spinnerShimmer.
-	const shimmer = raw.spinnerShimmer !== false && verbColor === "borderAccent";
+	const shimmer = resolveSpinnerShimmer(raw) && verbColor === "borderAccent";
 	const value: SpinnerSettings = {
 		adaptive,
 		verbColor,
@@ -170,8 +178,25 @@ const SHIMMER_STOPS: readonly ShimmerStop[] = [
 	{ atMs: 17_000, rgb: { r: 255, g: 175, b: 95 }, bold: true }, // + bold
 	{ atMs: 20_000, rgb: { r: 255, g: 215, b: 0 }, bold: true }, // #FFD700 gold
 ];
-// A bright warm cream highlight — more legible than CC's one-shade delta.
-const SHIMMER_SWEEP_RGB: Rgb = { r: 255, g: 215, b: 175 }; // #FFD7AF
+// The sweep highlight warms with the base rather than staying one fixed cream.
+// Stops are exact RGB equivalents of xterm colors observed in low/medium frames.
+const SHIMMER_HIGHLIGHT_STOPS: readonly Omit<ShimmerStop, "bold">[] = [
+	{ atMs: 0, rgb: { r: 255, g: 135, b: 135 } }, // xterm 216
+	{ atMs: 13_000, rgb: { r: 215, g: 175, b: 175 } }, // xterm 181
+	{ atMs: 14_000, rgb: { r: 215, g: 175, b: 135 } }, // xterm 180
+	{ atMs: 15_000, rgb: { r: 215, g: 215, b: 175 } }, // xterm 187
+	{ atMs: 17_000, rgb: { r: 215, g: 215, b: 135 } }, // xterm 186
+	{ atMs: 20_000, rgb: { r: 255, g: 215, b: 95 } }, // xterm 221
+];
+
+export function shimmerHighlightRgb(elapsedMs: number): Rgb {
+	let stop = SHIMMER_HIGHLIGHT_STOPS[0];
+	for (const candidate of SHIMMER_HIGHLIGHT_STOPS) {
+		if (elapsedMs >= candidate.atMs) stop = candidate;
+		else break;
+	}
+	return stop.rgb;
+}
 
 // One animation super-cycle: a sweep pass, then a breathing stretch, repeating.
 const SHIMMER_SWEEP_MS = 4_000;
@@ -227,13 +252,13 @@ export function shimmerSweep(verbLen: number, elapsedMs: number): { start: numbe
 
 /** Wrap the verb in the escalated base color (breathing when in that phase) with the sweep highlight. */
 export function colorizeShimmerVerb(verb: string, elapsedMs: number): string {
-	const chars = Array.from(verb);
+	const chars = Array.from(spinnerGraphemeSegmenter.segment(verb), ({ segment }) => segment);
 	const { rgb, bold } = shimmerBaseRgb(elapsedMs);
 	const boldSeq = bold ? SHIMMER_BOLD : "";
 	const baseAnsi = rgbAnsi(scaleRgb(rgb, shimmerBreatheFactor(elapsedMs)));
 	const sweep = shimmerSweep(chars.length, elapsedMs);
 	if (!sweep) return `${boldSeq}${baseAnsi}${verb}${RESET}`;
-	const hlAnsi = rgbAnsi(SHIMMER_SWEEP_RGB);
+	const hlAnsi = rgbAnsi(shimmerHighlightRgb(elapsedMs));
 	let out = boldSeq;
 	for (let i = 0; i < chars.length; i++) {
 		out += (i >= sweep.start && i <= sweep.end ? hlAnsi : baseAnsi) + chars[i];
@@ -248,22 +273,34 @@ export function shimmerGlyphAnsi(elapsedMs: number): string {
 	return `${bold ? SHIMMER_BOLD : ""}${ansi}`;
 }
 
-// Shared with the extension closure below: the anchor timestamp of the active
-// spell (0 = inactive) and whether shimmer is enabled. updateDisplay (a Loader
-// prototype method) reads these; the extension writes them on turn boundaries.
-let _shimmerAnchorMs = 0;
-let _shimmerEnabled = false;
+interface ShimmerOwnerState { anchorMs: number; enabled: boolean }
+const SHIMMER_OWNERS_KEY = Symbol.for("pi-claudify:spinner-shimmer-owners");
+const DEFAULT_SHIMMER_OWNER = Symbol.for("pi-claudify:spinner-default-owner");
+function shimmerOwners(): Map<object | symbol, ShimmerOwnerState> {
+	const root = globalThis as Record<PropertyKey, unknown>;
+	return (root[SHIMMER_OWNERS_KEY] ??= new Map<object | symbol, ShimmerOwnerState>()) as Map<object | symbol, ShimmerOwnerState>;
+}
+function shimmerState(owner?: object): ShimmerOwnerState {
+	const key = owner ?? shimmerOwners().keys().next().value ?? DEFAULT_SHIMMER_OWNER;
+	let value = shimmerOwners().get(key);
+	if (!value) { value = { anchorMs: 0, enabled: false }; shimmerOwners().set(key, value); }
+	return value;
+}
+function isActiveShimmerOwner(owner: object): boolean { return shimmerOwners().keys().next().value === owner; }
 export function shimmerElapsedMs(): number {
-	return _shimmerAnchorMs > 0 ? Date.now() - _shimmerAnchorMs : -1;
+	const anchor = shimmerState().anchorMs;
+	return anchor > 0 ? Date.now() - anchor : -1;
 }
 function shimmerActive(): boolean {
-	return _shimmerEnabled && _shimmerAnchorMs > 0;
+	const current = shimmerState();
+	return current.enabled && current.anchorMs > 0;
 }
 
-function applyThemeColors(theme: any): void {
+function applyThemeColors(theme: any, owner?: object): void {
 	const settings = readSpinnerSettings();
 	const { adaptive, verbColor, statusColor } = settings;
-	_shimmerEnabled = settings.shimmer;
+	shimmerState(owner).enabled = settings.shimmer;
+	if (owner && !isActiveShimmerOwner(owner)) return;
 
 	// Respond to runtime toggles (themeAdaptive or spinner color key changes)
 	// without restarting pi.
@@ -322,7 +359,18 @@ function unrefTimer(timer: ReturnType<typeof setTimeout> | null | undefined): vo
 	(timer as any)?.unref?.();
 }
 
-(Loader.prototype as any).updateDisplay = function patchedUpdateDisplay() {
+interface LoaderPatchHooks {
+	updateDisplay(this: any): void;
+	start(this: any): void;
+	stop(this: any): void;
+}
+interface LoaderPatchRegistry {
+	original: LoaderPatchHooks;
+	hooks?: LoaderPatchHooks;
+}
+const LOADER_PATCH_REGISTRY_KEY = Symbol.for("pi-claudify:spinner-loader-patch-registry");
+
+function customUpdateDisplay(this: any): void {
 	applyThemeColors(this.ui?.theme);
 	const frame = OB_FRAMES[this.currentFrame % OB_FRAMES.length];
 	const message = typeof this.message === "string" && RAW_ANSI_RE.test(this.message)
@@ -330,46 +378,69 @@ function unrefTimer(timer: ReturnType<typeof setTimeout> | null | undefined): vo
 		: this.messageColorFn(this.message);
 	const glyphColor = shimmerActive() ? shimmerGlyphAnsi(shimmerElapsedMs()) : CLAUDE_ORANGE;
 	const nextText = `${glyphColor}${frame}${RESET} ${message}`;
-	if ((this as any)[LOADER_LAST_TEXT] === nextText) return;
-	(this as any)[LOADER_LAST_TEXT] = nextText;
+	if (this[LOADER_LAST_TEXT] === nextText) return;
+	this[LOADER_LAST_TEXT] = nextText;
 	this.setText(nextText);
-	if (this.ui && !(this.ui as any).stopped) {
+	if (this.ui && !this.ui.stopped) {
 		(globalThis as any)[ACTIVE_UI_SYMBOL] = this.ui;
 		this.ui.requestRender();
 	}
-};
+}
 
-Loader.prototype.start = function patchedStart() {
+function customStart(this: any): void {
 	this.stop();
-	(this as any)[LOADER_ACTIVE] = true;
-	const generation = ((this as any)[LOADER_GENERATION] ?? 0) + 1;
-	(this as any)[LOADER_GENERATION] = generation;
-	delete (this as any)[LOADER_LAST_TEXT];
-	(this as any).updateDisplay();
+	this[LOADER_ACTIVE] = true;
+	const generation = (this[LOADER_GENERATION] ?? 0) + 1;
+	this[LOADER_GENERATION] = generation;
+	delete this[LOADER_LAST_TEXT];
+	this.updateDisplay();
 	const scheduleNext = () => {
-		if ((this as any)[LOADER_ACTIVE] !== true || (this as any)[LOADER_GENERATION] !== generation) return;
-		const intervalMs = getLoaderIntervalMs(this);
+		if (this[LOADER_ACTIVE] !== true || this[LOADER_GENERATION] !== generation) return;
 		const timer = setTimeout(() => {
-			(this as any).intervalId = null;
-			if ((this as any)[LOADER_ACTIVE] !== true || (this as any)[LOADER_GENERATION] !== generation) return;
-			(this as any).currentFrame = ((this as any).currentFrame + 1) % OB_FRAMES.length;
-			(this as any).updateDisplay();
+			this.intervalId = null;
+			if (this[LOADER_ACTIVE] !== true || this[LOADER_GENERATION] !== generation) return;
+			this.currentFrame = (this.currentFrame + 1) % OB_FRAMES.length;
+			this.updateDisplay();
 			scheduleNext();
-		}, intervalMs);
+		}, getLoaderIntervalMs(this));
 		unrefTimer(timer);
-		(this as any).intervalId = timer;
+		this.intervalId = timer;
 	};
 	scheduleNext();
-};
+}
 
-Loader.prototype.stop = function patchedStop() {
-	(this as any)[LOADER_ACTIVE] = false;
-	(this as any)[LOADER_GENERATION] = ((this as any)[LOADER_GENERATION] ?? 0) + 1;
-	if ((this as any).intervalId) {
-		clearTimeout((this as any).intervalId);
-		(this as any).intervalId = null;
+function customStop(this: any): void {
+	this[LOADER_ACTIVE] = false;
+	this[LOADER_GENERATION] = (this[LOADER_GENERATION] ?? 0) + 1;
+	if (this.intervalId) {
+		clearTimeout(this.intervalId);
+		this.intervalId = null;
 	}
-};
+}
+
+function installSpinnerLoaderPatch(enabled: boolean): void {
+	const root = globalThis as Record<PropertyKey, unknown>;
+	let registry = root[LOADER_PATCH_REGISTRY_KEY] as LoaderPatchRegistry | undefined;
+	if (!registry) {
+		registry = {
+			original: {
+				updateDisplay: (Loader.prototype as any).updateDisplay,
+				start: Loader.prototype.start,
+				stop: Loader.prototype.stop,
+			},
+		};
+		root[LOADER_PATCH_REGISTRY_KEY] = registry;
+		for (const method of ["updateDisplay", "start", "stop"] as const) {
+			(Loader.prototype as any)[method] = function stableSpinnerLoaderMethod(this: any, ...args: any[]) {
+				const active = (globalThis as Record<PropertyKey, unknown>)[LOADER_PATCH_REGISTRY_KEY] as LoaderPatchRegistry;
+				return (active.hooks?.[method] ?? active.original[method]).call(this, ...args as []);
+			};
+		}
+	}
+	registry.hooks = enabled ? { updateDisplay: customUpdateDisplay, start: customStart, stop: customStop } : undefined;
+}
+
+installSpinnerLoaderPatch(spinnerFeatureEnabled());
 
 // ---------------------------------------------------------------------------
 // Spinner verbs — fun/whimsical loading messages (different set from OpenBrawd)
@@ -584,22 +655,49 @@ function formatCount(value: number): string {
 	return new Intl.NumberFormat("en-US").format(value);
 }
 
-function estimateResponseLength(message: any): number {
-	if (!Array.isArray(message?.content)) return 0;
-	return message.content.reduce((sum: number, block: any) =>
-		sum + (block?.type === "text" && typeof block.text === "string" ? block.text.length : 0), 0);
+function outputTokens(value: any): number | null {
+	const output = value?.usage?.output;
+	return typeof output === "number" && Number.isFinite(output) && output >= 0 ? output : null;
 }
 
-function textBlockLengths(message: any): number[] {
-	if (!Array.isArray(message?.content)) return [];
-	const lengths: number[] = [];
-	for (let i = 0; i < message.content.length; i++) {
-		const block = message.content[i];
-		if (block?.type === "text" && typeof block.text === "string") {
-			lengths[i] = block.text.length;
-		}
+/** Provider-reported output tokens across all assistant messages in one request. */
+export class OutputTokenTracker {
+	private settled = 0;
+	private streaming = 0;
+	private turnFinished = false;
+
+	resetRequest(): void {
+		this.settled = 0;
+		this.streaming = 0;
+		this.turnFinished = false;
 	}
-	return lengths;
+
+	startTurn(): void {
+		this.streaming = 0;
+		this.turnFinished = false;
+	}
+
+	update(event: any): boolean {
+		if (this.turnFinished) return false;
+		const next = outputTokens(event?.partial ?? event?.message);
+		if (next === null || next <= this.streaming) return false;
+		this.streaming = next;
+		return true;
+	}
+
+	finish(message: any): boolean {
+		if (this.turnFinished) return false;
+		this.turnFinished = true;
+		const final = outputTokens(message) ?? 0;
+		const turnTotal = Math.max(this.streaming, final);
+		this.settled += turnTotal;
+		this.streaming = 0;
+		return turnTotal > 0;
+	}
+
+	total(): number {
+		return this.settled + this.streaming;
+	}
 }
 
 function statusText(text: string): string {
@@ -625,16 +723,33 @@ const WORKING_MESSAGE_INTERVAL_MS = 1_000;
 /** Completion message linger */
 const TURN_COMPLETION_MS = 2_500;
 
+export function thinkingProgressPhrase(elapsedMs: number): "thinking" | "still thinking" | "thinking more" | "thinking some more" | "almost done thinking" {
+	if (elapsedMs >= 47_000) return "almost done thinking";
+	if (elapsedMs >= 32_000) return "thinking some more";
+	if (elapsedMs >= 22_000) return "thinking more";
+	if (elapsedMs >= 12_000) return "still thinking";
+	return "thinking";
+}
+
+export function activeThinkingProgressPhrase(thinkingStartedAt: number, now: number): ReturnType<typeof thinkingProgressPhrase> {
+	return thinkingProgressPhrase(thinkingStartedAt > 0 ? Math.max(0, now - thinkingStartedAt) : 0);
+}
 
 export default function (pi: ExtensionAPI) {
+	// Disabled generations register no event handlers. The process-stable Loader
+	// wrapper installed above simultaneously has no active hooks and delegates to
+	// the captured native implementation.
+	if (!spinnerFeatureEnabled()) return;
+	shimmerOwners().delete(DEFAULT_SHIMMER_OWNER);
+	const shimmerOwner = {};
+	const ownerShimmer = shimmerState(shimmerOwner);
 	let agentStartTime = 0;
 	let turnStartTime = 0;
 	let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 	let completionTimer: ReturnType<typeof setTimeout> | null = null;
 	let thoughtStatusTimer: ReturnType<typeof setTimeout> | null = null;
 	let currentVerb = "";
-	let responseLength = 0;
-	let responseTextBlockLengths: number[] = [];
+	const tokenTracker = new OutputTokenTracker();
 	let thinkingStatus: "thinking" | number /* duration ms */ | null = null;
 	let thinkingStartTime = 0;
 	let thoughtForSetAt = 0;
@@ -655,7 +770,7 @@ export default function (pi: ExtensionAPI) {
 
 	function buildWorkingMessage(): string {
 		const elapsed = Date.now() - (agentStartTime || turnStartTime);
-		const tokenCount = Math.max(0, Math.round(responseLength / 4));
+		const tokenCount = tokenTracker.total();
 		const statusParts: string[] = [];
 
 		// Claude Code orders the status list duration → tokens → thinking, e.g.
@@ -669,7 +784,7 @@ export default function (pi: ExtensionAPI) {
 		}
 
 		if (thinkingStatus === "thinking") {
-			statusParts.push(`thinking${getEffortSuffix()}`);
+			statusParts.push(`${activeThinkingProgressPhrase(thinkingStartTime, Date.now())}${getEffortSuffix()}`);
 		} else if (typeof thinkingStatus === "number") {
 			statusParts.push(`thought for ${Math.max(1, Math.round(thinkingStatus / 1000))}s`);
 		}
@@ -683,27 +798,16 @@ export default function (pi: ExtensionAPI) {
 		return message;
 	}
 
-	function setResponseTextBlockLength(index: number, length: number): void {
-		const previous = responseTextBlockLengths[index] ?? 0;
-		responseTextBlockLengths[index] = Math.max(0, length);
-		responseLength = Math.max(0, responseLength + responseTextBlockLengths[index] - previous);
-	}
-
-	function resetResponseTracking(message?: any): void {
-		responseTextBlockLengths = message ? textBlockLengths(message) : [];
-		responseLength = message ? estimateResponseLength(message) : 0;
-	}
-
 	function syncWorkingMessage(force = false): void {
 		// Anchor the shimmer to the same elapsed base buildWorkingMessage uses, so the
-		// glyph (read from _shimmerAnchorMs in updateDisplay) tracks the verb's escalation.
-		_shimmerAnchorMs = turnActive ? (agentStartTime || turnStartTime) : 0;
+		// glyph (read from ownerShimmer.anchorMs in updateDisplay) tracks the verb's escalation.
+		ownerShimmer.anchorMs = turnActive ? (agentStartTime || turnStartTime) : 0;
 		if (!activeCtx?.hasUI) return;
 		// Re-derive colors on every tick so Claudify screen color/status changes
 		// take effect within ~250 ms without waiting for the next pi event.
 		// applyThemeColors is identity-cached on (theme, spinnerKey, statusKey) so
 		// this is cheap when nothing changed.
-		applyThemeColors(activeCtx.ui?.theme);
+		applyThemeColors(activeCtx.ui?.theme, shimmerOwner);
 		const nextMessage = buildWorkingMessage();
 		if (!force && nextMessage === lastWorkingMessage) return;
 		lastWorkingMessage = nextMessage;
@@ -724,10 +828,10 @@ export default function (pi: ExtensionAPI) {
 		const elapsed = Date.now() - (agentStartTime || turnStartTime);
 		// The shimmer animates continuously (sweep ⇄ breathe), so refresh at the
 		// animation cadence for as long as it's active.
-		if (_shimmerEnabled && _shimmerAnchorMs > 0) {
+		if (ownerShimmer.enabled && ownerShimmer.anchorMs > 0) {
 			return SHIMMER_REFRESH_MS;
 		}
-		const tokenCount = Math.max(0, Math.round(responseLength / 4));
+		const tokenCount = tokenTracker.total();
 		// Keep ticking once per second even when idle so Claudify screen changes
 		// take effect within ~1s and elapsed-time crossover into the timer-on
 		// state still fires close to 30s. syncWorkingMessage short-circuits
@@ -810,12 +914,12 @@ export default function (pi: ExtensionAPI) {
 		stopRefreshLoop();
 		clearCompletionTimer();
 		clearThoughtStatusTimer();
-		_shimmerAnchorMs = 0;
+		ownerShimmer.anchorMs = 0;
 		agentStartTime = 0;
 		turnStartTime = 0;
 		thinkingStatus = null;
 		thoughtForSetAt = 0;
-		resetResponseTracking();
+		tokenTracker.resetRequest();
 		restoreDefaultWorkingMessage();
 	}
 
@@ -840,17 +944,18 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("agent_start", async () => {
 		if (!agentStartTime) agentStartTime = Date.now();
+		tokenTracker.resetRequest();
 	});
 
 	pi.on("turn_start", async (_event, ctx) => {
 		activeTurnId++;
 		turnActive = true;
 		activeCtx = ctx;
-		applyThemeColors(ctx.ui?.theme);
+		applyThemeColors(ctx.ui?.theme, shimmerOwner);
 		turnStartTime = Date.now();
 		if (!agentStartTime) agentStartTime = turnStartTime;
 		currentVerb = pickVerb();
-		resetResponseTracking();
+		tokenTracker.startTurn();
 		clearCompletionTimer();
 		if (typeof thinkingStatus !== "number" || Date.now() - thoughtForSetAt >= THOUGHT_DISPLAY_MS) {
 			thinkingStatus = null;
@@ -863,25 +968,9 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("message_update", async (event, ctx) => {
 		activeCtx = ctx;
-		applyThemeColors(ctx.ui?.theme);
+		applyThemeColors(ctx.ui?.theme, shimmerOwner);
 		const evt = event.assistantMessageEvent;
-		let statusChanged = false;
-		const previousTokenCount = Math.max(0, Math.round(responseLength / 4));
-
-		if (evt.type === "start") {
-			resetResponseTracking();
-		} else if (evt.type === "text_start") {
-			setResponseTextBlockLength(evt.contentIndex, 0);
-		} else if (evt.type === "text_delta") {
-			const previous = responseTextBlockLengths[evt.contentIndex] ?? 0;
-			setResponseTextBlockLength(evt.contentIndex, previous + (typeof evt.delta === "string" ? evt.delta.length : 0));
-		} else if (evt.type === "text_end") {
-			setResponseTextBlockLength(evt.contentIndex, typeof evt.content === "string" ? evt.content.length : 0);
-		} else if (evt.type === "done") {
-			resetResponseTracking(evt.message);
-		} else if (evt.type === "error") {
-			resetResponseTracking(evt.error);
-		}
+		let statusChanged = tokenTracker.update(evt);
 
 		if (evt.type === "thinking_start") {
 			clearThoughtStatusTimer();
@@ -897,20 +986,21 @@ export default function (pi: ExtensionAPI) {
 		if (statusChanged) {
 			syncWorkingMessage(true);
 			rescheduleRefreshLoop();
-			return;
 		}
+	});
 
-		const nextTokenCount = Math.max(0, Math.round(responseLength / 4));
-		if (previousTokenCount === 0 && nextTokenCount > 0) {
-			rescheduleRefreshLoop();
-		}
+	pi.on("message_end", async (event, ctx) => {
+		if (event.message?.role !== "assistant") return;
+		if (tokenTracker.finish(event.message) && ctx.hasUI) syncWorkingMessage(true);
+		// Abort/error streams do not always emit thinking_end.
+		onThinkingEnd();
 	});
 
 	pi.on("turn_end", async (_event, ctx) => {
 		turnActive = false;
-		_shimmerAnchorMs = 0; // the "✻ Worked for …" completion line is not shimmered
+		ownerShimmer.anchorMs = 0; // the "✻ Worked for …" completion line is not shimmered
 		activeCtx = ctx;
-		applyThemeColors(ctx.ui?.theme);
+		applyThemeColors(ctx.ui?.theme, shimmerOwner);
 		const turnId = activeTurnId;
 		const elapsed = Date.now() - (agentStartTime || turnStartTime);
 		stopRefreshLoop();
@@ -937,8 +1027,6 @@ export default function (pi: ExtensionAPI) {
 			restoreDefaultWorkingMessage();
 		}
 
-		responseLength = 0;
-		responseTextBlockLengths = [];
 	});
 
 	pi.on("agent_end", async () => {
@@ -955,5 +1043,6 @@ export default function (pi: ExtensionAPI) {
 		turnActive = false;
 		clearDisplay();
 		activeCtx = null;
+		shimmerOwners().delete(shimmerOwner);
 	});
 }

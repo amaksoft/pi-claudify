@@ -1,7 +1,12 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 
 import type { MessageSpacing, MessageStyle, WorkedVerbMode } from "./message-chrome.ts";
+import type { CompatibilityConfig } from "./domain/compatibility.ts";
+
+export const DEFAULT_EXPANDED_PREVIEW_MAX_LINES = 4_000;
+export const DEFAULT_DIFF_COLLAPSED_LINES = 10;
 
 export type SettingsFileStatus = "ok" | "missing" | "invalid";
 export type SpinnerVerbMode = "append" | "replace";
@@ -16,19 +21,26 @@ export interface SettingsFile {
 	expandedPreviewMaxLines?: number;
 	bashOutputMode?: "opencode" | "summary" | "preview";
 	bashCollapsedLines?: number;
+	bashRunningPreview?: "head" | "tail";
 	bashStackConsecutive?: boolean;
 	bashSemanticDisplay?: boolean;
 	readOnlyToolGrouping?: boolean;
+	groupShellCommands?: boolean;
+	skipToolOverrides?: string[];
 	readOnlyToolGroupLimit?: number;
 	showTruncationHints?: boolean;
 	diffCollapsedLines?: number;
+	diffSyntaxHighlighting?: boolean;
 	diffTheme?: string;
 	diffColors?: Record<string, string>;
+	colorSource?: "claude" | "theme";
+	markdownStyle?: "claude" | "pi";
 	diffPalette?: "claude" | "theme";
 	toolChrome?: "claude" | "theme";
 	themeAdaptive?: boolean;
 	spinnerColor?: string;
 	spinnerStatusColor?: string;
+	spinnerPlacement?: "above" | "input";
 	spinnerShimmer?: boolean;
 	spinnerVerbs?: string[];
 	spinnerVerbMode?: SpinnerVerbMode;
@@ -44,9 +56,20 @@ export interface SettingsFile {
 	footerColor?: string;
 	footerUsageBar?: boolean;
 	footerEffort?: boolean;
+	footerCost?: boolean;
+	footerSessionStats?: boolean;
 	editorBorder?: "gray" | "thinking";
 	accentColor?: "claude" | "theme" | `#${string}`;
 	userMessageBox?: "theme" | "claude" | "off" | `#${string}`;
+	bannerMode?: "off" | "onboarding" | "always";
+	bannerFrame?: boolean;
+	promptPointer?: boolean;
+	/**
+	 * Backward-compatible feature/tool gating. Absent means current (fully
+	 * enabled) behavior — see README.md "Compatibility control" and
+	 * extensions/domain/compatibility.ts for the parsing/resolution rules.
+	 */
+	compatibility?: CompatibilityConfig;
 }
 
 export interface SettingsFileInfo {
@@ -71,6 +94,8 @@ interface CachedSettings extends SettingsSnapshot {
 
 const SETTINGS_CACHE_TTL_MS = 1_000;
 let settingsCache: CachedSettings | null = null;
+let settingsFingerprint: string | null = null;
+let settingsRevision = 0;
 
 function readSettingsFile(path: string): { data: Record<string, unknown>; status: SettingsFileStatus } {
 	if (!path || !existsSync(path)) return { data: {}, status: "missing" };
@@ -91,6 +116,17 @@ function normalizeAliases(settings: Record<string, unknown>): SettingsFile {
 	}
 	delete normalized.spinnerVerbColor;
 	if (normalized.toolBackground === "border") normalized.toolBackground = "outlines";
+	if (!Object.prototype.hasOwnProperty.call(normalized, "skipToolOverrides")
+		&& Array.isArray(normalized.ccSkipToolOverrides)) {
+		normalized.skipToolOverrides = normalized.ccSkipToolOverrides;
+	}
+	delete normalized.ccSkipToolOverrides;
+	if (!Object.prototype.hasOwnProperty.call(normalized, "bannerMode")
+		&& (normalized.ccBannerMode === "off" || normalized.ccBannerMode === "onboarding" || normalized.ccBannerMode === "always")) {
+		normalized.bannerMode = normalized.ccBannerMode;
+	}
+	delete normalized.ccBannerMode;
+	delete normalized.ccBrandMark;
 	if (!Object.prototype.hasOwnProperty.call(normalized, "footerUsageBar")
 		&& Object.prototype.hasOwnProperty.call(normalized, "footerContextBar")) {
 		normalized.footerUsageBar = normalized.footerContextBar;
@@ -108,11 +144,29 @@ function cloneSnapshot(snapshot: SettingsSnapshot): SettingsSnapshot {
 
 export function clearSettingsCache(): void {
 	settingsCache = null;
+	settingsRevision++;
+}
+
+/**
+ * Monotonic version for render caches that consume settings. Calling this also
+ * refreshes an expired file snapshot, so edits made outside the Hub eventually
+ * invalidate mounted rows too.
+ */
+export function getSettingsRevision(): number {
+	readSettings();
+	return settingsRevision;
+}
+
+function settingsHome(): string {
+	// An explicitly empty HOME is used by callers/tests to disable persistence.
+	// Native Windows normally omits HOME entirely and provides USERPROFILE.
+	if (process.env.HOME !== undefined) return process.env.HOME;
+	return process.env.USERPROFILE || homedir();
 }
 
 export function writeSettingsKey(key: string, value: unknown): SettingsWriteResult {
 	clearSettingsCache();
-	const home = process.env.HOME ?? "";
+	const home = settingsHome();
 	if (!home) return { success: false, backupCreated: false };
 	const dir = join(home, ".pi");
 	const path = join(dir, "settings.json");
@@ -159,7 +213,7 @@ export function writeSettingsKey(key: string, value: unknown): SettingsWriteResu
 }
 
 export function readSettings(): SettingsSnapshot {
-	const home = process.env.HOME ?? "";
+	const home = settingsHome();
 	const userPath = home ? join(home, ".pi", "settings.json") : "";
 	const now = Date.now();
 	if (settingsCache
@@ -169,8 +223,14 @@ export function readSettings(): SettingsSnapshot {
 	}
 
 	const { data, status } = readSettingsFile(userPath);
+	const values = normalizeAliases(data);
+	const fingerprint = `${userPath}\u0000${status}\u0000${JSON.stringify(values)}`;
+	if (fingerprint !== settingsFingerprint) {
+		settingsFingerprint = fingerprint;
+		settingsRevision++;
+	}
 	settingsCache = {
-		values: normalizeAliases(data),
+		values,
 		file: { path: userPath, status },
 		cacheKey: userPath,
 		timestamp: now,

@@ -77,10 +77,24 @@ function layoutFullscreenLines(
 	if (markerIndex === -1) return undefined;
 
 	const next = [...lines];
-	if (removeIdleStatusBefore(next, markerIndex, width)) markerIndex -= 2;
-
-	const transcript = next.slice(0, markerIndex);
-	const chrome = next.slice(markerIndex + 1);
+	let transcript: string[];
+	let preMarkerChrome: string[] = [];
+	let idleStart = -1;
+	for (let index = markerIndex; index >= 3; index--) {
+		if (next[index - 1] === "" && isFullWidthBlank(next[index - 2] ?? "", width) && isFullWidthBlank(next[index - 3] ?? "", width)) {
+			idleStart = index - 3;
+			break;
+		}
+	}
+	if (idleStart >= 0) {
+		transcript = next.slice(0, idleStart);
+		// Keep Pi's trailing empty spacer plus any extension widgets inserted
+		// before Claudify's marker pinned with editor/footer chrome.
+		preMarkerChrome = next.slice(idleStart + 2, markerIndex);
+	} else {
+		transcript = next.slice(0, markerIndex);
+	}
+	const chrome = [...preMarkerChrome, ...next.slice(markerIndex + 1)];
 	const terminalRows = Number.isFinite(rows) ? Math.max(0, Math.trunc(rows)) : 0;
 	const viewportRows = Math.max(0, terminalRows - chrome.length);
 	const maxScrollOffset = Math.max(0, transcript.length - viewportRows);
@@ -311,13 +325,21 @@ function focusedComponent(tui: TUI): unknown {
 	return (tui as unknown as { focusedComponent?: unknown }).focusedComponent;
 }
 
-function sgrMouseEvent(data: string): "up" | "down" | "other" | undefined {
-	const match = /^\x1b\[<(\d+);\d+;\d+([Mm])$/.exec(data);
-	if (!match) return undefined;
-	const button = Number(match[1]) & ~0b11100;
-	if (match[2] === "M" && button === 64) return "up";
-	if (match[2] === "M" && button === 65) return "down";
-	return "other";
+function sgrMouseEvents(data: string): Array<"up" | "down" | "other"> | undefined {
+	const pattern = /\x1b\[<(\d+);\d+;\d+([Mm])/g;
+	const events: Array<"up" | "down" | "other"> = [];
+	let offset = 0;
+	for (let match = pattern.exec(data); match; match = pattern.exec(data)) {
+		// Consume only when the ENTIRE terminal chunk is a sequence batch. Mixed
+		// keyboard text must continue to the editor unchanged.
+		if (match.index !== offset) return undefined;
+		offset = pattern.lastIndex;
+		const button = Number(match[1]) & ~0b11100;
+		if (match[2] === "M" && button === 64) events.push("up");
+		else if (match[2] === "M" && button === 65) events.push("down");
+		else events.push("other");
+	}
+	return events.length > 0 && offset === data.length ? events : undefined;
 }
 
 export function registerFullscreenTui(pi: ExtensionAPI): void {
@@ -345,7 +367,8 @@ export function registerFullscreenTui(pi: ExtensionAPI): void {
 	pi.registerCommand("tui", {
 		description: "Toggle Claude Code-style fullscreen layout",
 		handler: async (_args, ctx) => {
-			if (ctx.mode !== "tui" || !ctx.hasUI) {
+			const mode = (ctx as any).mode;
+			if ((mode !== undefined && mode !== "tui") || !ctx.hasUI) {
 				ctx.ui.notify("/tui needs the interactive TUI", "info");
 				return;
 			}
@@ -390,9 +413,11 @@ export function registerFullscreenTui(pi: ExtensionAPI): void {
 					if (matchesKey(data, "pageDown")) {
 						return controller!.scrollPage("down") ? { consume: true } : undefined;
 					}
-					const mouseEvent = sgrMouseEvent(data);
-					if (mouseEvent) {
-						if (mouseEvent !== "other") controller!.scrollWheel(mouseEvent);
+					const mouseEvents = sgrMouseEvents(data);
+					if (mouseEvents) {
+						for (const mouseEvent of mouseEvents) {
+							if (mouseEvent !== "other") controller!.scrollWheel(mouseEvent);
+						}
 						return { consume: true };
 					}
 					return undefined;

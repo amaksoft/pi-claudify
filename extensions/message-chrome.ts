@@ -266,6 +266,27 @@ export function isWorkedLine(line: string): boolean {
 	return WORKED_LINE_RE.test(stripAnsi(line).trim());
 }
 
+export function stripWorkedLines(text: string): string {
+	if (!text.includes(WORKED_GLYPH)) return text;
+	return text.split(/\r?\n/).filter((line) => !isWorkedLine(line)).join("\n").replace(/\n{3,}/g, "\n\n");
+}
+
+export function messageHasWorkedLine(message: any): boolean {
+	if (!Array.isArray(message?.content)) return false;
+	return message.content.some((block: any) => block?.type === "text"
+		&& typeof block.text === "string"
+		&& block.text.includes(WORKED_GLYPH)
+		&& block.text.split(/\r?\n/).some(isWorkedLine));
+}
+
+export function appendWorkedLine(message: any, line: string): void {
+	if (!message || message.role !== "assistant" || !Array.isArray(message.content)) return;
+	const blocks = message.content.filter((block: any) => block?.type === "text" && typeof block.text === "string" && block.text.trim());
+	const last = blocks.at(-1);
+	if (!last) return;
+	last.text = `${stripWorkedLines(last.text).trimEnd()}\n\n${line}`;
+}
+
 export function formatWorkedLine(durationMs: number, options: WorkedLineOptions = {}): string {
 	const pool = options.verbs && options.verbs.length > 0 ? options.verbs : DEFAULT_WORKED_VERBS;
 	const seed = Number.isFinite(options.seed) ? Math.abs(Math.trunc(options.seed as number)) : 0;
