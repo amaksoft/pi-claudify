@@ -3,7 +3,7 @@ import { createWriteToolDefinition } from "@earendil-works/pi-coding-agent";
 
 import { parseDiff } from "../domain/diff-model.ts";
 import { languageForPath } from "../domain/language.ts";
-import { captureWriteSnapshot, writeDiffOmissionReason } from "../write-snapshot.ts";
+import { captureWriteSnapshot, writeDiffOmissionReason, type WriteSnapshot } from "../write-snapshot.ts";
 
 export interface WriteExecutionDependencies {
 	summarizeDiff(added: number, removed: number): string;
@@ -13,22 +13,13 @@ function lineCount(text: string): number {
 	return text ? text.split("\n").length : 0;
 }
 
-/** Execute Pi's native write while persisting bounded, reload-safe diff provenance. */
-export async function executeWriteWithSnapshot(
-	startupCwd: string,
-	toolCallId: string,
-	params: any,
-	signal: AbortSignal | undefined,
-	onUpdate: any,
-	ctx: any,
+export function enrichWriteResultWithSnapshot(
+	snapshot: WriteSnapshot,
+	filePath: string,
+	content: string,
+	result: any,
 	dependencies: WriteExecutionDependencies,
-): Promise<any> {
-	const cwd = ctx?.cwd ?? startupCwd;
-	const filePath = params.path ?? params.file_path ?? "";
-	const fullPath = filePath ? resolve(cwd, filePath) : "";
-	const snapshot = captureWriteSnapshot(fullPath);
-	const result: any = await createWriteToolDefinition(cwd).execute(toolCallId, params, signal, onUpdate, ctx);
-	const content = params.content ?? "";
+): any {
 	const omission = writeDiffOmissionReason(snapshot, content);
 	if (omission) {
 		result.details = { _type: "diffOmitted", reason: omission, filePath, lines: lineCount(content) };
@@ -46,4 +37,22 @@ export async function executeWriteWithSnapshot(
 		result.details = { _type: "noChange" };
 	}
 	return result;
+}
+
+/** Execute Pi's native write while persisting bounded, reload-safe diff provenance. */
+export async function executeWriteWithSnapshot(
+	startupCwd: string,
+	toolCallId: string,
+	params: any,
+	signal: AbortSignal | undefined,
+	onUpdate: any,
+	ctx: any,
+	dependencies: WriteExecutionDependencies,
+): Promise<any> {
+	const cwd = ctx?.cwd ?? startupCwd;
+	const filePath = params.path ?? params.file_path ?? "";
+	const fullPath = filePath ? resolve(cwd, filePath) : "";
+	const snapshot = captureWriteSnapshot(fullPath);
+	const result: any = await createWriteToolDefinition(cwd).execute(toolCallId, params, signal, onUpdate, ctx);
+	return enrichWriteResultWithSnapshot(snapshot, filePath, params.content ?? "", result, dependencies);
 }

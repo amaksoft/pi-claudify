@@ -1,8 +1,11 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Loader } from "@earendil-works/pi-tui";
 
+import { testedPiPatchBroker } from "./adapters/tested-pi/patch-broker.ts";
 import { parseCompatibilityConfig, resolveCompatibilityFeatureEnabled } from "./domain/compatibility.ts";
+import { deferGenerationRelease } from "./lifecycle/generation-handoff.ts";
 import { resolveSpinnerShimmer } from "./presentation-profile.ts";
+import { parseProfilePreference } from "./runtime/capabilities.ts";
 import { readSettings } from "./settings.ts";
 import { sanitizeToolContent } from "./terminal-sanitize.ts";
 
@@ -11,6 +14,8 @@ import { sanitizeToolContent } from "./terminal-sanitize.ts";
 // state, so `/reload` can turn the feature into a native pass-through without
 // stacking another prototype patch.
 function spinnerFeatureEnabled(): boolean {
+	const profile = parseProfilePreference(process.env.PI_CLAUDIFY_PROFILE);
+	if (profile === "portable" || profile === "certified-host") return false;
 	return resolveCompatibilityFeatureEnabled(parseCompatibilityConfig(readSettings().values.compatibility), "spinner");
 }
 
@@ -274,19 +279,20 @@ export function shimmerGlyphAnsi(elapsedMs: number): string {
 }
 
 interface ShimmerOwnerState { anchorMs: number; enabled: boolean }
-const SHIMMER_OWNERS_KEY = Symbol.for("pi-claudify:spinner-shimmer-owners");
-const DEFAULT_SHIMMER_OWNER = Symbol.for("pi-claudify:spinner-default-owner");
-function shimmerOwners(): Map<object | symbol, ShimmerOwnerState> {
-	const root = globalThis as Record<PropertyKey, unknown>;
-	return (root[SHIMMER_OWNERS_KEY] ??= new Map<object | symbol, ShimmerOwnerState>()) as Map<object | symbol, ShimmerOwnerState>;
-}
+const SHIMMER_SURFACE = "spinner-shimmer";
+const DEFAULT_SHIMMER_STATE: ShimmerOwnerState = { anchorMs: 0, enabled: false };
 function shimmerState(owner?: object): ShimmerOwnerState {
-	const key = owner ?? shimmerOwners().keys().next().value ?? DEFAULT_SHIMMER_OWNER;
-	let value = shimmerOwners().get(key);
-	if (!value) { value = { anchorMs: 0, enabled: false }; shimmerOwners().set(key, value); }
+	if (!owner) return testedPiPatchBroker.active<ShimmerOwnerState>(SHIMMER_SURFACE) ?? DEFAULT_SHIMMER_STATE;
+	let value = testedPiPatchBroker.owned<ShimmerOwnerState>(owner, SHIMMER_SURFACE);
+	if (!value) {
+		value = { anchorMs: 0, enabled: false };
+		testedPiPatchBroker.bind(owner, SHIMMER_SURFACE, value);
+	}
 	return value;
 }
-function isActiveShimmerOwner(owner: object): boolean { return shimmerOwners().keys().next().value === owner; }
+function isActiveShimmerOwner(owner: object): boolean {
+	return testedPiPatchBroker.active<ShimmerOwnerState>(SHIMMER_SURFACE) === testedPiPatchBroker.owned<ShimmerOwnerState>(owner, SHIMMER_SURFACE);
+}
 export function shimmerElapsedMs(): number {
 	const anchor = shimmerState().anchorMs;
 	return anchor > 0 ? Date.now() - anchor : -1;
@@ -366,9 +372,9 @@ interface LoaderPatchHooks {
 }
 interface LoaderPatchRegistry {
 	original: LoaderPatchHooks;
-	hooks?: LoaderPatchHooks;
 }
 const LOADER_PATCH_REGISTRY_KEY = Symbol.for("pi-claudify:spinner-loader-patch-registry");
+const LOADER_PATCH_SURFACE = "spinner-loader";
 
 function customUpdateDisplay(this: any): void {
 	applyThemeColors(this.ui?.theme);
@@ -418,7 +424,7 @@ function customStop(this: any): void {
 	}
 }
 
-function installSpinnerLoaderPatch(enabled: boolean): void {
+function installSpinnerLoaderPatch(owner: object): void {
 	const root = globalThis as Record<PropertyKey, unknown>;
 	let registry = root[LOADER_PATCH_REGISTRY_KEY] as LoaderPatchRegistry | undefined;
 	if (!registry) {
@@ -432,15 +438,13 @@ function installSpinnerLoaderPatch(enabled: boolean): void {
 		root[LOADER_PATCH_REGISTRY_KEY] = registry;
 		for (const method of ["updateDisplay", "start", "stop"] as const) {
 			(Loader.prototype as any)[method] = function stableSpinnerLoaderMethod(this: any, ...args: any[]) {
-				const active = (globalThis as Record<PropertyKey, unknown>)[LOADER_PATCH_REGISTRY_KEY] as LoaderPatchRegistry;
-				return (active.hooks?.[method] ?? active.original[method]).call(this, ...args as []);
+				const active = testedPiPatchBroker.active<LoaderPatchHooks>(LOADER_PATCH_SURFACE);
+				return (active?.[method] ?? registry!.original[method]).call(this, ...args as []);
 			};
 		}
 	}
-	registry.hooks = enabled ? { updateDisplay: customUpdateDisplay, start: customStart, stop: customStop } : undefined;
+	testedPiPatchBroker.bind(owner, LOADER_PATCH_SURFACE, { updateDisplay: customUpdateDisplay, start: customStart, stop: customStop });
 }
-
-installSpinnerLoaderPatch(spinnerFeatureEnabled());
 
 // ---------------------------------------------------------------------------
 // Spinner verbs — fun/whimsical loading messages (different set from OpenBrawd)
@@ -735,13 +739,13 @@ export function activeThinkingProgressPhrase(thinkingStartedAt: number, now: num
 	return thinkingProgressPhrase(thinkingStartedAt > 0 ? Math.max(0, now - thinkingStartedAt) : 0);
 }
 
-export default function (pi: ExtensionAPI) {
+export default function (pi: ExtensionAPI, suppliedOwner?: object) {
 	// Disabled generations register no event handlers. The process-stable Loader
 	// wrapper installed above simultaneously has no active hooks and delegates to
 	// the captured native implementation.
 	if (!spinnerFeatureEnabled()) return;
-	shimmerOwners().delete(DEFAULT_SHIMMER_OWNER);
-	const shimmerOwner = {};
+	const shimmerOwner = suppliedOwner ?? {};
+	installSpinnerLoaderPatch(shimmerOwner);
 	const ownerShimmer = shimmerState(shimmerOwner);
 	let agentStartTime = 0;
 	let turnStartTime = 0;
@@ -1043,6 +1047,10 @@ export default function (pi: ExtensionAPI) {
 		turnActive = false;
 		clearDisplay();
 		activeCtx = null;
-		shimmerOwners().delete(shimmerOwner);
+		testedPiPatchBroker.markRetiring(shimmerOwner);
+		deferGenerationRelease(() => {
+			testedPiPatchBroker.releaseSurface(shimmerOwner, SHIMMER_SURFACE);
+			testedPiPatchBroker.releaseSurface(shimmerOwner, LOADER_PATCH_SURFACE);
+		});
 	});
 }

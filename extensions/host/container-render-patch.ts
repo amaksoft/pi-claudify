@@ -1,19 +1,15 @@
+import { testedPiPatchBroker } from "../adapters/tested-pi/patch-broker.ts";
 import { installMouseLayout } from "../mouse-layout.ts";
 import { isInspectionGroupComponent } from "../inspection-group.ts";
 import { isToolExecutionLike, toolComponentRecord } from "../pi-tool-adapter.ts";
-import { sharedState } from "./shared-state.ts";
 
 const PATCH_FLAG = Symbol.for("pi-claudify:container-render-patch");
-const STATE_KEY = Symbol.for("pi-claudify:global-render-state");
+const SURFACE = "container-render";
 const RENDER_CACHE = Symbol.for("pi-claudify:tool-render-cache");
 const SETTINGS_REVISION = Symbol.for("pi-claudify:tool-render-settings-revision");
 const PRESENTATION_REVISION = Symbol.for("pi-claudify:tool-component-presentation-revision");
 
 interface Registry { originalRender: (this: unknown, width: number) => string[] }
-interface ActiveState {
-	owners?: Map<object, ContainerRenderHooks>;
-	retiring?: Set<object>;
-}
 export interface ContainerRenderHooks {
 	presentationSkipped(name: unknown): boolean;
 	isInspectionCandidate(value: unknown): boolean;
@@ -33,11 +29,8 @@ export interface ContainerRenderHooks {
 	reanchor(natural: number[], leading: number, trailing: number, top: number, bottom: number): number[];
 	diagnostic(key: string, error: unknown): void;
 }
-function activeState(): ActiveState { return sharedState(STATE_KEY, () => ({})); }
 function activeHooks(): ContainerRenderHooks | undefined {
-	const active = activeState();
-	for (const [owner, hooks] of active.owners ?? []) if (!active.retiring?.has(owner)) return hooks;
-	return active.owners?.values().next().value;
+	return testedPiPatchBroker.active<ContainerRenderHooks>(SURFACE);
 }
 
 function installOn(proto: any, pristine: (this: unknown, width: number) => string[]): void {
@@ -106,15 +99,10 @@ function renderWithHooks(self: unknown, width: number, original: (this: unknown,
 
 export function installContainerRenderPatch(prototypes: Iterable<any>, owner: object, pristine: (this: unknown, width: number) => string[], hooks: ContainerRenderHooks): void {
 	for (const proto of new Set(prototypes)) installOn(proto, pristine);
-	const active = activeState();
-	const owners = (active.owners ??= new Map());
-	owners.delete(owner);
-	owners.set(owner, hooks);
-	active.retiring?.delete(owner);
+	testedPiPatchBroker.bind(owner, SURFACE, hooks);
 }
-export function markContainerRenderPatchRetiring(owner: object): void { (activeState().retiring ??= new Set()).add(owner); }
+export function markContainerRenderPatchRetiring(owner: object): void { testedPiPatchBroker.markRetiring(owner); }
 export function releaseContainerRenderPatch(owner?: object): void {
-	const active = activeState();
-	if (owner === undefined) { active.owners?.clear(); active.retiring?.clear(); }
-	else { active.owners?.delete(owner); active.retiring?.delete(owner); }
+	if (owner === undefined) testedPiPatchBroker.clearSurface(SURFACE);
+	else testedPiPatchBroker.releaseSurface(owner, SURFACE);
 }

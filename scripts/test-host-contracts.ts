@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
 
+import { testedPiPatchBroker } from "../extensions/adapters/tested-pi/patch-broker.ts";
 import { installContainerRenderPatch, releaseContainerRenderPatch } from "../extensions/host/container-render-patch.ts";
 import { patchCustomMessageRenderer, releaseMessageRenderers } from "../extensions/host/message-patches.ts";
 import { patchMethodOnce } from "../extensions/host/patch-once.ts";
@@ -13,6 +14,7 @@ import {
 	mcpOriginalName,
 	mcpToolServer,
 	noteMcpTool,
+	releaseToolDiscovery,
 	resetToolDiscovery,
 } from "../extensions/host/tool-discovery.ts";
 import { installToolFallbackSanitization, releaseToolFallbackSanitization } from "../extensions/host/tool-component-patches.ts";
@@ -40,6 +42,7 @@ assert.deepEqual(new FakeCustomMessage().render(), ["new:payload"], "nested chil
 releaseMessageRenderers(nestedCustomOwner);
 assert.deepEqual(new FakeCustomMessage().render(), ["new:payload"], "child message teardown restores the parent runtime");
 releaseMessageRenderers(customOwner);
+assert.deepEqual(new FakeCustomMessage().render(), ["payload"], "ownerless stable message wrapper delegates to the pristine host renderer");
 
 const testKey = Symbol.for("pi-claudify:test-shared-state");
 const first = sharedState(testKey, () => ({ owner: undefined as object | undefined, value: 1 }));
@@ -57,17 +60,16 @@ assert.equal(first.owner, undefined);
 
 const nestedParentOwner = {};
 const nestedChildOwner = {};
-installContainerRenderPatch([], nestedParentOwner, () => [], {} as any);
+const nestedParentHooks = {} as any;
+installContainerRenderPatch([], nestedParentOwner, () => [], nestedParentHooks);
 installContainerRenderPatch([], nestedChildOwner, () => [], {} as any);
 releaseContainerRenderPatch(nestedChildOwner);
-const containerOwners = (globalThis as any)[Symbol.for("pi-claudify:global-render-state")]?.owners as Map<object, unknown>;
-assert.equal(containerOwners.has(nestedParentOwner), true, "child container teardown preserves the parent owner");
+assert.equal(testedPiPatchBroker.active("container-render"), nestedParentHooks, "child container teardown preserves the parent owner");
 releaseContainerRenderPatch(nestedParentOwner);
 installToolFallbackSanitization(nestedParentOwner);
 installToolFallbackSanitization(nestedChildOwner);
 releaseToolFallbackSanitization(nestedChildOwner);
-const fallbackRegistry = (ToolExecutionComponent.prototype as any)[Symbol.for("pi-claudify:patched-tool-fallback-sanitize")];
-assert.equal(fallbackRegistry.owners.has(nestedParentOwner), true, "child fallback-sanitizer teardown preserves the parent owner");
+assert.equal(testedPiPatchBroker.active("tool-fallback-sanitizer"), true, "child fallback-sanitizer teardown preserves the parent owner");
 releaseToolFallbackSanitization(nestedParentOwner);
 
 assert.equal(classifyToolOwner({ sourceInfo: { source: "builtin", path: "<builtin:edit>" } }), "builtin");
@@ -119,6 +121,13 @@ const absentOwner = new ToolRegistrationCoordinator<any>(
 );
 absentOwner.add({ name: "new_tool" });
 assert.deepEqual(absentRegistered, ["new_tool"], "factory registration may add a tool name that is genuinely absent");
+const presentationOnly = new ToolRegistrationCoordinator<any>(
+	{ registerTool: () => { throw new Error("presentation-only adapters must not register execution"); }, getAllTools: () => [] },
+	{ skipped: new Set() },
+);
+const presentationCall = () => new Text("presentation only", 0, 0);
+presentationOnly.addPresentation({ name: "read", renderCall: presentationCall });
+assert.equal([...presentationOnly.presentationAdapters()][0]?.renderCall, presentationCall, "presentation adapters can be installed without executable definitions");
 let deferredRegistryReady = false;
 const deferredRegistered: string[] = [];
 const deferredAbsent = new ToolRegistrationCoordinator<any>(
@@ -210,6 +219,18 @@ assert.equal(mcpOriginalName("plane_get_me"), "get_me");
 assert.equal(genericToolLabel("plane_get_me"), "MCP");
 resetToolDiscovery();
 assert.equal(isMcpToolName("plane_get_me"), false, "session reset bounds discovered MCP state");
+releaseToolDiscovery();
+const discoveryParent = {};
+const discoveryChild = {};
+resetToolDiscovery(discoveryParent);
+noteMcpTool({ name: "parent_lookup", label: "MCP: lookup" }, discoveryParent);
+resetToolDiscovery(discoveryChild);
+noteMcpTool({ name: "child_search", label: "MCP: search" }, discoveryChild);
+assert.equal(isMcpToolName("parent_lookup"), true, "active parent discovery owns process-global presentation metadata");
+assert.equal(isMcpToolName("child_search"), false, "nested discovery cannot replace parent metadata");
+releaseToolDiscovery(discoveryChild);
+assert.equal(isMcpToolName("parent_lookup"), true, "nested discovery teardown preserves parent metadata");
+releaseToolDiscovery(discoveryParent);
 
 let polarity: "dark" | "light" = "dark";
 let liveDiffColors = { fgAdd: "dark-add", fgDel: "dark-del", fgCtx: "dark-ctx" };

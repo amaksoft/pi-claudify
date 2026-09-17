@@ -11,6 +11,7 @@ try {
 	writeFileSync(join(root, ".pi", "settings.json"), JSON.stringify({ compatibility: { enabled: false } }));
 
 	const { default: claudify } = await import("../extensions/index.ts");
+	const { testedPiPatchBroker } = await import("../extensions/adapters/tested-pi/patch-broker.ts");
 	const registrations = { tools: [] as string[], commands: [] as string[], events: [] as string[] };
 	const pi = {
 		registerTool(definition: any) { registrations.tools.push(String(definition?.name)); },
@@ -23,6 +24,7 @@ try {
 	assert.deepEqual(registrations.tools, [], "global compatibility off registers no tool definitions");
 	assert.deepEqual(registrations.commands, [], "global compatibility off registers no commands");
 	assert.deepEqual(registrations.events, [], "global compatibility off registers no event handlers");
+	assert.deepEqual(testedPiPatchBroker.inspect(), { owners: 0, retiring: 0, surfaces: 0 }, "global compatibility off installs no broker bindings");
 } finally {
 	if (previousHome === undefined) delete process.env.HOME;
 	else process.env.HOME = previousHome;

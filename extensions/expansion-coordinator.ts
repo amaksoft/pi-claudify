@@ -1,4 +1,5 @@
 import { matchesKey } from "@earendil-works/pi-tui";
+import { testedPiPatchBroker } from "./adapters/tested-pi/patch-broker.ts";
 
 interface ExpandableMember {
 	expanded?: boolean;
@@ -10,17 +11,14 @@ interface PointerExpansionState {
 	epoch: PointerExpansionEpoch;
 	members: Map<ExpandableMember, PointerExpansionEpoch>;
 }
-const STATE_KEY = Symbol.for("pi-claudify:pointer-expansion-owners");
-const DEFAULT_OWNER = Symbol.for("pi-claudify:pointer-expansion-default-owner");
-function states(): Map<object | symbol, PointerExpansionState> {
-	const root = globalThis as Record<PropertyKey, unknown>;
-	return (root[STATE_KEY] ??= new Map<object | symbol, PointerExpansionState>()) as Map<object | symbol, PointerExpansionState>;
-}
-function ownerKey(owner?: object): object | symbol { return owner ?? DEFAULT_OWNER; }
-function state(owner?: object): PointerExpansionState {
-	const key = ownerKey(owner);
-	let value = states().get(key);
-	if (!value) { value = { epoch: 0, members: new Map() }; states().set(key, value); }
+const SURFACE = "pointer-expansion";
+const DEFAULT_OWNER = {};
+function state(owner: object = DEFAULT_OWNER): PointerExpansionState {
+	let value = testedPiPatchBroker.owned<PointerExpansionState>(owner, SURFACE);
+	if (!value) {
+		value = { epoch: 0, members: new Map() };
+		testedPiPatchBroker.bind(owner, SURFACE, value);
+	}
 	return value;
 }
 
@@ -46,10 +44,11 @@ export function markPointerExpandedMembers(
 
 export function clearPointerExpandedMembers(owner?: object): void {
 	if (owner !== undefined) { beginPointerExpansionEpoch(owner); return; }
-	if (states().size === 0) { beginPointerExpansionEpoch(); return; }
-	for (const current of states().values()) { current.epoch++; current.members.clear(); }
+	const values = testedPiPatchBroker.values<PointerExpansionState>(SURFACE);
+	if (values.length === 0) { beginPointerExpansionEpoch(); return; }
+	for (const current of values) { current.epoch++; current.members.clear(); }
 }
-export function releasePointerExpansionOwner(owner: object): void { states().delete(owner); }
+export function releasePointerExpansionOwner(owner: object): void { testedPiPatchBroker.releaseSurface(owner, SURFACE); }
 
 function collapseState(current: PointerExpansionState, expected: PointerExpansionEpoch): boolean {
 	if (expected !== current.epoch) return false;
@@ -68,7 +67,7 @@ function collapseState(current: PointerExpansionState, expected: PointerExpansio
 
 export function collapsePointerExpandedMembers(epoch?: PointerExpansionEpoch, owner?: object): boolean {
 	if (owner === undefined && epoch === undefined) {
-		for (const current of states().values()) if (collapseState(current, current.epoch)) return true;
+		for (const current of testedPiPatchBroker.values<PointerExpansionState>(SURFACE)) if (collapseState(current, current.epoch)) return true;
 		return false;
 	}
 	const current = state(owner);

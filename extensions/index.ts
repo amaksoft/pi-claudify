@@ -17,6 +17,7 @@ import {
 import {
 	Box,
 	Container,
+	Loader,
 	Markdown,
 	Text,
 	truncateToWidth,
@@ -30,6 +31,10 @@ import * as Diff from "diff";
 // the BundledLanguage type is still referenced directly in this file.
 import type { BundledLanguage } from "shiki";
 
+import { AdditiveToolsController } from "./adapters/additive-tools.ts";
+import { activatePortablePi } from "./adapters/public-pi.ts";
+import { activateTestedPiRuntime } from "./adapters/tested-pi/adapter.ts";
+import { probeTestedPiCapabilities } from "./adapters/tested-pi/probes.ts";
 import { registerBanner } from "./banner.ts";
 import { CLAUDE_PALETTE } from "./claude-palette.ts";
 import { effectiveAgentDir, forwardedToolContract, hostToolSettings, skippedToolOverrides } from "./builtin-contracts.ts";
@@ -74,7 +79,6 @@ import {
 	wrapMarkedLine as wrapToolMarkedLine,
 } from "./host/tool-text.ts";
 import { applyUserMessageBox as applyUserMessageBoxWithRuntime, patchUserMessageRenderer, releaseUserMessageRenderer, type UserMessageBoxMode, type UserMessagePatchRuntime } from "./host/user-message-patch.ts";
-import { releaseOwnedState, sharedState } from "./host/shared-state.ts";
 import {
 	genericToolLabel,
 	humanizeToolName,
@@ -84,6 +88,7 @@ import {
 	mcpOriginalName,
 	mcpToolServer,
 	noteMcpTool,
+	releaseToolDiscovery,
 	resetToolDiscovery,
 	shouldUseGenericToolRenderer,
 } from "./host/tool-discovery.ts";
@@ -93,7 +98,10 @@ import {
 	installToolCacheInvalidation,
 	installToolFallbackSanitization,
 	installToolRowLayout,
+	markToolComponentPatchesRetiring,
+	releaseReadImageExpansion,
 	releaseToolFallbackSanitization as releaseToolFallbackSanitizationHost,
+	releaseToolRowLayout,
 } from "./host/tool-component-patches.ts";
 import { installToolPresentations, installToolRendererPatch, markToolRendererPatchRetiring, releaseToolRendererPatch } from "./host/tool-renderer-patch.ts";
 import { applyAccentOverride as applyAccentOverrideHost } from "./host/theme-accent.ts";
@@ -129,7 +137,12 @@ import {
 import { applyPromptPointer, registerPromptPointer } from "./prompt-editor.ts";
 import { resolveSurfaceColorSource } from "./presentation-profile.ts";
 import { registerSessionMetrics } from "./session-metrics.ts";
+import { buildActivationPlan } from "./runtime/activation-plan.ts";
+import { detectHostDescriptor, parseProfilePreference } from "./runtime/capabilities.ts";
+import type { ActivationPlan } from "./runtime/contracts.ts";
+import { RuntimeHandle } from "./runtime/runtime-handle.ts";
 import { DEFAULT_DIFF_COLLAPSED_LINES, DEFAULT_EXPANDED_PREVIEW_MAX_LINES, getSettingsRevision, readSettings } from "./settings.ts";
+import registerSpinner from "./spinner.ts";
 import { sanitizeToolContent, sanitizeToolOutput, sanitizeToolText, WRAP_MARK } from "./terminal-sanitize.ts";
 import { languageForPath as lang } from "./domain/language.ts";
 import { linkedPath, shortPath } from "./domain/path-links.ts";
@@ -148,7 +161,6 @@ import {
 	ASK_USER_QUESTION_TOOL_NAME,
 	BUILTIN_COMPATIBILITY_TOOL_NAMES,
 	CLAUDIFY_REGISTERED_TOOL_NAMES,
-	CRON_COMPATIBILITY_TOOL_NAMES,
 	isBuiltinCompatibilityToolName,
 	parseCompatibilityConfig,
 	resolveCompatibilityFeatureEnabled,
@@ -222,8 +234,6 @@ import { createToolChrome } from "./render/tool-chrome.ts";
 import { selectVisualItems, selectVisualPreview, widthAwareText, type VisualPreviewMode } from "./visual-preview.ts";
 import { computeAggregateEditDiff, computeLocalizedEditDiffs } from "./tools/edit-preview.ts";
 import { registerBuiltinTools } from "./tools/register-builtins.ts";
-import { registerAskUserQuestionTool } from "./tools/ask-user-question.ts";
-import { CronScheduler, installCronLifecycle, registerCronTools } from "./tools/cron-tools.ts";
 import { renderApplyPatchCall as renderApplyPatchCallWithRuntime, renderApplyPatchResult as renderApplyPatchResultWithRuntime, type ApplyPatchRuntime } from "./tools/apply-patch-tool.ts";
 import { renderGenericToolCall as renderGenericCall, renderGenericToolResult as renderGenericResult, type GenericToolRuntime } from "./tools/generic-tool.ts";
 import { mcpServerForComponent, mcpServerName, renderMcpToolResult as renderMcpResult } from "./tools/mcp-tool.ts";
@@ -518,11 +528,12 @@ export function releaseToolFallbackSanitization(owner?: object): void {
 	releaseToolFallbackSanitizationHost(owner);
 }
 function patchToolRenderCacheInvalidation(): void { installToolCacheInvalidation(clearToolRenderCache); }
-function patchReadImageExpansion(): void {
-	installReadImageExpansion(clearToolRenderCache, () => !toolPresentationSkipped("read"));
+function patchReadImageExpansion(owner: object): void {
+	installReadImageExpansion(owner, clearToolRenderCache, () => !toolPresentationSkipped("read"));
 }
-function patchToolRowIndent(): void {
+function patchToolRowIndent(owner: object): void {
 	installToolRowLayout(
+		owner,
 		() => { syncToolBackgroundMode(); return toolBackgroundMode; },
 		() => settingsFeatureEnabled(readSettings().values, "toolBackground"),
 	);
@@ -1021,14 +1032,15 @@ function renderOpenAiToolResult(name: string, result: any, expanded: boolean, is
 // Extension
 // ===========================================================================
 
-export default function (pi: ExtensionAPI): void {
-	// Compatibility control: read once per extension generation (matches the
-	// existing "restart/reload to take effect" contract for other structural
-	// wiring, e.g. skipToolOverrides). Global `enabled: false` makes every
-	// featureEnabled(...) call below resolve to false, including the
-	// `/claudify` command and (independently, in spinner.ts) the spinner.
-	const compatConfig: CompatibilityConfig | undefined = parseCompatibilityConfig(readSettings().values.compatibility);
-	const featureEnabled = (id: CompatibilityFeatureId): boolean => resolveCompatibilityFeatureEnabled(compatConfig, id);
+function activateCurrentTestedPi(
+	pi: ExtensionAPI,
+	runtime: RuntimeHandle,
+	activationPlan: ActivationPlan,
+	compatConfig: CompatibilityConfig | undefined,
+): void {
+	// Compatibility and host capabilities are resolved once per extension
+	// generation. Structural changes take effect on restart or /reload.
+	const featureEnabled = (id: CompatibilityFeatureId): boolean => activationPlan.featureEnabled(id);
 	const messageLifecycle = new MessageLifecycle();
 	configureMessageComponents({
 		Markdown,
@@ -1039,44 +1051,41 @@ export default function (pi: ExtensionAPI): void {
 		sanitizeRenderedLines: sanitizeRenderedTextBlockLines,
 		normalizeLeadingCheck: normalizeLeadingCheckGlyph,
 	});
-	const fallbackSanitizerOwner = {};
-	const toolRendererOwner = {};
-	const globalRenderOwner = {};
-	const pointerExpansionOwner = {};
-	const messagePatchOwner = {};
+	// Every host binding installed by this factory shares one generation owner.
+	// Individual broker surfaces are released independently, while retirement
+	// fences the complete generation in one atomic owner transition.
+	const fallbackSanitizerOwner = runtime.owner;
+	const toolRendererOwner = runtime.owner;
+	const globalRenderOwner = runtime.owner;
+	const pointerExpansionOwner = runtime.owner;
+	const messagePatchOwner = runtime.owner;
+	if (featureEnabled("spinner")) registerSpinner(pi, runtime.owner);
 	if (featureEnabled("toolPresentation")) {
 		patchToolFallbackSanitization(fallbackSanitizerOwner);
 		patchToolRenderCacheInvalidation();
 	} else {
 		releaseToolFallbackSanitization(fallbackSanitizerOwner);
 	}
-	patchReadImageExpansion();
+	if (featureEnabled("toolPresentation") && !presentationOverrideSkipped("read")) patchReadImageExpansion(fallbackSanitizerOwner);
 	if (featureEnabled("toolBackground") || featureEnabled("inspectionGroups") || featureEnabled("bashStacking")) patchGlobalToolBorders(globalRenderOwner, pointerExpansionOwner);
 	else releaseGlobalToolBorders(globalRenderOwner);
-	// Each patch* call below monkey-patches a shared component prototype at
-	// most once per process (see host/patch-once.ts): the prototype method is
-	// never reverted once installed. So disabled features are NOT gated by
-	// skipping the call — that would leave a stale wrapper from an earlier
-	// (enabled) generation permanently installed across a later /reload that
-	// disables the feature. Instead every generation always refreshes the
-	// live `enabled()`/normalize callback the wrapper reads on every render,
-	// so a disabled feature reverts to native output immediately, even for a
-	// prototype patched by a previous generation.
-	patchCustomMessageRenderer(
+	// A fresh disabled feature installs no private wrapper. Stable wrappers from
+	// prior generations remain inert because ownerless dispatch now delegates to
+	// the pristine host method.
+	if (featureEnabled("customMessages")) patchCustomMessageRenderer(
 		CustomMessageComponent,
 		CUSTOM_MESSAGE_PATCH_FLAG,
 		messagePatchOwner,
-		(line) => (featureEnabled("customMessages") ? normalizeLeadingCheckGlyph(line) : line),
+		normalizeLeadingCheckGlyph,
 	);
-	patchCompactionSummaryRenderer(
+	if (featureEnabled("compactionSummary")) patchCompactionSummaryRenderer(
 		CompactionSummaryMessageComponent,
 		COMPACTION_MESSAGE_PATCH_FLAG,
 		messagePatchOwner,
 		() => `${getStatusGutterForeground()}${CLAUDE_RESULT_PREFIX}${FG_DEFAULT}Compacted ${themeOrchestrator.workedLineForeground()}(ctrl+o to see full summary)${RESET}`,
-		() => featureEnabled("compactionSummary"),
 	);
-	patchUserMessageRenderer(UserMessageComponent, USER_MESSAGE_PATCH_FLAG, messagePatchOwner, userMessagePatchRuntime());
-	patchAssistantMessageRenderer(AssistantMessageComponent, ASSISTANT_PATCH_FLAG, messagePatchOwner, {
+	if (featureEnabled("userMessages")) patchUserMessageRenderer(UserMessageComponent, USER_MESSAGE_PATCH_FLAG, messagePatchOwner, userMessagePatchRuntime());
+	if (featureEnabled("assistantMessages")) patchAssistantMessageRenderer(AssistantMessageComponent, ASSISTANT_PATCH_FLAG, messagePatchOwner, {
 		workedStartKey: WORKED_START_KEY,
 		workedDurationKey: WORKED_DURATION_KEY,
 		currentAgentStart: messageLifecycle.currentAgentStart,
@@ -1085,14 +1094,10 @@ export default function (pi: ExtensionAPI): void {
 			: new DottedParagraph(text, markdownTheme),
 		hasWorkedDuration: hasWorkedDurationLine,
 		workedDurationText,
-		enabled: () => featureEnabled("assistantMessages"),
+		enabled: () => true,
 	});
-	patchToolRowIndent();
-	// toolPresentation is likewise always installed and gated live — see
-	// toolPresentationSkipped below, threaded as this patch's presentationSkipped
-	// hook (distinct from the plain presentationOverrideSkipped used for
-	// container borders/inspection grouping, which toolPresentation must not affect).
-	patchToolExecutionRenderers(toolRendererOwner);
+	if (featureEnabled("toolBackground")) patchToolRowIndent(fallbackSanitizerOwner);
+	if (featureEnabled("toolPresentation")) patchToolExecutionRenderers(toolRendererOwner);
 	if (featureEnabled("footer")) patchEditorBorderColor();
 	if (featureEnabled("diffPresentation")) applyDiffPalette();
 	if (featureEnabled("assistantMessages")) messageLifecycle.register(pi, {
@@ -1174,28 +1179,37 @@ export default function (pi: ExtensionAPI): void {
 	// apply_patch has no execution override to skip — its own gate is enforced
 	// entirely through `presentationOverrideSkipped` inside the tool-renderer
 	// patch instead.
-	const compatibilityControlledTools = [
-		...BUILTIN_COMPATIBILITY_TOOL_NAMES.filter((name) => name !== "apply_patch"),
-		...CRON_COMPATIBILITY_TOOL_NAMES,
-		ASK_USER_QUESTION_TOOL_NAME,
-	];
-	const compatibilityDisabledTools = compatibilityControlledTools.filter((name) => presentationOverrideSkipped(name));
-	const effectiveSkippedOverrides = new Set<string>([...skippedOverrides, ...compatibilityDisabledTools]);
+	const disabledBuiltinTools = BUILTIN_COMPATIBILITY_TOOL_NAMES
+		.filter((name) => name !== "apply_patch")
+		.filter((name) => presentationOverrideSkipped(name));
 	type RegisteredTool = Parameters<ExtensionAPI["registerTool"]>[0];
-	const toolRegistration = new ToolRegistrationCoordinator<RegisteredTool>(
-		{
-			registerTool: (definition) => pi.registerTool(definition),
-			getAllTools: () => (pi as any).getAllTools?.(),
-		},
-		{
-			skipped: effectiveSkippedOverrides,
-			onDiagnostic: (key, error) => debugDiagnostic(key, error),
-		},
+	const registrationHost = {
+		registerTool: (definition: RegisteredTool) => pi.registerTool(definition),
+		getAllTools: () => (pi as any).getAllTools?.(),
+	};
+	const registrationOptions = (skipped: ReadonlySet<string>) => ({
+		skipped,
+		onDiagnostic: (key: string, error: unknown) => debugDiagnostic(key, error),
+	});
+	const builtinRegistration = new ToolRegistrationCoordinator<RegisteredTool>(
+		registrationHost,
+		registrationOptions(new Set<string>([...skippedOverrides, ...disabledBuiltinTools])),
 	);
-	const registerBuiltinOverride = (definition: RegisteredTool): void => toolRegistration.add(definition);
-	const installDeferredBuiltinOverrides = (ctx?: any): void => toolRegistration.installDeferred(
-		ctx?.hasUI ? (message, kind) => ctx.ui?.notify?.(message, kind) : undefined,
-	);
+	const registerBuiltinOverride = (definition: RegisteredTool): void => builtinRegistration.add(definition);
+	const additiveTools = new AdditiveToolsController(pi, runtime, activationPlan, {
+		cwd,
+		compatibility: compatConfig,
+		onDiagnostic: (key, error) => debugDiagnostic(key, error),
+	});
+	const presentationAdapters = () => [
+		...builtinRegistration.presentationAdapters(),
+		...additiveTools.presentationAdapters(),
+	];
+	const installDeferredRegistrations = (ctx?: any): void => {
+		const notify = ctx?.hasUI ? (message: string, kind: "warning") => ctx.ui?.notify?.(message, kind) : undefined;
+		builtinRegistration.installDeferred(notify);
+		additiveTools.installDeferred(ctx);
+	};
 
 	const getAgentDirCapability: unknown = (PiCodingAgent as any).getAgentDir;
 	const hostSettingsContext = (ctx: any) => {
@@ -1208,21 +1222,8 @@ export default function (pi: ExtensionAPI): void {
 		return { agentDir: effectiveAgentDir(getAgentDirCapability), projectTrusted };
 	};
 
-	if (featureEnabled("scheduledTasks") && typeof (pi as any).sendUserMessage === "function") {
-		const scheduler = new CronScheduler({
-			cwd,
-			sendUserMessage: (prompt) => (pi as any).sendUserMessage(prompt),
-			onError: (error) => debugDiagnostic("cron-scheduler", error),
-		});
-		registerCronTools(pi, scheduler, registerBuiltinOverride);
-		installCronLifecycle(pi, scheduler);
-	}
-	let askUserQuestionQueued = false;
 	const registerAskUserQuestionForContext = (ctx: any): void => {
-		if (askUserQuestionQueued || !featureEnabled("askUserQuestion") || ctx?.mode !== "tui" || !ctx?.hasUI) return;
-		askUserQuestionQueued = true;
-		registerAskUserQuestionTool(pi, registerBuiltinOverride);
-		installCompatibleToolPresentations(toolRendererOwner, toolRegistration.presentationAdapters());
+		if (additiveTools.registerAskForContext(ctx)) installCompatibleToolPresentations(toolRendererOwner, presentationAdapters());
 	};
 
 	registerBuiltinTools({
@@ -1294,7 +1295,7 @@ export default function (pi: ExtensionAPI): void {
 	// retain their execute/schema/policy while using Claudify's renderer. Always
 	// installed (like patchToolExecutionRenderers above) and gated live through
 	// toolPresentationSkipped, not by skipping this call.
-	installCompatibleToolPresentations(toolRendererOwner, toolRegistration.presentationAdapters());
+	installCompatibleToolPresentations(toolRendererOwner, presentationAdapters());
 
 	const discoverPresentationTools = (): void => {
 		let allTools: unknown[] = [];
@@ -1304,15 +1305,16 @@ export default function (pi: ExtensionAPI): void {
 			debugDiagnostic("presentation-tool-discovery", error);
 			return;
 		}
-		resetToolDiscovery();
+		resetToolDiscovery(runtime.owner);
 		for (const tool of allTools) {
 			// Public ToolInfo is metadata-only. Record provable MCP identity for
 			// presentation, but never replace execution from private fields.
-			if (isMcpToolCandidate(tool)) noteMcpTool(tool);
+			if (isMcpToolCandidate(tool)) noteMcpTool(tool, runtime.owner);
 		}
 	};
 
 	if (compatConfig?.enabled !== false) registerSessionEvents(pi, {
+		isCurrent: () => runtime.isCurrent(),
 		onSessionStart: (ctx) => {
 			registerAskUserQuestionForContext(ctx);
 			if (!ctx.hasUI) return;
@@ -1329,20 +1331,58 @@ export default function (pi: ExtensionAPI): void {
 			applyThemePaletteIfNeeded(ctx.ui.theme);
 			applyHiddenThinkingLabel(ctx);
 		},
-		installDeferred: installDeferredBuiltinOverrides,
+		installDeferred: installDeferredRegistrations,
 		discoverTools: discoverPresentationTools,
 		onTurnEnd: () => { blinkScheduler.clear(); clearHighlightCache(); },
-		onShutdown: () => {
+		onShutdown: (reason) => {
+			runtime.beginRetirement(reason);
 			markContainerRenderPatchRetiring(globalRenderOwner);
 			markToolRendererPatchRetiring(toolRendererOwner);
+			markToolComponentPatchesRetiring(fallbackSanitizerOwner);
 			releaseAssistantMessageRenderer(messagePatchOwner);
 			releaseUserMessageRenderer(messagePatchOwner);
 			releaseMessageRenderers(messagePatchOwner);
 			deferGenerationRelease(() => releaseGlobalToolBorders(globalRenderOwner));
 			deferGenerationRelease(() => releaseToolExecutionRenderers(toolRendererOwner));
-			deferGenerationRelease(() => releaseToolFallbackSanitization(fallbackSanitizerOwner));
+			deferGenerationRelease(() => {
+				releaseToolDiscovery(runtime.owner);
+				releaseToolFallbackSanitization(fallbackSanitizerOwner);
+				releaseReadImageExpansion(fallbackSanitizerOwner);
+				releaseToolRowLayout(fallbackSanitizerOwner);
+			});
 			blinkScheduler.clear();
 			clearHighlightCache();
+			void runtime.dispose((error) => debugDiagnostic("runtime-dispose", error));
 		},
 	});
+}
+
+export default function (pi: ExtensionAPI): void {
+	const compatConfig: CompatibilityConfig | undefined = parseCompatibilityConfig(readSettings().values.compatibility);
+	const probes = probeTestedPiCapabilities({
+		ToolExecutionComponent,
+		Container,
+		AssistantMessageComponent,
+		UserMessageComponent,
+		CustomMessageComponent,
+		CompactionSummaryMessageComponent,
+		Loader,
+	});
+	const host = detectHostDescriptor({
+		piVersion: typeof (PiCodingAgent as any).VERSION === "string" ? (PiCodingAgent as any).VERSION : undefined,
+		profilePreference: parseProfilePreference(process.env.PI_CLAUDIFY_PROFILE),
+		preserveCurrentBehavior: true,
+		observedCapabilities: probes.capabilities,
+	});
+	const activationPlan = buildActivationPlan(host, compatConfig);
+	const runtime = new RuntimeHandle();
+	if (compatConfig?.enabled === false) {
+		runtime.activate();
+		return;
+	}
+	if (host.profile === "portable") {
+		activatePortablePi(pi, runtime, activationPlan, compatConfig, (key, error) => debugDiagnostic(key, error));
+		return;
+	}
+	activateTestedPiRuntime(runtime, () => activateCurrentTestedPi(pi, runtime, activationPlan, compatConfig));
 }

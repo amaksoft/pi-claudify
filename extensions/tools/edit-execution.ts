@@ -14,20 +14,13 @@ export interface EditExecutionDependencies {
 	summarizeDiff(added: number, removed: number): string;
 }
 
-/** Execute Pi's native edit and normalize its queue-owned provenance for reload. */
-export async function executeEditWithProvenance(
-	startupCwd: string,
-	toolCallId: string,
+export function normalizeEditResultProvenance(
 	params: any,
-	signal: AbortSignal | undefined,
-	onUpdate: any,
-	ctx: any,
+	result: any,
 	dependencies: EditExecutionDependencies,
-): Promise<any> {
-	const cwd = ctx?.cwd ?? startupCwd;
+): any {
 	const filePath = params.path ?? params.file_path ?? "";
 	const operations = getEditOperations(params);
-	const result: any = await createEditToolDefinition(cwd).execute(toolCallId, params, signal, onUpdate, ctx);
 	if (operations.length === 0) return result;
 	const { summary } = summarizeEditOperations(operations, dependencies.summarizeDiff);
 	const baseDetails = { ...((result.details ?? {}) as Record<string, unknown>) };
@@ -74,4 +67,19 @@ export async function executeEditWithProvenance(
 		language: languageForPath(filePath),
 	};
 	return result;
+}
+
+/** Execute Pi's native edit and normalize its queue-owned provenance for reload. */
+export async function executeEditWithProvenance(
+	startupCwd: string,
+	toolCallId: string,
+	params: any,
+	signal: AbortSignal | undefined,
+	onUpdate: any,
+	ctx: any,
+	dependencies: EditExecutionDependencies,
+): Promise<any> {
+	const cwd = ctx?.cwd ?? startupCwd;
+	const result: any = await createEditToolDefinition(cwd).execute(toolCallId, params, signal, onUpdate, ctx);
+	return normalizeEditResultProvenance(params, result, dependencies);
 }

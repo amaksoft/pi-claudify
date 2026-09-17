@@ -1,11 +1,9 @@
 import { Spacer, Text } from "@earendil-works/pi-tui";
+import { testedPiPatchBroker } from "../adapters/tested-pi/patch-broker.ts";
 import { patchMethodOnce } from "./patch-once.ts";
-import { sharedState } from "./shared-state.ts";
 
-const STATE_KEY = Symbol.for("pi-claudify:assistant-message-patch-state");
-interface AssistantPatchState { owners?: Map<object, AssistantMessagePatchRuntime> }
-function state(): AssistantPatchState { return sharedState(STATE_KEY, () => ({})); }
-function activeRuntime(): AssistantMessagePatchRuntime | undefined { return state().owners ? [...state().owners!.values()][0] : undefined; }
+const SURFACE = "assistant-message";
+function activeRuntime(): AssistantMessagePatchRuntime | undefined { return testedPiPatchBroker.active<AssistantMessagePatchRuntime>(SURFACE); }
 
 export interface AssistantMessagePatchRuntime {
 	workedStartKey: PropertyKey;
@@ -32,13 +30,11 @@ function isMarkdownComponent(value: unknown): boolean {
 }
 
 export function patchAssistantMessageRenderer(ComponentClass: any, flag: symbol, owner: object, runtime: AssistantMessagePatchRuntime): void {
-	const owners = (state().owners ??= new Map());
-	owners.delete(owner);
-	owners.set(owner, runtime);
+	testedPiPatchBroker.bind(owner, SURFACE, runtime);
 	patchMethodOnce(ComponentClass?.prototype, flag, "updateContent", (originalUpdateContent) =>
 		function patchedUpdateContent(this: any, message: any) {
-		const active = activeRuntime() ?? runtime;
-		if (!active.enabled()) return originalUpdateContent.call(this, message);
+		const active = activeRuntime();
+		if (!active?.enabled()) return originalUpdateContent.call(this, message);
 		if (!this[active.workedStartKey]) this[active.workedStartKey] = Date.now();
 		if (!message || !Array.isArray(message.content)) return originalUpdateContent.call(this, message);
 		originalUpdateContent.call(this, message);
@@ -64,4 +60,4 @@ export function patchAssistantMessageRenderer(ComponentClass: any, flag: symbol,
 	);
 }
 
-export function releaseAssistantMessageRenderer(owner: object): void { state().owners?.delete(owner); }
+export function releaseAssistantMessageRenderer(owner: object): void { testedPiPatchBroker.releaseSurface(owner, SURFACE); }

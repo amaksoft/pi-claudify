@@ -30,7 +30,14 @@ try {
 	run(tmux, ["send-keys", "-t", session, "/repro-nested-owner", "Enter"]);
 	await waitFor("nested owner result", () => existsSync(statePath));
 	const result = JSON.parse(readFileSync(statePath, "utf8"));
-	assert.deepEqual(result, { beforeNative: false, duringNative: false, afterNative: false }, "child extension teardown restores the still-running parent renderer");
+	assert.deepEqual(
+		{ beforeNative: result.beforeNative, duringNative: result.duringNative, afterNative: result.afterNative },
+		{ beforeNative: false, duringNative: false, afterNative: false },
+		"child extension teardown restores the still-running parent renderer",
+	);
+	assert.equal(result.ownersBefore, 1, "the package creates one broker owner for its generation");
+	assert.equal(result.ownersDuring, 2, "the nested generation has an independent broker owner");
+	assert.equal(result.ownersAfter, 1, "nested teardown releases its broker owner without leaking it");
 	console.log("real PTY nested owner-stack tests passed");
 } finally {
 	run(tmux, ["kill-session", "-t", session], true);
