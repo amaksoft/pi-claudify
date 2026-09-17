@@ -6,6 +6,10 @@ import { resolveSpinnerShimmer } from "./presentation-profile.ts";
 import { readSettings } from "./settings.ts";
 import { sanitizeToolContent } from "./terminal-sanitize.ts";
 
+// Structural compatibility controls are re-read by each extension generation.
+// The stable Loader wrapper below resolves its active hooks through global
+// state, so `/reload` can turn the feature into a native pass-through without
+// stacking another prototype patch.
 function spinnerFeatureEnabled(): boolean {
 	return resolveCompatibilityFeatureEnabled(parseCompatibilityConfig(readSettings().values.compatibility), "spinner");
 }
@@ -269,22 +273,34 @@ export function shimmerGlyphAnsi(elapsedMs: number): string {
 	return `${bold ? SHIMMER_BOLD : ""}${ansi}`;
 }
 
-// Shared with the extension closure below: the anchor timestamp of the active
-// spell (0 = inactive) and whether shimmer is enabled. updateDisplay (a Loader
-// prototype method) reads these; the extension writes them on turn boundaries.
-let _shimmerAnchorMs = 0;
-let _shimmerEnabled = false;
+interface ShimmerOwnerState { anchorMs: number; enabled: boolean }
+const SHIMMER_OWNERS_KEY = Symbol.for("pi-claudify:spinner-shimmer-owners");
+const DEFAULT_SHIMMER_OWNER = Symbol.for("pi-claudify:spinner-default-owner");
+function shimmerOwners(): Map<object | symbol, ShimmerOwnerState> {
+	const root = globalThis as Record<PropertyKey, unknown>;
+	return (root[SHIMMER_OWNERS_KEY] ??= new Map<object | symbol, ShimmerOwnerState>()) as Map<object | symbol, ShimmerOwnerState>;
+}
+function shimmerState(owner?: object): ShimmerOwnerState {
+	const key = owner ?? shimmerOwners().keys().next().value ?? DEFAULT_SHIMMER_OWNER;
+	let value = shimmerOwners().get(key);
+	if (!value) { value = { anchorMs: 0, enabled: false }; shimmerOwners().set(key, value); }
+	return value;
+}
+function isActiveShimmerOwner(owner: object): boolean { return shimmerOwners().keys().next().value === owner; }
 export function shimmerElapsedMs(): number {
-	return _shimmerAnchorMs > 0 ? Date.now() - _shimmerAnchorMs : -1;
+	const anchor = shimmerState().anchorMs;
+	return anchor > 0 ? Date.now() - anchor : -1;
 }
 function shimmerActive(): boolean {
-	return _shimmerEnabled && _shimmerAnchorMs > 0;
+	const current = shimmerState();
+	return current.enabled && current.anchorMs > 0;
 }
 
-function applyThemeColors(theme: any): void {
+function applyThemeColors(theme: any, owner?: object): void {
 	const settings = readSpinnerSettings();
 	const { adaptive, verbColor, statusColor } = settings;
-	_shimmerEnabled = settings.shimmer;
+	shimmerState(owner).enabled = settings.shimmer;
+	if (owner && !isActiveShimmerOwner(owner)) return;
 
 	// Respond to runtime toggles (themeAdaptive or spinner color key changes)
 	// without restarting pi.
@@ -720,7 +736,13 @@ export function activeThinkingProgressPhrase(thinkingStartedAt: number, now: num
 }
 
 export default function (pi: ExtensionAPI) {
+	// Disabled generations register no event handlers. The process-stable Loader
+	// wrapper installed above simultaneously has no active hooks and delegates to
+	// the captured native implementation.
 	if (!spinnerFeatureEnabled()) return;
+	shimmerOwners().delete(DEFAULT_SHIMMER_OWNER);
+	const shimmerOwner = {};
+	const ownerShimmer = shimmerState(shimmerOwner);
 	let agentStartTime = 0;
 	let turnStartTime = 0;
 	let refreshTimer: ReturnType<typeof setTimeout> | null = null;
@@ -778,14 +800,14 @@ export default function (pi: ExtensionAPI) {
 
 	function syncWorkingMessage(force = false): void {
 		// Anchor the shimmer to the same elapsed base buildWorkingMessage uses, so the
-		// glyph (read from _shimmerAnchorMs in updateDisplay) tracks the verb's escalation.
-		_shimmerAnchorMs = turnActive ? (agentStartTime || turnStartTime) : 0;
+		// glyph (read from ownerShimmer.anchorMs in updateDisplay) tracks the verb's escalation.
+		ownerShimmer.anchorMs = turnActive ? (agentStartTime || turnStartTime) : 0;
 		if (!activeCtx?.hasUI) return;
 		// Re-derive colors on every tick so Claudify screen color/status changes
 		// take effect within ~250 ms without waiting for the next pi event.
 		// applyThemeColors is identity-cached on (theme, spinnerKey, statusKey) so
 		// this is cheap when nothing changed.
-		applyThemeColors(activeCtx.ui?.theme);
+		applyThemeColors(activeCtx.ui?.theme, shimmerOwner);
 		const nextMessage = buildWorkingMessage();
 		if (!force && nextMessage === lastWorkingMessage) return;
 		lastWorkingMessage = nextMessage;
@@ -806,7 +828,7 @@ export default function (pi: ExtensionAPI) {
 		const elapsed = Date.now() - (agentStartTime || turnStartTime);
 		// The shimmer animates continuously (sweep ⇄ breathe), so refresh at the
 		// animation cadence for as long as it's active.
-		if (_shimmerEnabled && _shimmerAnchorMs > 0) {
+		if (ownerShimmer.enabled && ownerShimmer.anchorMs > 0) {
 			return SHIMMER_REFRESH_MS;
 		}
 		const tokenCount = tokenTracker.total();
@@ -892,7 +914,7 @@ export default function (pi: ExtensionAPI) {
 		stopRefreshLoop();
 		clearCompletionTimer();
 		clearThoughtStatusTimer();
-		_shimmerAnchorMs = 0;
+		ownerShimmer.anchorMs = 0;
 		agentStartTime = 0;
 		turnStartTime = 0;
 		thinkingStatus = null;
@@ -929,7 +951,7 @@ export default function (pi: ExtensionAPI) {
 		activeTurnId++;
 		turnActive = true;
 		activeCtx = ctx;
-		applyThemeColors(ctx.ui?.theme);
+		applyThemeColors(ctx.ui?.theme, shimmerOwner);
 		turnStartTime = Date.now();
 		if (!agentStartTime) agentStartTime = turnStartTime;
 		currentVerb = pickVerb();
@@ -946,7 +968,7 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("message_update", async (event, ctx) => {
 		activeCtx = ctx;
-		applyThemeColors(ctx.ui?.theme);
+		applyThemeColors(ctx.ui?.theme, shimmerOwner);
 		const evt = event.assistantMessageEvent;
 		let statusChanged = tokenTracker.update(evt);
 
@@ -976,9 +998,9 @@ export default function (pi: ExtensionAPI) {
 
 	pi.on("turn_end", async (_event, ctx) => {
 		turnActive = false;
-		_shimmerAnchorMs = 0; // the "✻ Worked for …" completion line is not shimmered
+		ownerShimmer.anchorMs = 0; // the "✻ Worked for …" completion line is not shimmered
 		activeCtx = ctx;
-		applyThemeColors(ctx.ui?.theme);
+		applyThemeColors(ctx.ui?.theme, shimmerOwner);
 		const turnId = activeTurnId;
 		const elapsed = Date.now() - (agentStartTime || turnStartTime);
 		stopRefreshLoop();
@@ -1021,5 +1043,6 @@ export default function (pi: ExtensionAPI) {
 		turnActive = false;
 		clearDisplay();
 		activeCtx = null;
+		shimmerOwners().delete(shimmerOwner);
 	});
 }

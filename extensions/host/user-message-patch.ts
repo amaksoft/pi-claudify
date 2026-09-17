@@ -30,8 +30,9 @@ export interface UserMessagePatchRuntime {
 }
 
 const STATE_KEY = Symbol.for("pi-claudify:user-message-patch-state");
-interface UserPatchState { runtime?: UserMessagePatchRuntime }
+interface UserPatchState { owners?: Map<object, UserMessagePatchRuntime> }
 function state(): UserPatchState { return sharedState(STATE_KEY, () => ({})); }
+function activeRuntime(): UserMessagePatchRuntime | undefined { return state().owners?.values().next().value; }
 
 function stripOsc133Zones(line: string): string {
 	return line.replace("\x1b]133;A\x07", "").replace("\x1b]133;B\x07", "").replace("\x1b]133;C\x07", "");
@@ -90,11 +91,13 @@ export function applyUserMessageBox(
 	});
 }
 
-export function patchUserMessageRenderer(ComponentClass: any, flag: symbol, runtime: UserMessagePatchRuntime): void {
-	state().runtime = runtime;
+export function patchUserMessageRenderer(ComponentClass: any, flag: symbol, owner: object, runtime: UserMessagePatchRuntime): void {
+	const owners = (state().owners ??= new Map());
+	owners.delete(owner);
+	owners.set(owner, runtime);
 	patchMethodOnce(ComponentClass?.prototype, flag, "render", (originalRender) =>
 		function patchedUserMessageRender(this: any, width: number) {
-		const active = state().runtime ?? runtime;
+		const active = activeRuntime() ?? runtime;
 		if (!active.enabled()) return originalRender.call(this, width);
 		for (const child of this.children ?? []) {
 			if (!child || typeof child.render !== "function") continue;
@@ -119,3 +122,5 @@ export function patchUserMessageRenderer(ComponentClass: any, flag: symbol, runt
 		},
 	);
 }
+
+export function releaseUserMessageRenderer(owner: object): void { state().owners?.delete(owner); }

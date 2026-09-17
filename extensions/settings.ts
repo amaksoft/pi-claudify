@@ -1,10 +1,12 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 
 import type { MessageSpacing, MessageStyle, WorkedVerbMode } from "./message-chrome.ts";
 import type { CompatibilityConfig } from "./domain/compatibility.ts";
 
 export const DEFAULT_EXPANDED_PREVIEW_MAX_LINES = 4_000;
+export const DEFAULT_DIFF_COLLAPSED_LINES = 10;
 
 export type SettingsFileStatus = "ok" | "missing" | "invalid";
 export type SpinnerVerbMode = "append" | "replace";
@@ -24,14 +26,8 @@ export interface SettingsFile {
 	bashSemanticDisplay?: boolean;
 	readOnlyToolGrouping?: boolean;
 	groupShellCommands?: boolean;
-	readOnlyToolGroupLimit?: number;
-	/**
-	 * Legacy exact-name tool skip list, kept for backward compatibility. A name
-	 * here behaves like `compatibility.tools[name] = false` unless a more
-	 * specific `compatibility.tools[name]` entry overrides it — see
-	 * extensions/domain/compatibility.ts.
-	 */
 	skipToolOverrides?: string[];
+	readOnlyToolGroupLimit?: number;
 	showTruncationHints?: boolean;
 	diffCollapsedLines?: number;
 	diffSyntaxHighlighting?: boolean;
@@ -68,6 +64,12 @@ export interface SettingsFile {
 	bannerMode?: "off" | "onboarding" | "always";
 	bannerFrame?: boolean;
 	promptPointer?: boolean;
+	/**
+	 * Backward-compatible feature/tool gating. Absent means current (fully
+	 * enabled) behavior — see README.md "Compatibility control" and
+	 * extensions/domain/compatibility.ts for the parsing/resolution rules.
+	 */
+	compatibility?: CompatibilityConfig;
 }
 
 export interface SettingsFileInfo {
@@ -155,9 +157,16 @@ export function getSettingsRevision(): number {
 	return settingsRevision;
 }
 
+function settingsHome(): string {
+	// An explicitly empty HOME is used by callers/tests to disable persistence.
+	// Native Windows normally omits HOME entirely and provides USERPROFILE.
+	if (process.env.HOME !== undefined) return process.env.HOME;
+	return process.env.USERPROFILE || homedir();
+}
+
 export function writeSettingsKey(key: string, value: unknown): SettingsWriteResult {
 	clearSettingsCache();
-	const home = process.env.HOME ?? "";
+	const home = settingsHome();
 	if (!home) return { success: false, backupCreated: false };
 	const dir = join(home, ".pi");
 	const path = join(dir, "settings.json");
@@ -204,7 +213,7 @@ export function writeSettingsKey(key: string, value: unknown): SettingsWriteResu
 }
 
 export function readSettings(): SettingsSnapshot {
-	const home = process.env.HOME ?? "";
+	const home = settingsHome();
 	const userPath = home ? join(home, ".pi", "settings.json") : "";
 	const now = Date.now();
 	if (settingsCache

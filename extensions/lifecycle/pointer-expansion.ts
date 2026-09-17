@@ -1,17 +1,17 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-import { clearPointerExpandedMembers, handlePointerExpansionInput } from "../expansion-coordinator.ts";
+import { clearPointerExpandedMembers, handlePointerExpansionInput, releasePointerExpansionOwner } from "../expansion-coordinator.ts";
 
 export interface PointerExpansionLifecycleOptions {
 	shouldWarnRestart(): boolean;
 	warning: string;
 }
 
-export function registerPointerExpansionLifecycle(pi: ExtensionAPI, options: PointerExpansionLifecycleOptions): void {
+export function registerPointerExpansionLifecycle(pi: ExtensionAPI, owner: object, options: PointerExpansionLifecycleOptions): void {
 	let removeInput: (() => void) | undefined;
 	let warningShown = false;
 	pi.on("session_start", async (_event, ctx) => {
-		clearPointerExpandedMembers();
+		clearPointerExpandedMembers(owner);
 		if (options.shouldWarnRestart() && !warningShown && ctx.hasUI) {
 			warningShown = true;
 			ctx.ui.notify(options.warning, "warning");
@@ -19,7 +19,7 @@ export function registerPointerExpansionLifecycle(pi: ExtensionAPI, options: Poi
 		try { removeInput?.(); } catch { /* stale host listener */ }
 		removeInput = typeof ctx.ui?.onTerminalInput === "function"
 			? ctx.ui.onTerminalInput((data) => {
-				const result = handlePointerExpansionInput(data);
+				const result = handlePointerExpansionInput(data, owner);
 				if (result) {
 					const ui = ctx.ui as any;
 					if (ui.getToolsExpanded?.() === false && typeof ui.setToolsExpanded === "function") {
@@ -34,8 +34,8 @@ export function registerPointerExpansionLifecycle(pi: ExtensionAPI, options: Poi
 	pi.on("session_shutdown", async () => {
 		try { removeInput?.(); } catch { /* host is already closing */ }
 		removeInput = undefined;
-		clearPointerExpandedMembers();
+		releasePointerExpansionOwner(owner);
 	});
-	pi.on("session_compact", async () => { clearPointerExpandedMembers(); });
-	pi.on("session_tree", async () => { clearPointerExpandedMembers(); });
+	pi.on("session_compact", async () => { clearPointerExpandedMembers(owner); });
+	pi.on("session_tree", async () => { clearPointerExpandedMembers(owner); });
 }

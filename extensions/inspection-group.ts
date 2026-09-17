@@ -172,6 +172,7 @@ export function reconcileInspectionGroups(
 	container: unknown,
 	policy: InspectionGroupPolicy,
 	metrics?: InspectionGroupReconciliationMetrics,
+	width?: number,
 ): void {
 	if (metrics) {
 		metrics.flattenedMembers = 0;
@@ -206,10 +207,11 @@ export function reconcileInspectionGroups(
 	const created: InspectionGroupComponent[] = [];
 	const next: unknown[] = [];
 	let run: unknown[] = [];
+	let transparentGaps: unknown[] = [];
 	const sameMembers = (current: unknown[], members: unknown[]): boolean =>
 		current.length === members.length && current.every((member, index) => member === members[index]);
 	const flush = () => {
-		if (!run.length) return;
+		if (!run.length) { if (transparentGaps.length) next.push(...transparentGaps); transparentGaps = []; return; }
 		const members = run;
 		run = [];
 		let reusable: InspectionGroupComponent | undefined;
@@ -226,19 +228,25 @@ export function reconcileInspectionGroups(
 		if (reusable) {
 			used.add(reusable);
 			next.push(reusable);
-			return;
+		} else {
+			const group = new InspectionGroupComponent(members, policy);
+			created.push(group);
+			next.push(group);
 		}
-		const group = new InspectionGroupComponent(members, policy);
-		created.push(group);
-		next.push(group);
+		if (transparentGaps.length) next.push(...transparentGaps);
+		transparentGaps = [];
 	};
 
 	try {
 		for (const child of flattened) {
 			if (policy.isEligible(child)) run.push(child);
 			else {
-				flush();
-				next.push(child);
+				let transparent = false;
+				if (run.length && typeof width === "number" && typeof (child as any)?.render === "function") {
+					try { transparent = (child as any).render(width).length === 0; } catch { /* visible boundary fallback */ }
+				}
+				if (transparent) transparentGaps.push(child);
+				else { flush(); next.push(child); }
 			}
 		}
 		flush();

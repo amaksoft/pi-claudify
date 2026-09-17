@@ -411,7 +411,7 @@ assert.deepEqual(
 	[0, 1],
 	"trailing trim consumes across child boundaries; bottom framing remains mapped",
 );
-assert.ok(conserve([1, 4], 0, 0, 1, 0) >= 1, "first region is non-empty, so the spacer maps into the block");
+assert.ok(anchorFramedHeights([1, 4], 0, 0, 1, 0)[0] >= 1, "first region is non-empty, so the spacer maps into the block");
 
 // --- A running command shows where it is, not just a count. --------------------
 // While streaming, the row used to read `Running... (N lines)` with no output.

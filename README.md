@@ -36,7 +36,7 @@ Most rows save as soon as they change. Pickers preview the highlighted choice li
 
 ### Compatibility controls
 
-Every Claudify integration has a config kill switch so it can coexist with other UX extensions. Set `compatibility.enabled` to `false` to disable the package completely, or use `compatibility.features` for individual surfaces. `compatibility.tools` accepts exact tool names, the families `mcp:*`, `openai:*`, and `generic:*`, plus a `default` fallback. Exact names take precedence over family and default entries. See `config/config.example.json` for the complete list.
+Every Claudify integration has a config kill switch so it can coexist with other UX extensions. Set `compatibility.enabled` to `false` to disable the package completely, or use `compatibility.features` for individual surfaces such as `spinner`, `footer`, `inspectionGroups`, `mouseInteraction`, or `assistantMessages`. `compatibility.tools` accepts exact tool names, the families `mcp:*`, `openai:*`, and `generic:*`, plus a `default` fallback. Exact names take precedence over family and default entries. See `config/config.example.json` for the complete list.
 
 A disabled tool is not registered, adapted, or grouped by Claudify; the host or external owner keeps execution and native presentation. The legacy `skipToolOverrides` list remains supported as an exact per-tool opt-out. Structural changes take full effect after `/reload`; restart Pi only when warned that an older generation installed a legacy host patch.
 

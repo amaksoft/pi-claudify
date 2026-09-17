@@ -6,6 +6,7 @@ import { Container, Text } from "@earendil-works/pi-tui";
 import claudify from "../../extensions/index.ts";
 
 const RESTORED_EDIT_KEY = Symbol.for("pi-claudify:test-restored-edit-row");
+const RESTORED_BASH_KEY = Symbol.for("pi-claudify:test-restored-bash-rows");
 const REQUEST_RENDER_KEY = Symbol.for("pi-claudify:test-restored-edit-request-render");
 
 function restoredEditRow(cwd: string): ToolExecutionComponent {
@@ -46,9 +47,27 @@ function restoredEditRow(cwd: string): ToolExecutionComponent {
 	return row;
 }
 
+function restoredBashRows(cwd: string): any[] {
+	const shared = globalThis as Record<PropertyKey, unknown>;
+	if (Array.isArray(shared[RESTORED_BASH_KEY])) return shared[RESTORED_BASH_KEY] as any[];
+	const rows = [1, 2].map((index) => {
+		const row = new ToolExecutionComponent(
+			"bash", `restored-bash-${index}`, { command: `printf restored-${index}` }, { showImages: false },
+			{ name: "bash", description: "Restored bash", parameters: {} as any, execute: async () => ({ content: [{ type: "text", text: `restored-${index}` }] }), renderCall: () => new Text(`native bash ${index}`, 0, 0), renderResult: () => new Text(`native result ${index}`, 0, 0) } as any,
+			{ requestRender() {}, previousLines: [] } as any, cwd,
+		);
+		row.markExecutionStarted(); row.setArgsComplete(); row.updateResult({ content: [{ type: "text", text: `restored-${index}` }], details: {}, isError: false } as any, false);
+		return row;
+	});
+	const zeroHeightAssistant = { render: () => [], invalidate() {} };
+	shared[RESTORED_BASH_KEY] = [rows[0], zeroHeightAssistant, rows[1]];
+	return shared[RESTORED_BASH_KEY] as any[];
+}
+
 export default function reloadPresentationFixture(pi: ExtensionAPI): void {
 	// The row predates this presentation generation, just like restored history.
 	const historicalEdit = restoredEditRow(process.cwd());
+	const historicalBash = restoredBashRows(process.cwd());
 	claudify(pi);
 	pi.on("session_start", async (_event, ctx) => {
 		if (!ctx.hasUI) return;
@@ -64,6 +83,7 @@ export default function reloadPresentationFixture(pi: ExtensionAPI): void {
 		const root = new Container();
 		root.addChild(new Text(`RELOAD_PRESENTATION_GENERATION_${generation}`, 0, 0));
 		root.addChild(historicalEdit);
+		for (const child of historicalBash) root.addChild(child as any);
 		ctx.ui.setWidget("claudify-reload-presentation-fixture", (tui) => {
 			(globalThis as Record<PropertyKey, unknown>)[REQUEST_RENDER_KEY] = () => tui.requestRender();
 			return root;

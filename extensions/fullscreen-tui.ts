@@ -77,10 +77,24 @@ function layoutFullscreenLines(
 	if (markerIndex === -1) return undefined;
 
 	const next = [...lines];
-	if (removeIdleStatusBefore(next, markerIndex, width)) markerIndex -= 2;
-
-	const transcript = next.slice(0, markerIndex);
-	const chrome = next.slice(markerIndex + 1);
+	let transcript: string[];
+	let preMarkerChrome: string[] = [];
+	let idleStart = -1;
+	for (let index = markerIndex; index >= 3; index--) {
+		if (next[index - 1] === "" && isFullWidthBlank(next[index - 2] ?? "", width) && isFullWidthBlank(next[index - 3] ?? "", width)) {
+			idleStart = index - 3;
+			break;
+		}
+	}
+	if (idleStart >= 0) {
+		transcript = next.slice(0, idleStart);
+		// Keep Pi's trailing empty spacer plus any extension widgets inserted
+		// before Claudify's marker pinned with editor/footer chrome.
+		preMarkerChrome = next.slice(idleStart + 2, markerIndex);
+	} else {
+		transcript = next.slice(0, markerIndex);
+	}
+	const chrome = [...preMarkerChrome, ...next.slice(markerIndex + 1)];
 	const terminalRows = Number.isFinite(rows) ? Math.max(0, Math.trunc(rows)) : 0;
 	const viewportRows = Math.max(0, terminalRows - chrome.length);
 	const maxScrollOffset = Math.max(0, transcript.length - viewportRows);

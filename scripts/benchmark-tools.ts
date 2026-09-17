@@ -1,5 +1,5 @@
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { trackedTempDir } from "./sandbox-home.ts";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { performance } from "node:perf_hooks";
 
@@ -97,7 +97,7 @@ function sleep(ms: number): Promise<void> {
 }
 
 function buildWorkspace(): string {
-	const root = mkdtempSync(join(tmpdir(), "pi-claudify-bench-"));
+	const root = trackedTempDir("pi-claudify-bench");
 	mkdirSync(join(root, "src"), { recursive: true });
 	mkdirSync(join(root, "docs"), { recursive: true });
 	mkdirSync(join(root, "tests"), { recursive: true });

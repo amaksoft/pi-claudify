@@ -1,6 +1,6 @@
+import { trackedTempDir } from "./sandbox-home.ts";
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import {
@@ -19,7 +19,7 @@ import { effectiveAgentDir, hostToolSettings } from "../extensions/builtin-contr
 
 initTheme("dark");
 
-const root = mkdtempSync(join(tmpdir(), "cc-contracts-"));
+const root = trackedTempDir("cc-contracts");
 const home = join(root, "home");
 const fallbackAgentDir = join(home, ".pi", "agent");
 const customAgentDir = join(root, "custom-agent");

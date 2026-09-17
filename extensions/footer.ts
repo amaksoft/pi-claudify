@@ -712,6 +712,8 @@ export class ClaudeFooterComponent {
 export function installClaudeFooter(ctx: any, pi?: any): void {
 	if (!ctx?.hasUI || typeof ctx.ui?.setFooter !== "function") return;
 	const settings = readSettings().values;
+	// `footer: false` reuses the existing "style !== claude" pass-through path,
+	// which hands the footer back to pi natively via `ctx.ui.setFooter(undefined)`.
 	if (!settingsFeatureEnabled(settings, "footer") || resolveFooterSettings(settings).style !== "claude") {
 		ctx.ui.setFooter(undefined);
 		return;

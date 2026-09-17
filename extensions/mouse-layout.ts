@@ -1,3 +1,5 @@
+import { settingsFeatureEnabled } from "./domain/compatibility.ts";
+import { readSettings } from "./settings.ts";
 import { debugDiagnostic } from "./debug.ts";
 
 export interface MouseLayoutEntry {
@@ -12,8 +14,12 @@ export interface MouseLayout {
 
 /** Best-effort bridge to pi-tui >=0.85's currently undocumented hit map. */
 export function installMouseLayout(component: unknown, layout: MouseLayout | undefined): void {
+	// `mouseInteraction: false` never installs the hit map at all — nothing to
+	// tear down, and keyboard (ctrl+o) expansion is untouched because it never
+	// goes through this property.
+	const enabled = settingsFeatureEnabled(readSettings().values, "mouseInteraction");
 	try {
-		(component as { mouseLayout?: MouseLayout }).mouseLayout = layout;
+		(component as { mouseLayout?: MouseLayout }).mouseLayout = enabled ? layout : undefined;
 	} catch (error) {
 		// Older/read-only host: keyboard expansion still works.
 		debugDiagnostic("mouse-layout-install", error);

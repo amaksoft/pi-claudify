@@ -19,7 +19,7 @@ import {
 	sanitizeWorkedVerbs,
 } from "./message-chrome.ts";
 import { resolveColorSource, resolveSpinnerShimmer, resolveSurfaceColorSource } from "./presentation-profile.ts";
-import { DEFAULT_EXPANDED_PREVIEW_MAX_LINES, readSettings, writeSettingsKey, type SettingsFile } from "./settings.ts";
+import { DEFAULT_DIFF_COLLAPSED_LINES, DEFAULT_EXPANDED_PREVIEW_MAX_LINES, readSettings, writeSettingsKey, type SettingsFile } from "./settings.ts";
 import {
 	MAX_CUSTOM_SPINNER_VERBS,
 	MAX_SPINNER_VERB_LENGTH,
@@ -330,7 +330,7 @@ const DIFF_ROWS: readonly ImmediateRowDefinition[] = [
 		// — so the larger edit budget is the more CC-faithful of the two, and a generic
 		// "diff" label would promise a control the user cannot feel on Update rows.
 		description: "Limits lines shown in collapsed Write diff previews.",
-		defaultValue: 10,
+		defaultValue: DEFAULT_DIFF_COLLAPSED_LINES,
 		min: 0,
 	},
 ];

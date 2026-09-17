@@ -1,6 +1,6 @@
+import { trackedTempDir } from "./sandbox-home.ts";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { visibleWidth } from "@earendil-works/pi-tui";
 
@@ -135,7 +135,7 @@ assert.ok(secondRender.some((line) => line.includes("second")));
 // Resource discovery keeps global/user sources, honors the configurable agent
 // root, and admits project settings (including exclusions) and skills only on
 // an affirmative trust decision.
-const sandbox = mkdtempSync(join(tmpdir(), "pi-claudify-banner-"));
+const sandbox = trackedTempDir("pi-claudify-banner");
 const oldHome = process.env.HOME;
 const oldAgentDir = process.env.PI_CODING_AGENT_DIR;
 try {
@@ -223,7 +223,7 @@ function bannerHarness(disposesReplacedHeaders: boolean, initialHeader?: any) {
 const oldMode = process.env.PI_CLAUDIFY_BANNER_MODE;
 const ownershipHome = process.env.HOME;
 try {
-	const legacyInstallHome = join(mkdtempSync(join(tmpdir(), "pi-claudify-banner-upgrade-")), "home");
+	const legacyInstallHome = join(trackedTempDir("pi-claudify-banner-upgrade"), "home");
 	mkdirSync(join(legacyInstallHome, ".pi"), { recursive: true });
 	writeFileSync(join(legacyInstallHome, ".pi", "settings.json"), JSON.stringify({ theme: "dark", quietStartup: true }));
 	process.env.HOME = legacyInstallHome;

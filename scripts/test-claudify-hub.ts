@@ -1,12 +1,12 @@
+import { trackedTempDir } from "./sandbox-home.ts";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { AssistantMessageComponent } from "@earendil-works/pi-coding-agent";
 import { initTheme, theme } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 
-const sandbox = mkdtempSync(join(tmpdir(), "claudify-sections-"));
+const sandbox = trackedTempDir("claudify-sections");
 const home = join(sandbox, "home");
 const cwd = join(sandbox, "project");
 const settingsPath = join(home, ".pi", "settings.json");
@@ -642,7 +642,7 @@ assert.ok(verbChanges.some(([key]) => key === "spinnerVerbMode"), "Spinner verb 
 assert.ok(verbChanges.some(([key]) => key === "workedVerbs"), "Worked verb list commits notify the host");
 assert.ok(verbChanges.some(([key]) => key === "workedVerbMode"), "Worked verb mode commits notify the host");
 
-const recoverySandbox = mkdtempSync(join(tmpdir(), "claudify-recovery-"));
+const recoverySandbox = trackedTempDir("claudify-recovery");
 const recoveryHome = join(recoverySandbox, "home");
 const recoverySettingsPath = join(recoveryHome, ".pi", "settings.json");
 mkdirSync(join(recoveryHome, ".pi"), { recursive: true });
@@ -680,7 +680,7 @@ try {
 	process.env.HOME = homeBeforeRecovery;
 }
 
-const capSandbox = mkdtempSync(join(tmpdir(), "claudify-cap-"));
+const capSandbox = trackedTempDir("claudify-cap");
 const capHome = join(capSandbox, "home");
 const capSettingsPath = join(capHome, ".pi", "settings.json");
 const cappedVerbs = Array.from({ length: MAX_CUSTOM_SPINNER_VERBS }, (_, index) => `Capped ${index}`);

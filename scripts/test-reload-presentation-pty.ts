@@ -1,6 +1,6 @@
+import { trackedTempDir } from "./sandbox-home.ts";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
@@ -10,7 +10,7 @@ const repo = resolve(here, "..");
 const tmux = process.env.TMUX_BIN ?? "tmux";
 const piBin = resolve(repo, "node_modules/.bin/pi");
 const fixture = resolve(here, "fixtures/reload-presentation-extension.ts");
-const sandbox = mkdtempSync(join(tmpdir(), "claudify-reload-presentation-"));
+const sandbox = trackedTempDir("claudify-reload-presentation");
 const home = join(sandbox, "home");
 const statePath = join(sandbox, "state.json");
 const stderrPath = join(sandbox, "pi.stderr.log");
@@ -48,15 +48,19 @@ const command = [
 
 try {
 	run(tmux, ["new-session", "-d", "-s", session, "-c", sandbox, "-x", "100", "-y", "40", command]);
-	await waitFor("initial adapted edit", () => capture().includes("RELOAD_PRESENTATION_GENERATION_1") && capture().includes("Update(reload-edit.ts)"));
+	await waitFor("initial adapted edit and historical Bash group", () => capture().includes("RELOAD_PRESENTATION_GENERATION_1") && capture().includes("Update(reload-edit.ts)") && capture().includes("Ran 2 shell commands"));
 	assert.doesNotMatch(capture(), /^edit reload-edit\.ts/m);
+	assert.doesNotMatch(capture(), /native bash [12]/, "historical Bash rows never use their native renderer");
 	run(tmux, ["send-keys", "-t", session, "/reload", "Enter"]);
-	await waitFor("reloaded historical edit", () => capture().includes("RELOAD_PRESENTATION_GENERATION_2")
+	await waitFor("reloaded historical edit and Bash group", () => capture().includes("RELOAD_PRESENTATION_GENERATION_2")
 		&& capture().includes("Update(reload-edit.ts)")
-		&& capture().includes("Added 1 line, removed 1 line"));
+		&& capture().includes("Added 1 line, removed 1 line")
+		&& capture().includes("Ran 2 shell commands"));
 	const reloaded = capture();
 	assert.doesNotMatch(reloaded, /^edit reload-edit\.ts/m, "historical edit never falls back to its native pre-adapter renderer");
 	assert.match(reloaded, /Added 1 line, removed 1 line/, "historical settled diff survives reload presentation rebinding");
+	assert.match(reloaded, /Ran 2 shell commands/, "zero-height assistant separators do not split historical Bash grouping after reload");
+	assert.doesNotMatch(reloaded, /native bash [12]/);
 	const ansiRows = captureAnsi().split("\n");
 	const header = ansiRows.find((line) => line.includes("Update(reload-edit.ts)")) ?? "";
 	const summary = ansiRows.find((line) => line.includes("Added 1 line, removed 1 line")) ?? "";

@@ -1,9 +1,9 @@
+import { trackedTempDir } from "./sandbox-home.ts";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-const root = mkdtempSync(join(tmpdir(), "pi-claudify-compat-control-"));
+const root = trackedTempDir("pi-claudify-compat-control");
 const previousHome = process.env.HOME;
 try {
 	process.env.HOME = root;

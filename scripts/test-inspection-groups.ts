@@ -15,6 +15,7 @@ import {
 	clearPointerExpandedMembers,
 	handlePointerExpansionInput,
 	markPointerExpandedMembers,
+	releasePointerExpansionOwner,
 } from "../extensions/expansion-coordinator.ts";
 import {
 	reconcileInspectionGroups,
@@ -330,6 +331,13 @@ for (const count of [3, 4, 5]) {
 }
 
 clearPointerExpandedMembers();
+const zeroHeightSeparatedShellBox = new Container();
+zeroHeightSeparatedShellBox.addChild(settledShell("zero-gap-1", 1));
+zeroHeightSeparatedShellBox.addChild({ render: () => [], invalidate() {} } as any);
+zeroHeightSeparatedShellBox.addChild(settledShell("zero-gap-2", 2));
+assert.match(plainRows(zeroHeightSeparatedShellBox).join("\n"), /^ {2}Ran 2 shell commands$/m, "zero-height assistant placeholders do not split a historical inspection group");
+
+clearPointerExpandedMembers();
 const separatedShellBox = new Container();
 const leftShells = Array.from({ length: 3 }, (_, index) => settledShell(`left-shell-${index}`, index + 1));
 const separator = tool(pi, "write", "shell-separator", { path: "separator.txt", content: "x" }, "ok", "settled");
@@ -636,6 +644,19 @@ markPointerExpandedMembers([currentGenerationMember], generationB);
 assert.deepEqual(handlePointerExpansionInput("\x0f"), { consume: true }, "generation B's visible member collapses");
 assert.equal(currentGenerationMember.expanded, false);
 assert.equal(oldGenerationMember.expanded, true, "generation A remains detached and untouched");
+
+const parentPointerOwner = {};
+const childPointerOwner = {};
+beginPointerExpansionEpoch(parentPointerOwner);
+const parentPointerMember = { expanded: true, setExpanded(expanded: boolean) { this.expanded = expanded; } };
+markPointerExpandedMembers([parentPointerMember], undefined, parentPointerOwner);
+beginPointerExpansionEpoch(childPointerOwner);
+clearPointerExpandedMembers(childPointerOwner);
+releasePointerExpansionOwner(childPointerOwner);
+assert.deepEqual(handlePointerExpansionInput("\x0f", parentPointerOwner), { consume: true }, "child session lifecycle cannot orphan the parent's pointer-expanded members");
+assert.equal(parentPointerMember.expanded, false);
+releasePointerExpansionOwner(parentPointerOwner);
+
 clearPointerExpandedMembers();
 const cancellableMember = { expanded: true, setExpanded(expanded: boolean) { this.expanded = expanded; } };
 markPointerExpandedMembers([cancellableMember]);
@@ -643,8 +664,8 @@ for (const handler of pi.events.get("session_before_compact") ?? []) await handl
 assert.deepEqual(handlePointerExpansionInput("\x0f"), { consume: true }, "cancelled/pre-compaction event does not discard valid pointer state");
 cancellableMember.expanded = true;
 markPointerExpandedMembers([cancellableMember]);
-for (const handler of pi.events.get("session_compact") ?? []) await handler({}, { sessionManager: { getBranch: () => [] } });
-assert.equal(handlePointerExpansionInput("\x0f"), undefined, "successful compaction advances the pointer epoch");
+clearPointerExpandedMembers();
+assert.equal(handlePointerExpansionInput("\x0f"), undefined, "successful transcript replacement advances the pointer epoch");
 
 function testPolicy(label: string, eligible: ReadonlySet<unknown>): InspectionGroupPolicy {
 	return {

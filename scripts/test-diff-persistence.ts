@@ -1,6 +1,6 @@
+import { trackedTempDir } from "./sandbox-home.ts";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
@@ -15,7 +15,7 @@ import {
 	writeDiffOmissionReason,
 } from "../extensions/write-snapshot.ts";
 
-const root = mkdtempSync(join(tmpdir(), "cc-diff-persist-"));
+const root = trackedTempDir("cc-diff-persist");
 const home = join(root, "home");
 mkdirSync(join(home, ".pi"), { recursive: true });
 process.env.HOME = home;

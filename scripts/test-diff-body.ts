@@ -1,6 +1,6 @@
+import { trackedTempDir } from "./sandbox-home.ts";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { initTheme } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
@@ -11,7 +11,7 @@ import { initTheme } from "../node_modules/@earendil-works/pi-coding-agent/dist/
 // default (Monokai) one, so a developer with either of those set renders other
 // token colors and the syntax-highlighting assertions go red. Pin both, then
 // import — a static import would be hoisted above these lines.
-const sandbox = mkdtempSync(join(tmpdir(), "cc-diff-"));
+const sandbox = trackedTempDir("cc-diff");
 process.env.HOME = sandbox;
 process.chdir(sandbox);
 process.env.DIFF_THEME = "monokai";

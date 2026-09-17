@@ -1,6 +1,6 @@
+import { trackedTempDir } from "./sandbox-home.ts";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { Theme } from "@earendil-works/pi-coding-agent";
@@ -9,7 +9,7 @@ import { initTheme, theme } from "../node_modules/@earendil-works/pi-coding-agen
 // Grammar + captures: docs/plans/2026-07-16-cc-input-box-footer.md.
 process.env.TZ = "UTC";
 
-const sandbox = mkdtempSync(join(tmpdir(), "claudify-footer-"));
+const sandbox = trackedTempDir("claudify-footer");
 const home = join(sandbox, "home");
 const settingsPath = join(home, ".pi", "settings.json");
 mkdirSync(join(home, ".pi"), { recursive: true });

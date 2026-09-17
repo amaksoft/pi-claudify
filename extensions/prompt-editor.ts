@@ -1,6 +1,7 @@
 import { CustomEditor, type ExtensionAPI, type KeybindingsManager } from "@earendil-works/pi-coding-agent";
 import type { EditorTheme, TUI } from "@earendil-works/pi-tui";
 
+import { settingsFeatureEnabled } from "./domain/compatibility.ts";
 import { readSettings } from "./settings.ts";
 
 const PROMPT_COLUMNS = 2;
@@ -43,7 +44,8 @@ export function applyPromptPointer(ctx: any, forceReinstall = false): void {
 	const ui = ctx.ui as object;
 	const installed = installedFactories.get(ui);
 	const current = typeof ctx.ui.getEditorComponent === "function" ? ctx.ui.getEditorComponent() : undefined;
-	const enabled = readSettings().values.promptPointer !== false;
+	const settings = readSettings().values;
+	const enabled = settings.promptPointer !== false && settingsFeatureEnabled(settings, "promptPointer");
 	if (!enabled) {
 		if (installed && current === installed) ctx.ui.setEditorComponent(undefined);
 		installedFactories.delete(ui);

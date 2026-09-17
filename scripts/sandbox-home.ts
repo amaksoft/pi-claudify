@@ -17,10 +17,8 @@ import { join } from "node:path";
 const sandboxRoots = new Set<string>();
 let cleanupInstalled = false;
 
-export function useSandboxHome(label = "cc-suite"): string {
+export function trackedTempDir(label = "cc-suite"): string {
 	const root = mkdtempSync(join(tmpdir(), `${label}-`));
-	const home = join(root, "home");
-	mkdirSync(join(home, ".pi"), { recursive: true });
 	sandboxRoots.add(root);
 	if (!cleanupInstalled) {
 		cleanupInstalled = true;
@@ -30,6 +28,13 @@ export function useSandboxHome(label = "cc-suite"): string {
 			}
 		});
 	}
+	return root;
+}
+
+export function useSandboxHome(label = "cc-suite"): string {
+	const root = trackedTempDir(label);
+	const home = join(root, "home");
+	mkdirSync(join(home, ".pi"), { recursive: true });
 	process.env.HOME = home;
 	return home;
 }

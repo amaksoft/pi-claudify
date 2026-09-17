@@ -1,5 +1,5 @@
 import { presentationAdapterFromDefinition, type ToolPresentationAdapter } from "../domain/tool-presentation.ts";
-import { classifyToolOwner, readToolOwners, toolDefinitionSnapshot, toolOwnershipSnapshot, type ToolOwnerKind } from "./tool-ownership.ts";
+import { readToolOwners, toolOwnershipSnapshot, type ToolOwnerKind } from "./tool-ownership.ts";
 
 export interface ToolRegistrationHost<TDefinition extends { name?: string }> {
 	registerTool(definition: TDefinition): void;
@@ -22,7 +22,6 @@ export class ToolRegistrationCoordinator<TDefinition extends { name?: string }> 
 	private readonly installed = new Set<string>();
 	private readonly presentations = new Map<string, ToolPresentationAdapter>();
 	private readonly priorOwnership = toolOwnershipSnapshot();
-	private readonly originalDefinitions = toolDefinitionSnapshot<TDefinition>();
 	private readonly canRegisterDuringFactory: boolean;
 	private warningShown = false;
 
@@ -37,29 +36,6 @@ export class ToolRegistrationCoordinator<TDefinition extends { name?: string }> 
 			options.onDiagnostic?.("tool-registry-probe", error);
 		}
 		this.canRegisterDuringFactory = available;
-		if (available) this.captureOriginalDefinitions();
-	}
-
-	private captureOriginalDefinitions(): void {
-		try {
-			const tools = this.host.getAllTools?.();
-			if (!Array.isArray(tools)) return;
-			for (const candidate of tools) {
-				const name = String((candidate as any)?.name ?? "").toLowerCase();
-				if (name && classifyToolOwner(candidate) === "builtin" && !this.originalDefinitions.has(name)) {
-					this.originalDefinitions.set(name, candidate as TDefinition);
-				}
-			}
-		} catch (error) {
-			this.options.onDiagnostic?.("tool-definition-snapshot", error);
-		}
-	}
-
-	private restoreOriginal(name: string, owner: ToolOwnerKind | undefined): boolean {
-		const original = this.originalDefinitions.get(name);
-		if (owner !== "self" || !original) return false;
-		this.host.registerTool(original);
-		return true;
 	}
 
 	private owners(): Map<string, ToolOwnerKind> | null {
@@ -77,10 +53,7 @@ export class ToolRegistrationCoordinator<TDefinition extends { name?: string }> 
 		const currentOwners = this.canRegisterDuringFactory ? this.owners() : null;
 		const currentOwner = currentOwners?.get(name);
 		const currentAbsent = !!currentOwners && !currentOwners.has(name);
-		if (this.options.skipped.has(name)) {
-			if (this.canRegisterDuringFactory) this.restoreOriginal(name, currentOwner);
-			return;
-		}
+		if (this.options.skipped.has(name)) return;
 		const presentation = presentationAdapterFromDefinition(definition);
 		if (presentation) this.presentations.set(presentation.name, presentation);
 		if (
@@ -89,28 +62,39 @@ export class ToolRegistrationCoordinator<TDefinition extends { name?: string }> 
 		) {
 			this.host.registerTool(definition);
 			this.installed.add(name);
+			this.priorOwnership.set(name, "self");
 		}
 	}
 
 	installDeferred(notify?: (message: string, kind: "warning") => void): void {
-		this.captureOriginalDefinitions();
 		const owners = this.owners();
 		if (owners) {
 			for (const definition of this.pending) {
 				const name = String(definition?.name ?? "").toLowerCase();
-				if (name) this.priorOwnership.set(name, owners.get(name) ?? "unknown");
+				if (!name) continue;
+				const observed = owners.get(name) ?? "unknown";
+				// Some host versions omit sourceInfo for extension tools. Never
+				// downgrade a definition this coordinator successfully registered from
+				// proven self ownership to unknown merely because metadata is absent.
+				if (observed !== "unknown" || !this.priorOwnership.has(name)) this.priorOwnership.set(name, observed);
 			}
 		}
 		const unknownNames: string[] = [];
 		for (const definition of this.pending) {
 			const name = String(definition?.name ?? "").toLowerCase();
 			const owner = owners?.get(name) ?? "unknown";
+			const absent = !!owners && !owners.has(name);
 			if (!name || this.installed.has(name)) continue;
-			if (this.options.skipped.has(name)) { this.restoreOriginal(name, owner); continue; }
+			if (this.options.skipped.has(name)) continue;
 			if (owner === "external") continue;
-			if (owner === "unknown") { unknownNames.push(name); continue; }
+			// A complete live registry that lacks this name proves there is no
+			// owner to displace. This is the normal first-load path for Claudify's
+			// own Cron/Ask tools because Pi exposes getAllTools only after factory
+			// evaluation. Distinguish absence from an existing metadata-less tool.
+			if (owner === "unknown" && !absent) { unknownNames.push(name); continue; }
 			this.host.registerTool(definition);
 			this.installed.add(name);
+			this.priorOwnership.set(name, "self");
 		}
 		if (!this.warningShown && unknownNames.length > 0 && notify) {
 			this.warningShown = true;

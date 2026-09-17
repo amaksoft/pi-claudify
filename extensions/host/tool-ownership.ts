@@ -1,26 +1,34 @@
+import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { sharedState } from "./shared-state.ts";
 
 export type ToolOwnerKind = "builtin" | "self" | "external" | "unknown";
 
 const TOOL_OWNERSHIP_SNAPSHOT_KEY = Symbol.for("pi-claudify:tool-ownership-snapshot");
-const TOOL_DEFINITION_SNAPSHOT_KEY = Symbol.for("pi-claudify:tool-definition-snapshot");
 
 export function toolOwnershipSnapshot(): Map<string, ToolOwnerKind> {
 	return sharedState(TOOL_OWNERSHIP_SNAPSHOT_KEY, () => new Map<string, ToolOwnerKind>());
 }
 
-/** Original proven-builtin definitions captured before Claudify replaces them. */
-export function toolDefinitionSnapshot<T = unknown>(): Map<string, T> {
-	return sharedState(TOOL_DEFINITION_SNAPSHOT_KEY, () => new Map<string, T>());
+
+const CLAUDIFY_SOURCE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
+
+export function claudifySourceRoot(): string { return CLAUDIFY_SOURCE_ROOT; }
+
+function isWithinSourceRoot(value: unknown): boolean {
+	if (typeof value !== "string" || !value) return false;
+	if (/^(?:(?:npm|extension):)?(?:@owlburtoe\/)?pi-claudify(?:@[^/]+)?$/i.test(value)) return true;
+	if (!value.startsWith("/") && !/^[A-Za-z]:[\\/]/.test(value)) return false;
+	const rel = relative(CLAUDIFY_SOURCE_ROOT, resolve(value));
+	return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
 }
 
 export function classifyToolOwner(tool: any): ToolOwnerKind {
 	const sourceInfo = tool?.sourceInfo;
 	if (!sourceInfo) return "unknown";
 	if (sourceInfo.source === "builtin") return "builtin";
-	const identity = `${sourceInfo.path ?? ""}\n${sourceInfo.source ?? ""}`.toLowerCase();
-	const packageBoundary = /(?:^|[\\/:])(?:@owlburtoe[\\/])?pi-claudify(?:$|[\\/:])/m;
-	return packageBoundary.test(identity) ? "self" : "external";
+	return isWithinSourceRoot(sourceInfo.path) || isWithinSourceRoot(sourceInfo.source) ? "self" : "external";
 }
 
 export function readToolOwners(getAllTools: unknown, onError?: (error: unknown) => void): Map<string, ToolOwnerKind> | null {

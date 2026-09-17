@@ -5,6 +5,7 @@ import { Loader } from "@earendil-works/pi-tui";
 // Importing spinner.ts monkey-patches Loader.prototype (start/stop/updateDisplay)
 // and exposes the captured live-spinner cadence.
 const {
+	default: registerSpinner,
 	LOADER_INTERVAL_MS,
 	activeThinkingProgressPhrase,
 	shimmerBaseRgb,
@@ -14,6 +15,7 @@ const {
 	colorizeShimmerVerb,
 	shimmerGlyphAnsi,
 	shimmerHighlightRgb,
+	shimmerElapsedMs,
 	thinkingProgressPhrase,
 	OutputTokenTracker,
 	sanitizeSpinnerVerbs,
@@ -148,5 +150,22 @@ assert.deepEqual(shimmerHighlightRgb(17_000), { r: 215, g: 215, b: 135 });
 // The glyph shares the breathed base hue (and bold) with the verb.
 assert.equal(shimmerGlyphAnsi(0), "\x1b[38;2;215;135;135m", "glyph is salmon early");
 assert.equal(shimmerGlyphAnsi(25_000), "\x1b[1m\x1b[38;2;255;215;0m", "glyph is bold gold at the plateau");
+
+function fakePi() {
+	const events = new Map<string, Function[]>();
+	return { events, pi: { on(name: string, handler: Function) { events.set(name, [...(events.get(name) ?? []), handler]); } } as any };
+}
+const parentSpinner = fakePi();
+const childSpinner = fakePi();
+registerSpinner(parentSpinner.pi);
+registerSpinner(childSpinner.pi);
+const spinnerCtx = { hasUI: true, ui: { theme: undefined, setWorkingMessage() {} } };
+for (const handler of parentSpinner.events.get("turn_start") ?? []) await handler({}, spinnerCtx);
+assert.ok(shimmerElapsedMs() >= 0, "parent turn activates shimmer state");
+for (const handler of childSpinner.events.get("turn_start") ?? []) await handler({}, spinnerCtx);
+for (const handler of childSpinner.events.get("turn_end") ?? []) await handler({}, spinnerCtx);
+assert.ok(shimmerElapsedMs() >= 0, "child turn completion cannot clear a still-active parent shimmer");
+for (const handler of childSpinner.events.get("session_shutdown") ?? []) await handler({}, spinnerCtx);
+for (const handler of parentSpinner.events.get("session_shutdown") ?? []) await handler({}, spinnerCtx);
 
 console.log("spinner-cadence: ok");

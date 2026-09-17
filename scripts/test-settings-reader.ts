@@ -1,9 +1,9 @@
+import { trackedTempDir } from "./sandbox-home.ts";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-const initialSandbox = mkdtempSync(join(tmpdir(), "cc-settings-initial-"));
+const initialSandbox = trackedTempDir("cc-settings-initial");
 process.env.HOME = join(initialSandbox, "home");
 process.chdir(join(initialSandbox));
 
@@ -26,7 +26,7 @@ function useSandbox(
 	user: Record<string, unknown> | string | null,
 	project: Record<string, unknown> | string | null,
 ) {
-	const sandbox = mkdtempSync(join(tmpdir(), "cc-settings-"));
+	const sandbox = trackedTempDir("cc-settings");
 	const home = join(sandbox, "home");
 	const cwd = join(sandbox, "project");
 	mkdirSync(join(home, ".pi"), { recursive: true });
@@ -121,7 +121,7 @@ const missingUser = useSandbox(null, { spinnerColor: "project-color" });
 assert.equal(missingUser.file.status, "missing");
 assert.deepEqual(missingUser.values, {}, "project settings do not fill in for a missing user file");
 
-const refreshSandbox = mkdtempSync(join(tmpdir(), "cc-settings-refresh-"));
+const refreshSandbox = trackedTempDir("cc-settings-refresh");
 const refreshHome = join(refreshSandbox, "home");
 const refreshCwd = join(refreshSandbox, "project");
 mkdirSync(join(refreshHome, ".pi"), { recursive: true });
@@ -141,11 +141,18 @@ try {
 }
 
 const previousHome = process.env.HOME;
-process.env.HOME = "";
+const previousUserProfile = process.env.USERPROFILE;
+const windowsHome = join(refreshSandbox, "windows-home");
+mkdirSync(join(windowsHome, ".pi"), { recursive: true });
+delete process.env.HOME;
+process.env.USERPROFILE = windowsHome;
 try {
-	assert.deepEqual(writeSettingsKey("previewLines", 12), { success: false, backupCreated: false }, "an empty HOME reports that the setting was not saved");
+	assert.deepEqual(writeSettingsKey("previewLines", 12), { success: true, backupCreated: false }, "USERPROFILE persists settings when HOME is unavailable");
+	assert.equal(JSON.parse(readFileSync(join(windowsHome, ".pi", "settings.json"), "utf8")).previewLines, 12);
 } finally {
 	process.env.HOME = previousHome;
+	if (previousUserProfile === undefined) delete process.env.USERPROFILE;
+	else process.env.USERPROFILE = previousUserProfile;
 }
 
 console.log("settings reader tests passed");

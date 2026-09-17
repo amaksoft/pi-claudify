@@ -49,7 +49,7 @@
   "readOnlyToolGrouping": true,
   "groupShellCommands": true,
   "readOnlyToolGroupLimit": 5,
-  "diffCollapsedLines": 24,
+  "diffCollapsedLines": 10,
   "diffSyntaxHighlighting": true,
   "showTruncationHints": false,
   "colorSource": "claude",

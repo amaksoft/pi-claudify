@@ -30,14 +30,11 @@ jobs:
       - name: Test
         run: bun run test
       - name: Install tmux for real pointer dispatch
-        if: matrix.pi-version == '0.85.1'
+        if: matrix.pi-version == '0.85.1' || matrix.pi-version == 'latest'
         run: command -v tmux >/dev/null || (sudo apt-get update && sudo apt-get install -y tmux)
-      - name: Test real fullscreen pointer dispatch
-        if: matrix.pi-version == '0.85.1'
-        run: bun run test:mouse-pty
-      - name: Test historical presentation across reload
-        if: matrix.pi-version == '0.85.1'
-        run: bun run test:reload-presentation-pty
+      - name: Test real PTY pointer and reload behavior
+        if: matrix.pi-version == '0.85.1' || matrix.pi-version == 'latest'
+        run: bun run test:pty
       - name: Strict TypeScript check
         run: >-
           npx tsc --noEmit --strict --skipLibCheck --allowImportingTsExtensions

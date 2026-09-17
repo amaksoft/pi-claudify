@@ -1,6 +1,6 @@
+import { trackedTempDir } from "./sandbox-home.ts";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
@@ -10,7 +10,7 @@ const repo = resolve(here, "..");
 const tmux = process.env.TMUX_BIN ?? "tmux";
 const piBin = resolve(repo, "node_modules/.bin/pi");
 const fixture = resolve(here, "fixtures/mouse-dispatch-extension.ts");
-const sandbox = mkdtempSync(join(tmpdir(), "claudify-mouse-pty-"));
+const sandbox = trackedTempDir("claudify-mouse-pty");
 const home = join(sandbox, "home");
 const statePath = join(sandbox, "state.json");
 const stderrPath = join(sandbox, "pi.stderr.log");

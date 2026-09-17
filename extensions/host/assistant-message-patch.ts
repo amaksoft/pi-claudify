@@ -3,8 +3,9 @@ import { patchMethodOnce } from "./patch-once.ts";
 import { sharedState } from "./shared-state.ts";
 
 const STATE_KEY = Symbol.for("pi-claudify:assistant-message-patch-state");
-interface AssistantPatchState { runtime?: AssistantMessagePatchRuntime }
+interface AssistantPatchState { owners?: Map<object, AssistantMessagePatchRuntime> }
 function state(): AssistantPatchState { return sharedState(STATE_KEY, () => ({})); }
+function activeRuntime(): AssistantMessagePatchRuntime | undefined { return state().owners ? [...state().owners!.values()][0] : undefined; }
 
 export interface AssistantMessagePatchRuntime {
 	workedStartKey: PropertyKey;
@@ -30,11 +31,13 @@ function isMarkdownComponent(value: unknown): boolean {
 		&& typeof candidate.invalidate === "function";
 }
 
-export function patchAssistantMessageRenderer(ComponentClass: any, flag: symbol, runtime: AssistantMessagePatchRuntime): void {
-	state().runtime = runtime;
+export function patchAssistantMessageRenderer(ComponentClass: any, flag: symbol, owner: object, runtime: AssistantMessagePatchRuntime): void {
+	const owners = (state().owners ??= new Map());
+	owners.delete(owner);
+	owners.set(owner, runtime);
 	patchMethodOnce(ComponentClass?.prototype, flag, "updateContent", (originalUpdateContent) =>
 		function patchedUpdateContent(this: any, message: any) {
-		const active = state().runtime ?? runtime;
+		const active = activeRuntime() ?? runtime;
 		if (!active.enabled()) return originalUpdateContent.call(this, message);
 		if (!this[active.workedStartKey]) this[active.workedStartKey] = Date.now();
 		if (!message || !Array.isArray(message.content)) return originalUpdateContent.call(this, message);
@@ -60,3 +63,5 @@ export function patchAssistantMessageRenderer(ComponentClass: any, flag: symbol,
 		},
 	);
 }
+
+export function releaseAssistantMessageRenderer(owner: object): void { state().owners?.delete(owner); }

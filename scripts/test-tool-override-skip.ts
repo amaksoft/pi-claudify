@@ -1,6 +1,6 @@
+import { trackedTempDir } from "./sandbox-home.ts";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { ToolExecutionComponent, createGrepToolDefinition } from "@earendil-works/pi-coding-agent";
@@ -9,7 +9,7 @@ import { initTheme } from "../node_modules/@earendil-works/pi-coding-agent/dist/
 
 initTheme("dark");
 
-const root = mkdtempSync(join(tmpdir(), "cc-skip-tools-"));
+const root = trackedTempDir("cc-skip-tools");
 const home = join(root, "home");
 mkdirSync(join(home, ".pi"), { recursive: true });
 writeFileSync(join(home, ".pi", "settings.json"), JSON.stringify({ ccSkipToolOverrides: ["grep", "find", "unknown"] }));

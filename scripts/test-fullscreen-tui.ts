@@ -23,6 +23,13 @@ assert.deepEqual(filledIdle.slice(0, 2), ["header", ""], "only Pi's exact two fu
 assert.deepEqual(filledIdle.slice(-2), ["editor", "footer"], "the editor and footer remain the final rows");
 assert.equal(filledIdle.some((line) => line.includes(marker)), false, "the invisible layout marker never reaches the terminal");
 
+const widgetBeforeMarker = ["line 0", "line 1", "line 2", "line 3", " ".repeat(20), " ".repeat(20), "", "▸ 2 subagents running", marker, "editor", "footer"];
+const widgetAtBottom = fillFullscreenLines(widgetBeforeMarker, marker, 7, 20);
+const widgetScrolled = fillFullscreenLines(widgetBeforeMarker, marker, 7, 20, 2);
+assert.equal(widgetAtBottom.filter((line) => line === " ".repeat(20)).length, 0, "idle-status rows are removed even when another widget precedes the marker");
+assert.deepEqual(widgetAtBottom.slice(-3), ["▸ 2 subagents running", "editor", "footer"], "pre-marker extension widget is pinned with chrome");
+assert.deepEqual(widgetScrolled.slice(-3), ["▸ 2 subagents running", "editor", "footer"], "pinned extension widget remains visible while transcript scrolls");
+
 const working = ["header", "working", "", marker, "editor", "footer"];
 const filledWorking = fillFullscreenLines(working, marker, 8, 20);
 assert.equal(filledWorking.length, 8, "working output fills to terminal height");

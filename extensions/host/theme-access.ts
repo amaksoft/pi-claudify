@@ -1,4 +1,5 @@
 import { colorToRgb, rgbToAnsi256 } from "../domain/color-math.ts";
+import { normalizeHexColor } from "../footer.ts";
 
 export type CustomHexColor = `#${string}`;
 
@@ -58,4 +59,34 @@ export function themePolarity(theme: unknown): "dark" | "light" | "unknown" {
 	if (name.includes("light")) return "light";
 	if (name.includes("dark")) return "dark";
 	return "unknown";
+}
+
+/** Parses a user-supplied color setting (e.g. `accentColor`/`userMessageBox`)
+ * into a normalized `#RRGGBB` hex, or null when the value isn't a stored hex
+ * color (e.g. "theme"/"claude"/"off"). */
+export function storedHexColor(value: unknown): CustomHexColor | null {
+	if (typeof value !== "string") return null;
+	return normalizeHexColor(value) as CustomHexColor | null;
+}
+
+/** `theme.getFgAnsi(key)` returns a raw ANSI escape (truecolor or 256color
+ * depending on the terminal), swallowing lookup failures for keys a theme
+ * doesn't define. */
+export function safeFgAnsi(theme: any, key: string): string | null {
+	try {
+		const ansi = theme?.getFgAnsi?.(key);
+		return typeof ansi === "string" && ansi.length > 0 ? ansi : null;
+	} catch {
+		return null;
+	}
+}
+
+/** Background counterpart of {@link safeFgAnsi}. */
+export function safeBgAnsi(theme: any, key: string): string | null {
+	try {
+		const ansi = theme?.getBgAnsi?.(key);
+		return typeof ansi === "string" && ansi.length > 0 ? ansi : null;
+	} catch {
+		return null;
+	}
 }
