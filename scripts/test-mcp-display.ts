@@ -99,8 +99,8 @@ class FakePi {
 	getAllTools(): any[] {
 		return [...this.tools.values()];
 	}
-	async fire(name: string): Promise<void> {
-		for (const handler of this.events.get(name) ?? []) await handler({}, { hasUI: false });
+	async fire(name: string, event: any = {}): Promise<void> {
+		for (const handler of this.events.get(name) ?? []) await handler(event, { hasUI: false });
 	}
 }
 
@@ -160,6 +160,8 @@ assert.match(plain(publicPrefixed.render(120)), /^ {2}Called plane$/m, "public m
 const publicBare = new Container();
 publicBare.addChild(tool(publicPi, "bare_list", "public-bare", {}, "ok"));
 assert.doesNotMatch(plain(publicBare.render(120)), /Called /, "ambiguous public bare tools fail closed to native/generic presentation");
+await publicPi.fire("session_shutdown", { reason: "quit" });
+await new Promise((resolve) => setTimeout(resolve, 1_050));
 
 const pi = new FakePi();
 // pi-mcp-adapter exposes MCP two ways, and both must render the same.

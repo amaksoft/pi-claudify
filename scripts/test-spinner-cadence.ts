@@ -27,6 +27,8 @@ const identity = (text: string): string => text;
 // A minimal UI stub: the patched updateDisplay only needs requestRender + a
 // falsy `stopped`/`theme`. No real terminal is involved.
 const ui = { requestRender(): void {}, stopped: false, theme: undefined } as any;
+const bootstrapEvents = new Map<string, Function[]>();
+registerSpinner({ on(name: string, handler: Function) { bootstrapEvents.set(name, [...(bootstrapEvents.get(name) ?? []), handler]); } } as any);
 
 const loader = new Loader(ui, identity, identity, "Working");
 // The patched start() schedules a real (unref'd) timer; cancel it so the test
@@ -62,6 +64,7 @@ assert.equal(
 	"✻",
 	"`✻` is a live rotation frame (the mis-capture that pinned the glyph to `·` was a polling alias)",
 );
+for (const handler of bootstrapEvents.get("session_shutdown") ?? []) await handler({}, { hasUI: false, ui: {} });
 
 // --- Thinking phrase escalation is effort-independent. ----------------------
 // Frame-by-frame Claude 2.1.266 captures at low and medium effort use the same

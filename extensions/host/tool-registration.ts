@@ -45,6 +45,11 @@ export class ToolRegistrationCoordinator<TDefinition extends { name?: string }> 
 		);
 	}
 
+	addPresentation(presentation: ToolPresentationAdapter): void {
+		if (this.options.skipped.has(presentation.name)) return;
+		this.presentations.set(presentation.name, presentation);
+	}
+
 	add(definition: TDefinition): void {
 		const name = String(definition?.name ?? "").toLowerCase();
 		if (!name) return;
@@ -55,7 +60,7 @@ export class ToolRegistrationCoordinator<TDefinition extends { name?: string }> 
 		const currentAbsent = !!currentOwners && !currentOwners.has(name);
 		if (this.options.skipped.has(name)) return;
 		const presentation = presentationAdapterFromDefinition(definition);
-		if (presentation) this.presentations.set(presentation.name, presentation);
+		if (presentation) this.addPresentation(presentation);
 		if (
 			(this.canRegisterDuringFactory && (currentAbsent || currentOwner === "builtin" || currentOwner === "self"))
 			|| (!this.canRegisterDuringFactory && (priorOwner === "builtin" || priorOwner === "self"))

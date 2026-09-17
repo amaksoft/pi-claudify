@@ -6,10 +6,10 @@ import {
 	supportsInspectionResult,
 	type ToolPresentationAdapter,
 } from "../domain/tool-presentation.ts";
-import { sharedState } from "./shared-state.ts";
+import { testedPiPatchBroker } from "../adapters/tested-pi/patch-broker.ts";
 
 const PATCH_FLAG = Symbol.for("pi-claudify:patched-tool-execution");
-const STATE_KEY = Symbol.for("pi-claudify:tool-renderer-state");
+const SURFACE = "tool-renderer";
 
 interface PatchRegistry {
 	originalHas?: Function;
@@ -19,10 +19,6 @@ interface PatchRegistry {
 interface OwnerState {
 	presentations: Map<string, ToolPresentationAdapter>;
 	hooks: ToolRendererHooks;
-}
-interface ActiveState {
-	owners?: Map<object, OwnerState>;
-	retiring?: Set<object>;
 }
 export interface ToolRendererHooks {
 	presentationSkipped(name: unknown): boolean;
@@ -34,11 +30,8 @@ export interface ToolRendererHooks {
 	diagnostic(key: string, error: unknown): void;
 }
 
-function activeState(): ActiveState { return sharedState(STATE_KEY, () => ({})); }
 function activeOwnerState(): OwnerState | undefined {
-	const active = activeState();
-	for (const [owner, value] of active.owners ?? []) if (!active.retiring?.has(owner)) return value;
-	return active.owners?.values().next().value;
+	return testedPiPatchBroker.active<OwnerState>(SURFACE);
 }
 function compatible(component: any, phase: "call" | "result"): ToolPresentationAdapter | undefined {
 	const state = activeOwnerState();
@@ -107,24 +100,16 @@ export function installToolRendererPatch(owner: object, hooks: ToolRendererHooks
 			return typeof registry!.originalResult === "function" ? registry!.originalResult.call(this) : undefined;
 		};
 	}
-	const state = activeState();
-	const owners = (state.owners ??= new Map());
-	owners.delete(owner);
-	owners.set(owner, { hooks, presentations: new Map() });
-	state.retiring?.delete(owner);
+	testedPiPatchBroker.bind(owner, SURFACE, { hooks, presentations: new Map() } satisfies OwnerState);
 	return false;
 }
 
 export function installToolPresentations(owner: object, adapters: Iterable<ToolPresentationAdapter>): boolean {
-	const ownerState = activeState().owners?.get(owner);
+	const ownerState = testedPiPatchBroker.owned<OwnerState>(owner, SURFACE);
 	if (!ownerState) return false;
 	ownerState.presentations = new Map(Array.from(adapters, (adapter) => [adapter.name, adapter]));
 	return true;
 }
 
-export function markToolRendererPatchRetiring(owner: object): void { (activeState().retiring ??= new Set()).add(owner); }
-export function releaseToolRendererPatch(owner: object): void {
-	const active = activeState();
-	active.owners?.delete(owner);
-	active.retiring?.delete(owner);
-}
+export function markToolRendererPatchRetiring(owner: object): void { testedPiPatchBroker.markRetiring(owner); }
+export function releaseToolRendererPatch(owner: object): void { testedPiPatchBroker.releaseSurface(owner, SURFACE); }

@@ -1,0 +1,44 @@
+import type { CapabilityId } from "../../runtime/contracts.ts";
+
+export interface TestedPiProbeInput {
+	ToolExecutionComponent?: { prototype?: object };
+	Container?: { prototype?: object };
+	AssistantMessageComponent?: { prototype?: object };
+	UserMessageComponent?: { prototype?: object };
+	CustomMessageComponent?: { prototype?: object };
+	CompactionSummaryMessageComponent?: { prototype?: object };
+	Loader?: { prototype?: object };
+}
+
+export interface TestedPiProbeResult {
+	readonly capabilities: ReadonlySet<CapabilityId>;
+	readonly failures: readonly string[];
+}
+
+function hasMethods(value: unknown, methods: readonly string[]): boolean {
+	if (!value || typeof value !== "object") return false;
+	return methods.every((method) => typeof (value as Record<string, unknown>)[method] === "function");
+}
+
+/** Non-mutating structural probes for every private surface used by Tier 2. */
+export function probeTestedPiCapabilities(input: TestedPiProbeInput): TestedPiProbeResult {
+	const capabilities = new Set<CapabilityId>(["public:commands", "public:events", "public:tools", "public:tui"]);
+	const failures: string[] = [];
+	if (hasMethods(input.ToolExecutionComponent?.prototype, ["hasRendererDefinition", "getCallRenderer", "getResultRenderer", "updateDisplay"])) {
+		capabilities.add("tested:component-renderers");
+	} else failures.push("tool-component-renderers");
+	if (hasMethods(input.Container?.prototype, ["render"])) capabilities.add("tested:container-composition");
+	else failures.push("container-render");
+	if (
+		hasMethods(input.AssistantMessageComponent?.prototype, ["updateContent"])
+		&& hasMethods(input.UserMessageComponent?.prototype, ["render"])
+		&& hasMethods(input.CustomMessageComponent?.prototype, ["render"])
+		&& hasMethods(input.CompactionSummaryMessageComponent?.prototype, ["updateDisplay"])
+	) capabilities.add("tested:message-renderers");
+	else failures.push("message-renderers");
+	if (hasMethods(input.ToolExecutionComponent?.prototype, ["setExpanded"])) capabilities.add("tested:mouse-layout");
+	else failures.push("tool-expansion");
+	if (hasMethods(input.Loader?.prototype, ["updateDisplay", "start", "stop"])) capabilities.add("tested:spinner-loader");
+	else failures.push("spinner-loader");
+	return Object.freeze({ capabilities, failures: Object.freeze(failures) });
+}

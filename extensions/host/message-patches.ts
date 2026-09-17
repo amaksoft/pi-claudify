@@ -1,22 +1,22 @@
 import { Spacer, Text } from "@earendil-works/pi-tui";
+import { testedPiPatchBroker } from "../adapters/tested-pi/patch-broker.ts";
 import { patchMethodOnce } from "./patch-once.ts";
-import { sharedState } from "./shared-state.ts";
 
-const STATE_KEY = Symbol.for("pi-claudify:message-patch-state");
+const SURFACE = "message-renderers";
 interface MessagePatchRuntime {
 	normalizeLine?: (line: string) => string;
 	headerText?: () => string;
 	enabled?: () => boolean;
 }
-interface MessagePatchState { owners?: Map<object, MessagePatchRuntime> }
-function state(): MessagePatchState { return sharedState(STATE_KEY, () => ({})); }
 function runtime(owner: object): MessagePatchRuntime {
-	const owners = (state().owners ??= new Map());
-	let value = owners.get(owner);
-	if (!value) { value = {}; owners.set(owner, value); }
+	let value = testedPiPatchBroker.owned<MessagePatchRuntime>(owner, SURFACE);
+	if (!value) {
+		value = {};
+		testedPiPatchBroker.bind(owner, SURFACE, value);
+	}
 	return value;
 }
-function activeRuntime(): MessagePatchRuntime | undefined { return state().owners?.values().next().value; }
+function activeRuntime(): MessagePatchRuntime | undefined { return testedPiPatchBroker.active<MessagePatchRuntime>(SURFACE); }
 
 export function patchCustomMessageRenderer(ComponentClass: any, flag: symbol, owner: object, normalizeLine: (line: string) => string): void {
 	runtime(owner).normalizeLine = normalizeLine;
@@ -41,17 +41,18 @@ export function patchCompactionSummaryRenderer(
 	patchMethodOnce(ComponentClass?.prototype, flag, "updateDisplay", (originalUpdateDisplay) =>
 		function patchedCompactionSummaryDisplay(this: any) {
 			originalUpdateDisplay.call(this);
-			if (activeRuntime()?.enabled?.() === false) return;
+			const active = activeRuntime();
+			if (!active || active.enabled?.() === false) return;
 			const summary = this.expanded && Array.isArray(this.children) ? this.children[this.children.length - 1] : undefined;
 			if (summary && typeof summary.setText === "function") summary.setText(this.message.summary);
 			this.paddingX = 0;
 			this.paddingY = 0;
 			this.setBgFn?.(undefined);
 			this.clear();
-			this.addChild(new Text(activeRuntime()?.headerText?.() ?? "Compacted", 0, 0));
+			this.addChild(new Text(active.headerText?.() ?? "Compacted", 0, 0));
 			if (summary) { this.addChild(new Spacer(1)); this.addChild(summary); }
 		},
 	);
 }
 
-export function releaseMessageRenderers(owner: object): void { state().owners?.delete(owner); }
+export function releaseMessageRenderers(owner: object): void { testedPiPatchBroker.releaseSurface(owner, SURFACE); }
