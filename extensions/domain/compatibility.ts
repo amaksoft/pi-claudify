@@ -35,6 +35,7 @@ export const COMPATIBILITY_FEATURE_IDS = [
 	"banner",
 	"promptPointer",
 	"scheduledTasks",
+	"askUserQuestion",
 ] as const;
 
 export type CompatibilityFeatureId = (typeof COMPATIBILITY_FEATURE_IDS)[number];
@@ -55,7 +56,8 @@ export const BUILTIN_COMPATIBILITY_TOOL_NAMES = ["read", "write", "edit", "bash"
 export type BuiltinCompatibilityToolName = (typeof BUILTIN_COMPATIBILITY_TOOL_NAMES)[number];
 
 export const CRON_COMPATIBILITY_TOOL_NAMES = ["croncreate", "cronlist", "crondelete"] as const;
-export const CLAUDIFY_REGISTERED_TOOL_NAMES = [...BUILTIN_COMPATIBILITY_TOOL_NAMES, ...CRON_COMPATIBILITY_TOOL_NAMES] as const;
+export const ASK_USER_QUESTION_TOOL_NAME = "askuserquestion" as const;
+export const CLAUDIFY_REGISTERED_TOOL_NAMES = [...BUILTIN_COMPATIBILITY_TOOL_NAMES, ...CRON_COMPATIBILITY_TOOL_NAMES, ASK_USER_QUESTION_TOOL_NAME] as const;
 
 const BUILTIN_COMPATIBILITY_TOOL_NAME_SET: ReadonlySet<string> = new Set(BUILTIN_COMPATIBILITY_TOOL_NAMES);
 

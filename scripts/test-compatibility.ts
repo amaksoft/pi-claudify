@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 
 import {
+	ASK_USER_QUESTION_TOOL_NAME,
 	BUILTIN_COMPATIBILITY_TOOL_NAMES,
 	CLAUDIFY_REGISTERED_TOOL_NAMES,
 	COMPATIBILITY_FEATURE_IDS,
@@ -43,10 +44,11 @@ const EXPECTED_FEATURE_IDS = [
 	"banner",
 	"promptPointer",
 	"scheduledTasks",
+	"askUserQuestion",
 ];
 assert.deepEqual([...COMPATIBILITY_FEATURE_IDS], EXPECTED_FEATURE_IDS, "the feature ids are fixed and ordered");
-assert.equal(COMPATIBILITY_FEATURE_IDS.length, 18, "exactly 18 feature ids");
-assert.equal(new Set(COMPATIBILITY_FEATURE_IDS).size, 18, "feature ids are unique");
+assert.equal(COMPATIBILITY_FEATURE_IDS.length, 19, "exactly 19 feature ids");
+assert.equal(new Set(COMPATIBILITY_FEATURE_IDS).size, 19, "feature ids are unique");
 for (const id of EXPECTED_FEATURE_IDS) assert.ok(isCompatibilityFeatureId(id), `${id} is a recognized feature id`);
 assert.equal(isCompatibilityFeatureId("notAFeature"), false);
 assert.equal(isCompatibilityFeatureId(42), false);
@@ -56,7 +58,8 @@ assert.deepEqual([...BUILTIN_COMPATIBILITY_TOOL_NAMES], EXPECTED_BUILTIN_TOOLS, 
 assert.equal(BUILTIN_COMPATIBILITY_TOOL_NAMES.length, 8, "exactly 8 builtin tool names");
 for (const name of EXPECTED_BUILTIN_TOOLS) assert.ok(isBuiltinCompatibilityToolName(name));
 assert.equal(isBuiltinCompatibilityToolName("mcp"), false);
-assert.deepEqual([...CLAUDIFY_REGISTERED_TOOL_NAMES], [...EXPECTED_BUILTIN_TOOLS, "croncreate", "cronlist", "crondelete"], "every registered tool has a compatibility key");
+assert.equal(ASK_USER_QUESTION_TOOL_NAME, "askuserquestion");
+assert.deepEqual([...CLAUDIFY_REGISTERED_TOOL_NAMES], [...EXPECTED_BUILTIN_TOOLS, "croncreate", "cronlist", "crondelete", "askuserquestion"], "every registered tool has a compatibility key");
 
 assert.deepEqual([...COMPATIBILITY_TOOL_FAMILIES], ["mcp", "openai", "generic"]);
 assert.equal(compatibilityToolFamilyKey("mcp"), "mcp:*");

@@ -42,6 +42,8 @@ A disabled tool is not registered, adapted, or grouped by Claudify; the host or 
 
 Scheduled prompts are available out of the box through `CronCreate`, `CronList`, and `CronDelete`. They use five-field local-time cron expressions and run only while Pi is open and idle. Jobs are session-only unless `durable: true`, which requires a trusted project and explicit TUI confirmation before persisting to the current project's `.pi/scheduled_tasks.json`; deleting a durable job also requires confirmation. Recurring jobs expire after seven days. Disable the entire scheduler with `compatibility.features.scheduledTasks`, or disable any Cron tool by name under `compatibility.tools`.
 
+`AskUserQuestion` provides Claude-style structured questions with single-select, multi-select, free-text, review, submit, and cancel flows. It is enabled automatically in interactive TUI sessions. Disable it with `compatibility.features.askUserQuestion` or `compatibility.tools.AskUserQuestion` if another extension owns the interaction UX.
+
 ### Sections
 
 #### Theme

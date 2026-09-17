@@ -145,6 +145,7 @@ import {
 import { getRawStringArg, getStringArg, getTextContent } from "./domain/tool-arguments.ts";
 export { classifyBashCommandForDisplay, type BashDisplayInfo } from "./domain/bash-display.ts";
 import {
+	ASK_USER_QUESTION_TOOL_NAME,
 	BUILTIN_COMPATIBILITY_TOOL_NAMES,
 	CLAUDIFY_REGISTERED_TOOL_NAMES,
 	CRON_COMPATIBILITY_TOOL_NAMES,
@@ -158,6 +159,7 @@ import {
 	type CompatibilityToolFamily,
 } from "./domain/compatibility.ts";
 export {
+	ASK_USER_QUESTION_TOOL_NAME,
 	BUILTIN_COMPATIBILITY_TOOL_NAMES,
 	COMPATIBILITY_FEATURE_IDS,
 	parseCompatibilityConfig,
@@ -220,6 +222,7 @@ import { createToolChrome } from "./render/tool-chrome.ts";
 import { selectVisualItems, selectVisualPreview, widthAwareText, type VisualPreviewMode } from "./visual-preview.ts";
 import { computeAggregateEditDiff, computeLocalizedEditDiffs } from "./tools/edit-preview.ts";
 import { registerBuiltinTools } from "./tools/register-builtins.ts";
+import { registerAskUserQuestionTool } from "./tools/ask-user-question.ts";
 import { CronScheduler, installCronLifecycle, registerCronTools } from "./tools/cron-tools.ts";
 import { renderApplyPatchCall as renderApplyPatchCallWithRuntime, renderApplyPatchResult as renderApplyPatchResultWithRuntime, type ApplyPatchRuntime } from "./tools/apply-patch-tool.ts";
 import { renderGenericToolCall as renderGenericCall, renderGenericToolResult as renderGenericResult, type GenericToolRuntime } from "./tools/generic-tool.ts";
@@ -1174,7 +1177,8 @@ export default function (pi: ExtensionAPI): void {
 	const compatibilityControlledTools = [
 		...BUILTIN_COMPATIBILITY_TOOL_NAMES.filter((name) => name !== "apply_patch"),
 		...CRON_COMPATIBILITY_TOOL_NAMES,
-		];
+		ASK_USER_QUESTION_TOOL_NAME,
+	];
 	const compatibilityDisabledTools = compatibilityControlledTools.filter((name) => presentationOverrideSkipped(name));
 	const effectiveSkippedOverrides = new Set<string>([...skippedOverrides, ...compatibilityDisabledTools]);
 	type RegisteredTool = Parameters<ExtensionAPI["registerTool"]>[0];
@@ -1213,6 +1217,13 @@ export default function (pi: ExtensionAPI): void {
 		registerCronTools(pi, scheduler, registerBuiltinOverride);
 		installCronLifecycle(pi, scheduler);
 	}
+	let askUserQuestionQueued = false;
+	const registerAskUserQuestionForContext = (ctx: any): void => {
+		if (askUserQuestionQueued || !featureEnabled("askUserQuestion") || ctx?.mode !== "tui" || !ctx?.hasUI) return;
+		askUserQuestionQueued = true;
+		registerAskUserQuestionTool(pi, registerBuiltinOverride);
+		installCompatibleToolPresentations(toolRendererOwner, toolRegistration.presentationAdapters());
+	};
 
 	registerBuiltinTools({
 		cwd,
@@ -1303,6 +1314,7 @@ export default function (pi: ExtensionAPI): void {
 
 	if (compatConfig?.enabled !== false) registerSessionEvents(pi, {
 		onSessionStart: (ctx) => {
+			registerAskUserQuestionForContext(ctx);
 			if (!ctx.hasUI) return;
 			applyToolBackgroundMode(ctx.ui.theme);
 			applyThemePaletteIfNeeded(ctx.ui.theme);
