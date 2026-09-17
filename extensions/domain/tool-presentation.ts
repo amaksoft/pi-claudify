@@ -8,6 +8,8 @@ const COMPATIBLE_INSPECTION_TOOLS = new Set<CompatibleInspectionToolName>([
 
 export interface ToolPresentationAdapter {
 	name: CompatibleInspectionToolName;
+	/** Tested built-in presentation may replace Pi's native self-owned shell. */
+	overrideSelfShell?: boolean;
 	renderCall?: (...args: any[]) => unknown;
 	renderResult?: (...args: any[]) => unknown;
 }
@@ -75,5 +77,5 @@ export function presentationAdapterFromDefinition(definition: unknown): ToolPres
 	const renderCall = typeof record.renderCall === "function" ? record.renderCall as (...args: any[]) => unknown : undefined;
 	const renderResult = typeof record.renderResult === "function" ? record.renderResult as (...args: any[]) => unknown : undefined;
 	if (!renderCall && !renderResult) return undefined;
-	return { name, renderCall, renderResult };
+	return { name, overrideSelfShell: record.overrideSelfShell === true, renderCall, renderResult };
 }

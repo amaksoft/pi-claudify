@@ -1,16 +1,7 @@
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { sharedState } from "./shared-state.ts";
-
 export type ToolOwnerKind = "builtin" | "self" | "external" | "unknown";
-
-const TOOL_OWNERSHIP_SNAPSHOT_KEY = Symbol.for("pi-claudify:tool-ownership-snapshot");
-
-export function toolOwnershipSnapshot(): Map<string, ToolOwnerKind> {
-	return sharedState(TOOL_OWNERSHIP_SNAPSHOT_KEY, () => new Map<string, ToolOwnerKind>());
-}
-
 
 const CLAUDIFY_SOURCE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 

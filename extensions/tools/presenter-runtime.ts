@@ -1,8 +1,11 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
+import type { ToolPresentationAdapter } from "../domain/tool-presentation.ts";
 
 export interface ToolRegistrationRuntime {
 	cwd: string;
 	register(definition: any): void;
+	registerExecution?: boolean;
+	registerPresentation?(presentation: ToolPresentationAdapter): void;
 	forwardContract(definition: any): Record<string, unknown>;
 }
 

@@ -14,6 +14,7 @@ const home = join(root, "home");
 mkdirSync(join(home, ".pi"), { recursive: true });
 writeFileSync(join(home, ".pi", "settings.json"), JSON.stringify({ ccSkipToolOverrides: ["grep", "find", "unknown"] }));
 process.env.HOME = home;
+process.env.PI_CLAUDIFY_NATIVE_EXECUTION = "0";
 process.env.PI_CLAUDIFY_SKIP_TOOL_OVERRIDES = "bash";
 
 const { default: extension } = await import("../extensions/index.ts");

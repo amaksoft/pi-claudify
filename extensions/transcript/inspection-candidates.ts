@@ -5,8 +5,8 @@
 import { settingsFeatureEnabled } from "../domain/compatibility.ts";
 import { isMcpToolName } from "../host/tool-discovery.ts";
 import type { InspectionKind } from "../inspection-summary.ts";
-import { isToolExecutionLike, toolComponentRecord } from "../pi-tool-adapter.ts";
 import { readSettings } from "../settings.ts";
+import { snapshotToolExecution } from "./tool-record.ts";
 import { mcpServerForComponent } from "../tools/mcp-tool.ts";
 
 /** Claude parity by default; off keeps shell rows visible without expanding. */
@@ -39,37 +39,38 @@ export function isInspectionGroupCandidate(
 	value: unknown,
 	isPresentationOverrideSkipped: (toolName: unknown) => boolean,
 ): boolean {
-	if (!readOnlyToolGroupingEnabled() || !isToolExecutionLike(value)) return false;
-	const rec = toolComponentRecord(value);
-	if (isPresentationOverrideSkipped(rec.toolName)) return false;
-	if (rec.expanded === true) return false;
-	if (rec.toolName === "read" || rec.toolName === "grep" || rec.toolName === "find" || rec.toolName === "ls") return true;
+	if (!readOnlyToolGroupingEnabled()) return false;
+	const record = snapshotToolExecution(value);
+	if (!record || isPresentationOverrideSkipped(record.name) || record.expanded) return false;
+	if (record.name === "read" || record.name === "grep" || record.name === "find" || record.name === "ls") return true;
 	// Every MCP call aggregates, whatever it does. Claude Code renders a mutating
 	// or failing MCP tool exactly like a read-only one — there is no separate row.
-	if (isMcpToolName(rec.toolName)) return true;
+	if (isMcpToolName(record.name)) return true;
 	// Claude Code aggregates every shell command ("running 1 shell command"), not
 	// just the ones that look like file reads — so that is the default. Turning
 	// groupShellCommands off keeps shell calls as their own always-visible rows:
 	// aggregation is recoverable (ctrl+o shows the command), but ctrl+o opens the
 	// whole transcript, so a user who wants to see commands as they happen has no
 	// per-row alternative.
-	if (rec.toolName === "bash") return shellGroupingEnabled();
+	if (record.name === "bash") return shellGroupingEnabled();
 	return false;
 }
 
 export function isMcpToolExecution(value: unknown): boolean {
-	return isToolExecutionLike(value) && isMcpToolName(toolComponentRecord(value).toolName);
+	const record = snapshotToolExecution(value);
+	return !!record && isMcpToolName(record.name);
 }
 
 export function inspectionKind(value: unknown): InspectionKind {
-	const rec = toolComponentRecord(value);
-	if (rec.toolName === "read") return "read";
-	if (rec.toolName === "grep") return "grep";
+	const record = snapshotToolExecution(value);
+	if (!record) return "bash";
+	if (record.name === "read") return "read";
+	if (record.name === "grep") return "grep";
 	// Claude Code folds Glob into the grep clause — a glob for `src/*.ts` renders
 	// as "Searching for 1 pattern" with ⎿ "src/*.ts", not a clause of its own.
-	if (rec.toolName === "find") return "grep";
-	if (rec.toolName === "ls") return "ls";
-	if (isMcpToolName(rec.toolName)) return "mcp";
+	if (record.name === "find") return "grep";
+	if (record.name === "ls") return "ls";
+	if (isMcpToolName(record.name)) return "mcp";
 	return "bash";
 }
 

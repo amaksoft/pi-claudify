@@ -8,6 +8,7 @@ import claudify from "../../extensions/index.ts";
 const RESTORED_EDIT_KEY = Symbol.for("pi-claudify:test-restored-edit-row");
 const RESTORED_BASH_KEY = Symbol.for("pi-claudify:test-restored-bash-rows");
 const REQUEST_RENDER_KEY = Symbol.for("pi-claudify:test-restored-edit-request-render");
+const API_IDENTITY_KEY = Symbol.for("pi-claudify:test-reload-api-identity");
 
 function restoredEditRow(cwd: string): ToolExecutionComponent {
 	const shared = globalThis as Record<PropertyKey, unknown>;
@@ -20,8 +21,9 @@ function restoredEditRow(cwd: string): ToolExecutionComponent {
 		{ showImages: false },
 		{
 			name: "edit",
-			description: "Restored external edit",
+			description: "Restored builtin-like edit",
 			parameters: {} as any,
+			renderShell: "self",
 			execute: async () => ({ content: [{ type: "text", text: "updated" }], details: {} }),
 			renderCall: () => new Text("edit reload-edit.ts", 0, 0),
 			renderResult: () => new Text("native restored edit result", 0, 0),
@@ -65,6 +67,10 @@ function restoredBashRows(cwd: string): any[] {
 }
 
 export default function reloadPresentationFixture(pi: ExtensionAPI): void {
+	const shared = globalThis as Record<PropertyKey, unknown>;
+	const previousIdentity = shared[API_IDENTITY_KEY] as { pi?: unknown; events?: unknown } | undefined;
+	const apiIdentity = { samePi: previousIdentity?.pi === pi, sameEvents: previousIdentity?.events === (pi as any).events };
+	shared[API_IDENTITY_KEY] = { pi, events: (pi as any).events };
 	// The row predates this presentation generation, just like restored history.
 	const historicalEdit = restoredEditRow(process.cwd());
 	const historicalBash = restoredBashRows(process.cwd());
@@ -79,7 +85,7 @@ export default function reloadPresentationFixture(pi: ExtensionAPI): void {
 				if (typeof previous?.generation === "number") generation = previous.generation + 1;
 			} catch { /* retry from generation one */ }
 		}
-		if (statePath) writeFileSync(statePath, JSON.stringify({ generation }));
+		if (statePath) writeFileSync(statePath, JSON.stringify({ generation, ...apiIdentity }));
 		const root = new Container();
 		root.addChild(new Text(`RELOAD_PRESENTATION_GENERATION_${generation}`, 0, 0));
 		root.addChild(historicalEdit);

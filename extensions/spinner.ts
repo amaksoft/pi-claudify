@@ -739,12 +739,19 @@ export function activeThinkingProgressPhrase(thinkingStartedAt: number, now: num
 	return thinkingProgressPhrase(thinkingStartedAt > 0 ? Math.max(0, now - thinkingStartedAt) : 0);
 }
 
-export default function (pi: ExtensionAPI, suppliedOwner?: object) {
+export interface SpinnerRuntimeAuthority { owner: object; isCurrent(): boolean }
+
+export default function (pi: ExtensionAPI, supplied?: object | SpinnerRuntimeAuthority) {
 	// Disabled generations register no event handlers. The process-stable Loader
 	// wrapper installed above simultaneously has no active hooks and delegates to
 	// the captured native implementation.
 	if (!spinnerFeatureEnabled()) return;
-	const shimmerOwner = suppliedOwner ?? {};
+	const authority = supplied && "owner" in supplied && typeof (supplied as SpinnerRuntimeAuthority).isCurrent === "function"
+		? supplied as SpinnerRuntimeAuthority
+		: undefined;
+	const shimmerOwner = authority?.owner ?? supplied ?? {};
+	let locallyCurrent = true;
+	const isCurrent = () => locallyCurrent && (authority?.isCurrent() ?? true);
 	installSpinnerLoaderPatch(shimmerOwner);
 	const ownerShimmer = shimmerState(shimmerOwner);
 	let agentStartTime = 0;
@@ -941,17 +948,20 @@ export default function (pi: ExtensionAPI, suppliedOwner?: object) {
 	}
 
 	pi.on("before_agent_start", async () => {
+		if (!isCurrent()) return;
 		// Start once per top-level request. Steering/follow-up messages while the
 		// agent is active must not reset the timer.
 		if (!agentStartTime) agentStartTime = Date.now();
 	});
 
 	pi.on("agent_start", async () => {
+		if (!isCurrent()) return;
 		if (!agentStartTime) agentStartTime = Date.now();
 		tokenTracker.resetRequest();
 	});
 
 	pi.on("turn_start", async (_event, ctx) => {
+		if (!isCurrent()) return;
 		activeTurnId++;
 		turnActive = true;
 		activeCtx = ctx;
@@ -971,6 +981,7 @@ export default function (pi: ExtensionAPI, suppliedOwner?: object) {
 	});
 
 	pi.on("message_update", async (event, ctx) => {
+		if (!isCurrent()) return;
 		activeCtx = ctx;
 		applyThemeColors(ctx.ui?.theme, shimmerOwner);
 		const evt = event.assistantMessageEvent;
@@ -994,6 +1005,7 @@ export default function (pi: ExtensionAPI, suppliedOwner?: object) {
 	});
 
 	pi.on("message_end", async (event, ctx) => {
+		if (!isCurrent()) return;
 		if (event.message?.role !== "assistant") return;
 		if (tokenTracker.finish(event.message) && ctx.hasUI) syncWorkingMessage(true);
 		// Abort/error streams do not always emit thinking_end.
@@ -1001,6 +1013,7 @@ export default function (pi: ExtensionAPI, suppliedOwner?: object) {
 	});
 
 	pi.on("turn_end", async (_event, ctx) => {
+		if (!isCurrent()) return;
 		turnActive = false;
 		ownerShimmer.anchorMs = 0; // the "✻ Worked for …" completion line is not shimmered
 		activeCtx = ctx;
@@ -1034,6 +1047,7 @@ export default function (pi: ExtensionAPI, suppliedOwner?: object) {
 	});
 
 	pi.on("agent_end", async () => {
+		if (!isCurrent()) return;
 		turnActive = false;
 		agentStartTime = 0;
 		// Preserve the just-finished "Worked for …" line. Pi emits agent_end
@@ -1043,14 +1057,18 @@ export default function (pi: ExtensionAPI, suppliedOwner?: object) {
 		clearDisplay();
 	});
 
-	pi.on("session_shutdown", async () => {
+	pi.on("session_shutdown", async (event: any) => {
 		turnActive = false;
 		clearDisplay();
 		activeCtx = null;
+		if (event?.reason !== "reload" && event?.reason !== "quit") return;
+		locallyCurrent = false;
 		testedPiPatchBroker.markRetiring(shimmerOwner);
-		deferGenerationRelease(() => {
+		const release = () => {
 			testedPiPatchBroker.releaseSurface(shimmerOwner, SHIMMER_SURFACE);
 			testedPiPatchBroker.releaseSurface(shimmerOwner, LOADER_PATCH_SURFACE);
-		});
+		};
+		if (event?.reason === "reload") deferGenerationRelease(release);
+		else release();
 	});
 }

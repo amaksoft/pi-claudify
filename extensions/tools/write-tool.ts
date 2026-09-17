@@ -2,12 +2,13 @@ import { createWriteToolDefinition, type Theme } from "@earendil-works/pi-coding
 
 import { parseDiff, type ParsedDiff } from "../domain/diff-model.ts";
 import { languageForPath } from "../domain/language.ts";
+import type { ToolPresentationAdapter } from "../domain/tool-presentation.ts";
 import { describeWrite, type SummaryEmphasis } from "../mutation-summary.ts";
 import { sanitizeToolOutput } from "../terminal-sanitize.ts";
 import { executeWriteWithSnapshot } from "./write-execution.ts";
 import type { DiffCardRuntime, ToolChromeRuntime } from "./presenter-runtime.ts";
 
-export interface WriteToolRuntime extends ToolChromeRuntime, DiffCardRuntime {
+export interface WriteToolPresentationRuntime extends Omit<ToolChromeRuntime, "register" | "registerExecution" | "registerPresentation" | "forwardContract">, DiffCardRuntime {
 	summarizeDiff(added: number, removed: number): string;
 	linkedPath(path: string, cwd: string): string;
 	revealArgs(ctx: any): boolean;
@@ -27,18 +28,20 @@ export interface WriteToolRuntime extends ToolChromeRuntime, DiffCardRuntime {
 	maxRenderLines: number;
 	hash(text: string): string;
 	revision(): number;
+	diffPresentationEnabled(): boolean;
 }
 
-export function registerWriteTool(runtime: WriteToolRuntime): void {
-	const native = createWriteToolDefinition(runtime.cwd);
-	runtime.register({
+export interface WriteToolRuntime extends WriteToolPresentationRuntime {
+	register(definition: any): void;
+	registerExecution?: boolean;
+	registerPresentation?(presentation: ToolPresentationAdapter): void;
+	forwardContract(definition: any): Record<string, unknown>;
+}
+
+export function createWriteToolPresentation(runtime: WriteToolPresentationRuntime): ToolPresentationAdapter {
+	return {
 		name: "write",
-		label: "write",
-		description: native.description,
-		parameters: native.parameters,
-		...runtime.forwardContract(native),
-		execute: (toolCallId: string, params: any, signal: AbortSignal | undefined, onUpdate: any, ctx: any) =>
-			executeWriteWithSnapshot(runtime.cwd, toolCallId, params, signal, onUpdate, ctx, { summarizeDiff: runtime.summarizeDiff }),
+		overrideSelfShell: true,
 		renderCall(args: any, theme: Theme, ctx: any) {
 			const path = args?.path ?? args?.file_path ?? "";
 			const reveal = runtime.revealArgs(ctx) || (!!path && runtime.hasArg(args, "content"));
@@ -57,6 +60,7 @@ export function registerWriteTool(runtime: WriteToolRuntime): void {
 				const error = result.content?.filter((item: any) => item.type === "text").map((item: any) => item.text || "").join("\n") ?? "Error";
 				return runtime.makeText(ctx.lastComponent, runtime.withBranch(theme.fg("error", sanitizeToolOutput(error)), theme));
 			}
+			if (!runtime.diffPresentationEnabled()) return runtime.makeText(ctx.lastComponent, runtime.withBranch(theme.fg("success", "Written"), theme));
 			const details = result.details;
 			if (details?._type === "diff" && details.diff?.lines) {
 				const previewLines = ctx.expanded ? runtime.maxRenderLines : runtime.collapsedLimit();
@@ -97,5 +101,21 @@ export function registerWriteTool(runtime: WriteToolRuntime): void {
 			}
 			return runtime.makeText(ctx.lastComponent, runtime.withBranch(theme.fg("success", "Written"), theme));
 		},
+	};
+}
+
+export function registerWriteTool(runtime: WriteToolRuntime): void {
+	const presentation = createWriteToolPresentation(runtime);
+	runtime.registerPresentation?.(presentation);
+	if (runtime.registerExecution === false) return;
+	const native = createWriteToolDefinition(runtime.cwd);
+	runtime.register({
+		label: "write",
+		description: native.description,
+		parameters: native.parameters,
+		...runtime.forwardContract(native),
+		execute: (toolCallId: string, params: any, signal: AbortSignal | undefined, onUpdate: any, ctx: any) =>
+			executeWriteWithSnapshot(runtime.cwd, toolCallId, params, signal, onUpdate, ctx, { summarizeDiff: runtime.summarizeDiff }),
+		...presentation,
 	});
 }

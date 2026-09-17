@@ -34,7 +34,6 @@ export default function (pi: any): void {
 			const duringNative = isNative();
 			const ownersDuring = testedPiPatchBroker.inspect().owners;
 			for (const handler of handlers.get("session_shutdown") ?? []) await handler({ type: "session_shutdown", reason: "quit" }, ctx);
-			await new Promise((resolve) => setTimeout(resolve, 1_200));
 			const afterNative = isNative();
 			const ownersAfter = testedPiPatchBroker.inspect().owners;
 			writeFileSync(process.env.PI_CLAUDIFY_NESTED_OWNER_STATE!, JSON.stringify({ beforeNative, duringNative, afterNative, ownersBefore, ownersDuring, ownersAfter }));

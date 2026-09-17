@@ -6,12 +6,13 @@ import {
 	type Theme,
 } from "@earendil-works/pi-coding-agent";
 
+import type { ToolPresentationAdapter } from "../domain/tool-presentation.ts";
 import { buildSearchCallView, buildTextResultView, type SearchToolName } from "../domain/tool-view.ts";
 import { dirIcon, fileIcon } from "../render/file-icons.ts";
 import { selectVisualItems } from "../visual-preview.ts";
 import type { WidthAwareToolRuntime } from "./presenter-runtime.ts";
 
-export interface SearchToolRuntime extends WidthAwareToolRuntime {
+export interface SearchToolPresentationRuntime extends Omit<WidthAwareToolRuntime, "register" | "registerExecution" | "registerPresentation" | "forwardContract"> {
 	shortPath(path: string, cwd: string): string;
 	visualPreview(text: string, width: number, rows: number, theme: Theme): string;
 	expandedLimit(): number;
@@ -21,24 +22,23 @@ export interface SearchToolRuntime extends WidthAwareToolRuntime {
 	reset: () => string;
 }
 
+export interface SearchToolRuntime extends SearchToolPresentationRuntime {
+	register(definition: any): void;
+	registerExecution?: boolean;
+	registerPresentation?(presentation: ToolPresentationAdapter): void;
+	forwardContract(definition: any): Record<string, unknown>;
+}
+
 function nativeDefinition(kind: SearchToolName, cwd: string): any {
 	if (kind === "grep") return createGrepToolDefinition(cwd);
 	if (kind === "find") return createFindToolDefinition(cwd);
 	return createLsToolDefinition(cwd);
 }
 
-function definitionFor(kind: SearchToolName, runtime: SearchToolRuntime): any {
-	const native = nativeDefinition(kind, runtime.cwd);
+export function createSearchToolPresentation(kind: SearchToolName, runtime: SearchToolPresentationRuntime): ToolPresentationAdapter {
 	return {
 		name: kind,
-		label: kind,
-		description: native.description,
-		parameters: native.parameters,
-		...runtime.forwardContract(native),
-		async execute(toolCallId: string, params: any, signal: AbortSignal | undefined, onUpdate: any, ctx: any) {
-			const cwd = ctx?.cwd ?? runtime.cwd;
-			return nativeDefinition(kind, cwd).execute(toolCallId, params, signal, onUpdate, ctx);
-		},
+		overrideSelfShell: true,
 		renderCall(args: any, theme: Theme, ctx: any) {
 			runtime.syncCallStatus(ctx);
 			const view = buildSearchCallView(kind, args, (path) => runtime.shortPath(path, ctx.cwd ?? runtime.cwd));
@@ -91,6 +91,24 @@ function definitionFor(kind: SearchToolName, runtime: SearchToolRuntime): any {
 	};
 }
 
+function definitionFor(kind: SearchToolName, runtime: SearchToolRuntime): any {
+	const native = nativeDefinition(kind, runtime.cwd);
+	return {
+		...createSearchToolPresentation(kind, runtime),
+		label: kind,
+		description: native.description,
+		parameters: native.parameters,
+		...runtime.forwardContract(native),
+		async execute(toolCallId: string, params: any, signal: AbortSignal | undefined, onUpdate: any, ctx: any) {
+			const cwd = ctx?.cwd ?? runtime.cwd;
+			return nativeDefinition(kind, cwd).execute(toolCallId, params, signal, onUpdate, ctx);
+		},
+	};
+}
+
 export function registerSearchTools(runtime: SearchToolRuntime): void {
-	for (const kind of ["grep", "find", "ls"] as const) runtime.register(definitionFor(kind, runtime));
+	for (const kind of ["grep", "find", "ls"] as const) {
+		runtime.registerPresentation?.(createSearchToolPresentation(kind, runtime));
+		if (runtime.registerExecution !== false) runtime.register(definitionFor(kind, runtime));
+	}
 }

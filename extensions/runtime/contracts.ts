@@ -7,6 +7,7 @@ export type CapabilityId =
 	| "public:commands"
 	| "public:events"
 	| "public:tools"
+	| "public:send-user-message"
 	| "public:tui"
 	| "tested:component-renderers"
 	| "tested:container-composition"

@@ -34,6 +34,7 @@ import type { BundledLanguage } from "shiki";
 import { AdditiveToolsController } from "./adapters/additive-tools.ts";
 import { activatePortablePi } from "./adapters/public-pi.ts";
 import { activateTestedPiRuntime } from "./adapters/tested-pi/adapter.ts";
+import { testedPiPatchBroker } from "./adapters/tested-pi/patch-broker.ts";
 import { probeTestedPiCapabilities } from "./adapters/tested-pi/probes.ts";
 import { registerBanner } from "./banner.ts";
 import { CLAUDE_PALETTE } from "./claude-palette.ts";
@@ -43,12 +44,12 @@ import { debugDiagnostic } from "./debug.ts";
 import { bumpDiffPresentationEpoch, diffCard } from "./diff-card.ts";
 import { markPointerExpandedMembers } from "./expansion-coordinator.ts";
 import { deferGenerationRelease } from "./lifecycle/generation-handoff.ts";
-import { installClaudeFooter, normalizeHexColor, patchEditorBorderColor } from "./footer.ts";
+import { installClaudeFooter, normalizeHexColor, patchEditorBorderColor, releaseEditorBorderColor } from "./footer.ts";
 import { registerClaudifyCommand } from "./lifecycle/claudify-command.ts";
 import { MessageLifecycle } from "./lifecycle/message-lifecycle.ts";
 import { registerPointerExpansionLifecycle } from "./lifecycle/pointer-expansion.ts";
 import { registerSessionEvents } from "./lifecycle/session-events.ts";
-import { HOST_CONTAINER_RENDER, InspectionGroupComponent } from "./inspection-group.ts";
+import { hostContainerRender, InspectionGroupComponent } from "./inspection-group.ts";
 import { renderWithStackedConsecutiveBash } from "./transcript/bash-stacking.ts";
 import {
 	ensureInspectionGroups as ensureInspectionGroupsWithRuntime,
@@ -92,6 +93,8 @@ import {
 	resetToolDiscovery,
 	shouldUseGenericToolRenderer,
 } from "./host/tool-discovery.ts";
+import { classifyToolOwner, readToolOwners, type ToolOwnerKind } from "./host/tool-ownership.ts";
+import { ToolProvenanceObserver } from "./host/tool-provenance.ts";
 import { ToolRegistrationCoordinator } from "./host/tool-registration.ts";
 import {
 	installReadImageExpansion,
@@ -136,7 +139,7 @@ import {
 } from "./pi-tool-adapter.ts";
 import { applyPromptPointer, registerPromptPointer } from "./prompt-editor.ts";
 import { resolveSurfaceColorSource } from "./presentation-profile.ts";
-import { registerSessionMetrics } from "./session-metrics.ts";
+import { registerSessionMetrics, releaseSessionMetrics } from "./session-metrics.ts";
 import { buildActivationPlan } from "./runtime/activation-plan.ts";
 import { detectHostDescriptor, parseProfilePreference } from "./runtime/capabilities.ts";
 import type { ActivationPlan } from "./runtime/contracts.ts";
@@ -412,7 +415,7 @@ function patchGlobalToolBorders(owner: object, pointerOwner: object): void {
 	installContainerRenderPatch(
 		[hostContainerPrototype(), Container.prototype],
 		owner,
-		HOST_CONTAINER_RENDER,
+		hostContainerRender(),
 		{
 			presentationSkipped: presentationOverrideSkipped,
 			isInspectionCandidate: (value) => isInspectionGroupCandidate(value, presentationOverrideSkipped),
@@ -553,7 +556,7 @@ function toolPresentationSkipped(toolName: unknown): boolean {
 	return presentationOverrideSkipped(toolName);
 }
 
-function patchToolExecutionRenderers(owner: object): void {
+function patchToolExecutionRenderers(owner: object, canOverrideSelfShell: (name: string, definition: unknown) => boolean): void {
 	legacyToolRendererPatchDetected = installToolRendererPatch(owner, {
 		presentationSkipped: toolPresentationSkipped,
 		shouldUseGeneric: shouldUseGenericToolRenderer,
@@ -561,6 +564,7 @@ function patchToolExecutionRenderers(owner: object): void {
 		renderApplyResult: (result, options, theme, ctx) => renderApplyPatchResult(result, !!options?.isPartial, theme, ctx),
 		renderGenericCall: renderGenericToolCall,
 		renderGenericResult: renderGenericToolResult,
+		canOverrideSelfShell,
 		diagnostic: (key, error) => debugDiagnostic(key, error),
 	});
 }
@@ -951,6 +955,7 @@ function applyPatchRuntime(shortPathForDisplay: (path: string) => string): Apply
 		maxPreviewLines: MAX_PREVIEW_LINES,
 		maxRenderLines: MAX_RENDER_LINES,
 		hash: hashText,
+		diffPresentationEnabled: () => settingsFeatureEnabled(readSettings().values, "diffPresentation"),
 	};
 }
 
@@ -1059,7 +1064,23 @@ function activateCurrentTestedPi(
 	const globalRenderOwner = runtime.owner;
 	const pointerExpansionOwner = runtime.owner;
 	const messagePatchOwner = runtime.owner;
-	if (featureEnabled("spinner")) registerSpinner(pi, runtime.owner);
+	const bindRuntimeSession = (ctx: any): void => {
+		let key: string | undefined;
+		try {
+			key = ctx?.sessionManager?.getSessionId?.() ?? ctx?.sessionManager?.getSessionFile?.();
+		} catch { /* a host without stable session identity keeps rank fallback */ }
+		if (!key) return;
+		runtime.bindSession(String(key));
+		testedPiPatchBroker.claimSessionHandoff(runtime.owner, String(key));
+	};
+	let executionOwners = new Map<string, ToolOwnerKind>();
+	const refreshExecutionOwners = (knownTools?: unknown[]): void => {
+		if (process.env.PI_CLAUDIFY_NATIVE_EXECUTION === "0") return;
+		const observed = readToolOwners(() => knownTools ?? (pi as any).getAllTools?.());
+		if (observed) executionOwners = observed;
+	};
+	try { refreshExecutionOwners(); } catch { /* registry is unavailable during factory loading on current Pi */ }
+	if (featureEnabled("spinner")) registerSpinner(pi, runtime);
 	if (featureEnabled("toolPresentation")) {
 		patchToolFallbackSanitization(fallbackSanitizerOwner);
 		patchToolRenderCacheInvalidation();
@@ -1097,8 +1118,14 @@ function activateCurrentTestedPi(
 		enabled: () => true,
 	});
 	if (featureEnabled("toolBackground")) patchToolRowIndent(fallbackSanitizerOwner);
-	if (featureEnabled("toolPresentation")) patchToolExecutionRenderers(toolRendererOwner);
-	if (featureEnabled("footer")) patchEditorBorderColor();
+	if (featureEnabled("toolPresentation")) patchToolExecutionRenderers(
+		toolRendererOwner,
+		(name, definition) => {
+			const directOwner = classifyToolOwner(definition);
+			return directOwner !== "external" && (directOwner === "builtin" || executionOwners.get(name.toLowerCase()) === "builtin");
+		},
+	);
+	if (featureEnabled("footer")) patchEditorBorderColor(runtime.owner);
 	if (featureEnabled("diffPresentation")) applyDiffPalette();
 	if (featureEnabled("assistantMessages")) messageLifecycle.register(pi, {
 		workedStartKey: WORKED_START_KEY,
@@ -1112,11 +1139,12 @@ function activateCurrentTestedPi(
 		appendWorked: appendWorkedDurationLine,
 	});
 	if (featureEnabled("fullscreenTui")) registerFullscreenTui(pi);
-	if (featureEnabled("footer")) registerSessionMetrics(pi);
+	if (featureEnabled("footer")) registerSessionMetrics(pi, runtime.owner);
 	if (featureEnabled("banner")) registerBanner(pi);
 	if (featureEnabled("promptPointer")) registerPromptPointer(pi);
 
 	if (featureEnabled("inspectionGroups")) registerPointerExpansionLifecycle(pi, pointerExpansionOwner, {
+		isCurrent: () => runtime.isCurrent(),
 		shouldWarnRestart: () => legacyToolRendererPatchDetected || legacyToolFallbackPatchDetected,
 		warning: "Restart Pi once to finish upgrading Claudify's renderer hooks",
 	});
@@ -1136,30 +1164,36 @@ function activateCurrentTestedPi(
 		diffThemes: DIFF_PRESET_KEYS,
 		colorKeys: COMMON_COLOR_KEYS,
 		onSettingChange: (key, ctx, requestRender) => {
-			if (key === "colorSource") { applyAccentOverride(ctx.ui.theme); applyToolBackgroundMode(ctx.ui.theme); bustSpinnerSettingsCache(); }
-			if (key === "toolBackground") { setToolBackgroundOverride(null); applyToolBackgroundMode(ctx.ui.theme); }
-			if (key === "hiddenThinkingLabel") applyHiddenThinkingLabel(ctx);
-			if (key === "accentColor") applyAccentOverride(ctx.ui.theme);
-			if (key === "userMessageBox") applyToolBackgroundMode(ctx.ui.theme);
-			if (key === "promptPointer") applyPromptPointer(ctx);
-			if (key === "spinnerPlacement") applyPromptPointer(ctx, true);
-			if (["spinnerColor", "spinnerStatusColor", "spinnerShimmer", "spinnerVerbs", "spinnerVerbMode", "themeAdaptive"].includes(key)) bustSpinnerSettingsCache();
-			if (key === "diffSyntaxHighlighting") { clearHighlightCache(); bumpDiffPresentationEpoch(); }
-			if (["diffTheme", "diffPalette", "themeAdaptive"].includes(key)) refreshDiffPalette(ctx, requestRender);
-			if (key === "footerStyle") installClaudeFooter(ctx, pi);
+			if (key === "colorSource") {
+				if (featureEnabled("themeColors")) applyAccentOverride(ctx.ui.theme);
+				if (featureEnabled("toolBackground") || featureEnabled("userMessages")) applyToolBackgroundMode(ctx.ui.theme);
+				if (featureEnabled("spinner")) bustSpinnerSettingsCache();
+			}
+			if (key === "toolBackground" && featureEnabled("toolBackground")) { setToolBackgroundOverride(null); applyToolBackgroundMode(ctx.ui.theme); }
+			if (key === "hiddenThinkingLabel" && featureEnabled("assistantMessages")) applyHiddenThinkingLabel(ctx);
+			if (key === "accentColor" && featureEnabled("themeColors")) applyAccentOverride(ctx.ui.theme);
+			if (key === "userMessageBox" && featureEnabled("userMessages")) applyToolBackgroundMode(ctx.ui.theme);
+			if (key === "promptPointer" && featureEnabled("promptPointer")) applyPromptPointer(ctx);
+			if (key === "spinnerPlacement" && featureEnabled("promptPointer")) applyPromptPointer(ctx, true);
+			if (featureEnabled("spinner") && ["spinnerColor", "spinnerStatusColor", "spinnerShimmer", "spinnerVerbs", "spinnerVerbMode", "themeAdaptive"].includes(key)) bustSpinnerSettingsCache();
+			if (key === "diffSyntaxHighlighting" && featureEnabled("diffPresentation")) { clearHighlightCache(); bumpDiffPresentationEpoch(); }
+			if (featureEnabled("diffPresentation") && ["diffTheme", "diffPalette", "themeAdaptive"].includes(key)) refreshDiffPalette(ctx, requestRender);
+			if (key === "footerStyle" && featureEnabled("footer")) installClaudeFooter(ctx, pi);
 			requestRender();
 		},
 		onSettingPreview: (key, value, ctx, requestRender) => {
-			if (key === "diffTheme") {
+			if (key === "diffTheme" && featureEnabled("diffPresentation")) {
 				setDiffThemePreview(value === null ? null : typeof value === "string" ? value : undefined);
 				refreshDiffPalette(ctx, requestRender);
 				return;
 			}
-			const previewKey = key === "spinnerColor" ? SPINNER_COLOR_PREVIEW_KEY : SPINNER_STATUS_COLOR_PREVIEW_KEY;
-			if (typeof value === "string") (globalThis as any)[previewKey] = value;
-			else delete (globalThis as any)[previewKey];
-			bustSpinnerSettingsCache();
-			requestRender();
+			if (featureEnabled("spinner") && (key === "spinnerColor" || key === "spinnerStatusColor")) {
+				const previewKey = key === "spinnerColor" ? SPINNER_COLOR_PREVIEW_KEY : SPINNER_STATUS_COLOR_PREVIEW_KEY;
+				if (typeof value === "string") (globalThis as any)[previewKey] = value;
+				else delete (globalThis as any)[previewKey];
+				bustSpinnerSettingsCache();
+				requestRender();
+			}
 		},
 	});
 
@@ -1172,6 +1206,7 @@ function activateCurrentTestedPi(
 		return linkedPath(runtimeCwd, sp(path, runtimeCwd), resolve(runtimeCwd, path));
 	};
 	const skippedOverrides = skippedToolOverrides(readSettings().values);
+	const preserveNativeExecution = process.env.PI_CLAUDIFY_NATIVE_EXECUTION !== "0";
 	// register-builtins.ts calls registerReadTool/registerBashTool/etc
 	// unconditionally; a tool named here is never handed to `pi.registerTool`
 	// by the coordinator below (item 4: false means no registration,
@@ -1229,6 +1264,8 @@ function activateCurrentTestedPi(
 	registerBuiltinTools({
 		cwd,
 		registerBuiltinOverride,
+		registerBuiltinExecution: !preserveNativeExecution,
+		registerPresentation: (presentation: any) => builtinRegistration.addPresentation(presentation),
 		forwardedToolContract,
 		hostToolSettings,
 		hostSettingsContext,
@@ -1288,6 +1325,7 @@ function activateCurrentTestedPi(
 		computeLocalizedEditDiffs,
 		buildAggregateEditPreviewText,
 		buildEditPreviewText,
+		diffPresentationEnabled: () => featureEnabled("diffPresentation"),
 	});
 
 	// Presentation is selected by the observable call/result contract, not by the
@@ -1297,6 +1335,27 @@ function activateCurrentTestedPi(
 	// toolPresentationSkipped, not by skipping this call.
 	installCompatibleToolPresentations(toolRendererOwner, presentationAdapters());
 
+	const provenanceObserver = preserveNativeExecution
+		&& featureEnabled("toolPresentation")
+		&& featureEnabled("diffPresentation")
+		&& (!presentationOverrideSkipped("write") || !presentationOverrideSkipped("edit"))
+		? new ToolProvenanceObserver(runtime, {
+			isBuiltinOwner: (name) => !presentationOverrideSkipped(name) && executionOwners.get(name) === "builtin",
+			summarizeDiff,
+		})
+		: undefined;
+	if (preserveNativeExecution && featureEnabled("toolPresentation")) {
+		pi.on("tool_execution_start", async () => { try { refreshExecutionOwners(); } catch { /* retain the last complete snapshot */ } });
+	}
+	if (provenanceObserver) {
+		pi.on("tool_call", async (event: any, ctx: any) => {
+			try { refreshExecutionOwners(); } catch { /* retain the last complete snapshot */ }
+			provenanceObserver.onToolCall(event, ctx?.cwd ?? cwd);
+		});
+		pi.on("tool_result", async (event: any) => provenanceObserver.onToolResult(event));
+		pi.on("tool_execution_end", async (event: any) => provenanceObserver.onToolEnd(event.toolCallId));
+	}
+
 	const discoverPresentationTools = (): void => {
 		let allTools: unknown[] = [];
 		try {
@@ -1305,6 +1364,7 @@ function activateCurrentTestedPi(
 			debugDiagnostic("presentation-tool-discovery", error);
 			return;
 		}
+		if (preserveNativeExecution) refreshExecutionOwners(allTools);
 		resetToolDiscovery(runtime.owner);
 		for (const tool of allTools) {
 			// Public ToolInfo is metadata-only. Record provable MCP identity for
@@ -1316,25 +1376,47 @@ function activateCurrentTestedPi(
 	if (compatConfig?.enabled !== false) registerSessionEvents(pi, {
 		isCurrent: () => runtime.isCurrent(),
 		onSessionStart: (ctx) => {
+			bindRuntimeSession(ctx);
 			registerAskUserQuestionForContext(ctx);
 			if (!ctx.hasUI) return;
-			applyToolBackgroundMode(ctx.ui.theme);
-			applyThemePaletteIfNeeded(ctx.ui.theme);
-			bumpToolPresentationRevision();
-			(ctx.ui as any).requestRender?.();
-			applyHiddenThinkingLabel(ctx);
-			installClaudeFooter(ctx, pi);
+			if (featureEnabled("userMessages")) applyUserMessageBoxTheme(ctx.ui.theme);
+			if (featureEnabled("toolBackground")) {
+				syncToolBackgroundMode();
+				applyToolBackgroundTheme(ctx.ui.theme, toolBackgroundMode);
+			}
+			if (featureEnabled("themeColors") || featureEnabled("diffPresentation")) applyThemePaletteIfNeeded(ctx.ui.theme);
+			if (featureEnabled("toolPresentation")) {
+				bumpToolPresentationRevision();
+				(ctx.ui as any).requestRender?.();
+			}
+			if (featureEnabled("assistantMessages")) applyHiddenThinkingLabel(ctx);
+			if (featureEnabled("footer")) installClaudeFooter(ctx, pi);
 		},
 		onTurnStart: (ctx) => {
 			if (!ctx.hasUI) return;
-			applyToolBackgroundMode(ctx.ui.theme);
-			applyThemePaletteIfNeeded(ctx.ui.theme);
-			applyHiddenThinkingLabel(ctx);
+			if (featureEnabled("userMessages")) applyUserMessageBoxTheme(ctx.ui.theme);
+			if (featureEnabled("toolBackground")) {
+				syncToolBackgroundMode();
+				applyToolBackgroundTheme(ctx.ui.theme, toolBackgroundMode);
+			}
+			if (featureEnabled("themeColors") || featureEnabled("diffPresentation")) applyThemePaletteIfNeeded(ctx.ui.theme);
+			if (featureEnabled("assistantMessages")) applyHiddenThinkingLabel(ctx);
 		},
 		installDeferred: installDeferredRegistrations,
 		discoverTools: discoverPresentationTools,
 		onTurnEnd: () => { blinkScheduler.clear(); clearHighlightCache(); },
 		onShutdown: (reason) => {
+			// Current Pi reuses the extension factory across new/resume/fork even
+			// though session-scoped resources receive shutdown/start events. Keep
+			// generation authority alive for those transitions; only reload and
+			// process quit retire the extension generation itself.
+			if (reason !== "reload" && reason !== "quit") {
+				provenanceObserver?.clear();
+				blinkScheduler.clear();
+				clearHighlightCache();
+				return;
+			}
+			if (reason === "reload" && runtime.sessionKey) testedPiPatchBroker.offerSessionHandoff(runtime.owner, runtime.sessionKey);
 			runtime.beginRetirement(reason);
 			markContainerRenderPatchRetiring(globalRenderOwner);
 			markToolRendererPatchRetiring(toolRendererOwner);
@@ -1342,14 +1424,19 @@ function activateCurrentTestedPi(
 			releaseAssistantMessageRenderer(messagePatchOwner);
 			releaseUserMessageRenderer(messagePatchOwner);
 			releaseMessageRenderers(messagePatchOwner);
-			deferGenerationRelease(() => releaseGlobalToolBorders(globalRenderOwner));
-			deferGenerationRelease(() => releaseToolExecutionRenderers(toolRendererOwner));
-			deferGenerationRelease(() => {
+			const releaseBindings = () => {
+				releaseGlobalToolBorders(globalRenderOwner);
+				releaseToolExecutionRenderers(toolRendererOwner);
+				releaseEditorBorderColor(runtime.owner);
+				releaseSessionMetrics(runtime.owner);
 				releaseToolDiscovery(runtime.owner);
 				releaseToolFallbackSanitization(fallbackSanitizerOwner);
 				releaseReadImageExpansion(fallbackSanitizerOwner);
 				releaseToolRowLayout(fallbackSanitizerOwner);
-			});
+			};
+			if (reason === "reload") deferGenerationRelease(releaseBindings);
+			else releaseBindings();
+			provenanceObserver?.clear();
 			blinkScheduler.clear();
 			clearHighlightCache();
 			void runtime.dispose((error) => debugDiagnostic("runtime-dispose", error));
@@ -1360,6 +1447,8 @@ function activateCurrentTestedPi(
 export default function (pi: ExtensionAPI): void {
 	const compatConfig: CompatibilityConfig | undefined = parseCompatibilityConfig(readSettings().values.compatibility);
 	const probes = probeTestedPiCapabilities({
+		extensionApi: pi as unknown as Record<string, unknown>,
+		assumeTuiContext: true,
 		ToolExecutionComponent,
 		Container,
 		AssistantMessageComponent,
@@ -1371,7 +1460,7 @@ export default function (pi: ExtensionAPI): void {
 	const host = detectHostDescriptor({
 		piVersion: typeof (PiCodingAgent as any).VERSION === "string" ? (PiCodingAgent as any).VERSION : undefined,
 		profilePreference: parseProfilePreference(process.env.PI_CLAUDIFY_PROFILE),
-		preserveCurrentBehavior: true,
+		preserveCurrentBehavior: false,
 		observedCapabilities: probes.capabilities,
 	});
 	const activationPlan = buildActivationPlan(host, compatConfig);

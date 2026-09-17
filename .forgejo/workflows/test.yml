@@ -35,6 +35,9 @@ jobs:
       - name: Test real PTY pointer and reload behavior
         if: matrix.pi-version == '0.85.1' || matrix.pi-version == 'latest'
         run: bun run test:pty
+      - name: Activate packed package through real Pi loader
+        if: matrix.pi-version == '0.85.1'
+        run: bun run test:packed-factory
       - name: Strict TypeScript check
         run: >-
           npx tsc --noEmit --strict --skipLibCheck --allowImportingTsExtensions

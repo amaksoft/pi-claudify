@@ -172,6 +172,23 @@ finalScheduler.bindSession("reload-session");
 assert.equal(finalScheduler.list().length, 0, "session-only scheduled tasks are discarded on real session shutdown");
 finalScheduler.stop();
 
+const transitionHandlers = new Map<string, Function>();
+const transitionSent: string[] = [];
+const transitionScheduler = new CronScheduler({ cwd: join(cwd, "transition"), now: () => lifecycleNow, id: () => "11223344", random: () => 0, sendUserMessage: (prompt) => transitionSent.push(prompt) });
+installCronLifecycle({ on: (name: string, handler: Function) => transitionHandlers.set(name, handler) } as any, transitionScheduler);
+const oldSession = { isIdle: () => true, isProjectTrusted: () => false, sessionManager: { getSessionId: () => "old-session" } };
+await transitionHandlers.get("session_start")?.({ reason: "startup" }, oldSession);
+transitionScheduler.create("* * * * *", "old session only", true, false);
+await transitionHandlers.get("session_shutdown")?.({ reason: "new" });
+const newSession = { ...oldSession, sessionManager: { getSessionId: () => "new-session" } };
+await transitionHandlers.get("session_start")?.({ reason: "new" }, newSession);
+assert.equal(transitionScheduler.list().length, 0, "new/resume/fork discard old session-only jobs on a reused extension instance");
+const replacementTask = transitionScheduler.create("* * * * *", "new session run", true, false);
+lifecycleNow = replacementTask.nextRunAt;
+await transitionScheduler.flushDue();
+assert.deepEqual(transitionSent, ["new session run"], "session replacement restarts the existing scheduler instance");
+transitionScheduler.stop();
+
 rmSync(cwd, { recursive: true, force: true });
 
 console.log("cron tool and scheduler tests passed");

@@ -1,4 +1,5 @@
 import { RuntimeHandle } from "../../runtime/runtime-handle.ts";
+import { testedPiPatchBroker } from "./patch-broker.ts";
 
 /**
  * Transitional Tier-2 boundary. Existing compatibility wiring remains in the
@@ -8,6 +9,13 @@ import { RuntimeHandle } from "../../runtime/runtime-handle.ts";
  */
 export function activateTestedPiRuntime(runtime: RuntimeHandle, install: () => void): void {
 	if (!runtime.isCurrent()) return;
-	install();
-	runtime.activate();
+	try {
+		install();
+		runtime.activate();
+	} catch (error) {
+		runtime.beginRetirement(error);
+		testedPiPatchBroker.releaseOwner(runtime.owner);
+		void runtime.dispose();
+		throw error;
+	}
 }

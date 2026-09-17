@@ -1,17 +1,19 @@
 import { Container } from "@earendil-works/pi-tui";
 
 import { debugDiagnostic } from "./debug.ts";
+import { partitionTranscriptRuns } from "./domain/transcript-groups.ts";
 import { installMouseLayout } from "./mouse-layout.ts";
 
-/** Capture the unpatched host path once per process, surviving extension reloads. */
+/** Lazily capture the unpatched host path only when the tested adapter activates. */
 const HOST_CONTAINER_RENDER_KEY = Symbol.for("pi-claudify:host-container-render");
-const renderRegistry = globalThis as Record<PropertyKey, unknown>;
-export const HOST_CONTAINER_RENDER = (
-	typeof renderRegistry[HOST_CONTAINER_RENDER_KEY] === "function"
-		? renderRegistry[HOST_CONTAINER_RENDER_KEY]
-		: Container.prototype.render
-) as typeof Container.prototype.render;
-if (!renderRegistry[HOST_CONTAINER_RENDER_KEY]) renderRegistry[HOST_CONTAINER_RENDER_KEY] = HOST_CONTAINER_RENDER;
+export function hostContainerRender(): typeof Container.prototype.render {
+	const registry = globalThis as Record<PropertyKey, unknown>;
+	const existing = registry[HOST_CONTAINER_RENDER_KEY];
+	if (typeof existing === "function") return existing as typeof Container.prototype.render;
+	const pristine = Container.prototype.render;
+	registry[HOST_CONTAINER_RENDER_KEY] = pristine;
+	return pristine;
+}
 const GROUP_BRAND = Symbol.for("pi-claudify:inspection-group-component");
 
 export interface InteractiveRows {
@@ -102,7 +104,7 @@ export class InspectionGroupComponent extends Container implements InspectionGro
 				this.nativeFallback = true;
 				this.summaryStart = 0;
 				this.summaryEnd = 0;
-				return HOST_CONTAINER_RENDER.call(this, width);
+				return hostContainerRender().call(this, width);
 			}
 
 			this.nativeFallback = false;
@@ -121,7 +123,7 @@ export class InspectionGroupComponent extends Container implements InspectionGro
 			this.summaryStart = 0;
 			this.summaryEnd = 0;
 			// Surface a second failure rather than silently deleting a member row.
-			return HOST_CONTAINER_RENDER.call(this, width);
+			return hostContainerRender().call(this, width);
 		}
 	}
 
@@ -206,14 +208,9 @@ export function reconcileInspectionGroups(
 	const used = new Set<InspectionGroupLike>();
 	const created: InspectionGroupComponent[] = [];
 	const next: unknown[] = [];
-	let run: unknown[] = [];
-	let transparentGaps: unknown[] = [];
-	const sameMembers = (current: unknown[], members: unknown[]): boolean =>
+	const sameMembers = (current: unknown[], members: readonly unknown[]): boolean =>
 		current.length === members.length && current.every((member, index) => member === members[index]);
-	const flush = () => {
-		if (!run.length) { if (transparentGaps.length) next.push(...transparentGaps); transparentGaps = []; return; }
-		const members = run;
-		run = [];
+	const appendGroup = (members: readonly unknown[], trailingTransparent: readonly unknown[]) => {
 		let reusable: InspectionGroupComponent | undefined;
 		// A member can belong to only one valid transcript wrapper, so this bucket
 		// is normally a singleton. Indexing by run identity avoids rescanning every
@@ -229,27 +226,26 @@ export function reconcileInspectionGroups(
 			used.add(reusable);
 			next.push(reusable);
 		} else {
-			const group = new InspectionGroupComponent(members, policy);
+			const group = new InspectionGroupComponent([...members], policy);
 			created.push(group);
 			next.push(group);
 		}
-		if (transparentGaps.length) next.push(...transparentGaps);
-		transparentGaps = [];
+		next.push(...trailingTransparent);
 	};
 
 	try {
-		for (const child of flattened) {
-			if (policy.isEligible(child)) run.push(child);
-			else {
-				let transparent = false;
-				if (run.length && typeof width === "number" && typeof (child as any)?.render === "function") {
-					try { transparent = (child as any).render(width).length === 0; } catch { /* visible boundary fallback */ }
-				}
-				if (transparent) transparentGaps.push(child);
-				else { flush(); next.push(child); }
-			}
+		const segments = partitionTranscriptRuns(flattened, {
+			isEligible: policy.isEligible,
+			isTransparent: (child) => {
+				if (typeof width !== "number" || typeof (child as any)?.render !== "function") return false;
+				try { return (child as any).render(width).length === 0; }
+				catch { return false; }
+			},
+		});
+		for (const segment of segments) {
+			if (segment.kind === "boundary") next.push(segment.value);
+			else appendGroup(segment.members, segment.trailingTransparent);
 		}
-		flush();
 	} catch (error) {
 		for (const group of created) group.release();
 		throw error;

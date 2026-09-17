@@ -30,6 +30,7 @@ export class RuntimeHandle {
 	private readonly disposables: Disposable[] = [];
 	private currentState: RuntimeState = "loading";
 	private disposal?: Promise<void>;
+	private currentSessionKey?: string;
 
 	constructor(prefix = "claudify") {
 		this.generationId = `${prefix}-${nextRuntimeSequence()}`;
@@ -38,6 +39,14 @@ export class RuntimeHandle {
 
 	get state(): RuntimeState {
 		return this.currentState;
+	}
+
+	get sessionKey(): string | undefined {
+		return this.currentSessionKey;
+	}
+
+	bindSession(sessionKey: string | undefined): void {
+		if (sessionKey) this.currentSessionKey = sessionKey;
 	}
 
 	isCurrent(): boolean {

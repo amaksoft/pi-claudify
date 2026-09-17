@@ -8,6 +8,7 @@ import { trackedTempDir } from "./sandbox-home.ts";
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, "..");
 const piBin = process.env.PI_TEST_BIN ?? resolve(repo, "node_modules/.bin/pi");
+const packageSource = process.env.PI_CLAUDIFY_PACKAGE ?? repo;
 const fixture = resolve(here, "fixtures/tool-registration-extension.ts");
 const tmux = process.env.TMUX_BIN ?? "tmux";
 const sandbox = trackedTempDir("claudify-portable-profile-pty");
@@ -45,7 +46,7 @@ function assertPortable(snapshot: any): void {
 try {
 	mkdirSync(agentDir, { recursive: true });
 	mkdirSync(home, { recursive: true });
-	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ packages: [repo], quietStartup: true, theme: "dark" }));
+	writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ packages: [packageSource], quietStartup: true, theme: "dark" }));
 	run(tmux, ["kill-session", "-t", session], true);
 	const command = [
 		`HOME=${quote(home)}`,

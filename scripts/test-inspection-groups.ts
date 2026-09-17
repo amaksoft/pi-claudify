@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 
-import { ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
+import {
+	ToolExecutionComponent,
+	createBashToolDefinition,
+	createGrepToolDefinition,
+	createReadToolDefinition,
+	createWriteToolDefinition,
+} from "@earendil-works/pi-coding-agent";
 import { Container, Text } from "@earendil-works/pi-tui";
 import { initTheme } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 
@@ -96,6 +102,10 @@ function render(children: ToolExecutionComponent[], width = 120): string {
 
 initTheme("dark", false);
 const pi = new FakePi();
+for (const definition of [
+	createReadToolDefinition(process.cwd()), createGrepToolDefinition(process.cwd()),
+	createBashToolDefinition(process.cwd()), createWriteToolDefinition(process.cwd()),
+]) pi.tools.set(definition.name, { ...definition, sourceInfo: { source: "builtin", path: `<builtin:${definition.name}>` } });
 extension(pi as any);
 
 const HostContainer = Object.getPrototypeOf(ToolExecutionComponent.prototype).constructor as new () => Container;

@@ -27,6 +27,7 @@ export interface ToolRendererHooks {
 	renderApplyResult(result: any, options: any, theme: Theme, ctx: any): unknown;
 	renderGenericCall(name: string, args: any, theme: Theme, ctx: any): unknown;
 	renderGenericResult(name: string, result: any, options: any, theme: Theme, ctx: any): unknown;
+	canOverrideSelfShell(name: string, definition: unknown): boolean;
 	diagnostic(key: string, error: unknown): void;
 }
 
@@ -36,9 +37,10 @@ function activeOwnerState(): OwnerState | undefined {
 function compatible(component: any, phase: "call" | "result"): ToolPresentationAdapter | undefined {
 	const state = activeOwnerState();
 	const name = compatibleInspectionToolName(component?.toolName);
-	if (!name || state?.hooks?.presentationSkipped(name) || component?.toolDefinition?.renderShell === "self") return undefined;
+	if (!name || state?.hooks?.presentationSkipped(name)) return undefined;
 	const adapter = state?.presentations?.get(name);
 	if (!adapter) return undefined;
+	if (component?.toolDefinition?.renderShell === "self" && (!adapter.overrideSelfShell || state?.hooks.canOverrideSelfShell(name, component.toolDefinition) !== true)) return undefined;
 	if (phase === "call") return adapter.renderCall && supportsInspectionCall(name, component?.args) ? adapter : undefined;
 	return adapter.renderResult && supportsInspectionResult(name, component?.result) ? adapter : undefined;
 }

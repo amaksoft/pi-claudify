@@ -10,11 +10,12 @@ import {
 	type ParsedDiff,
 } from "../domain/diff-model.ts";
 import { languageForPath } from "../domain/language.ts";
+import type { ToolPresentationAdapter } from "../domain/tool-presentation.ts";
 import { sanitizeToolOutput } from "../terminal-sanitize.ts";
 import { executeEditWithProvenance } from "./edit-execution.ts";
 import type { DiffCardRuntime, ToolChromeRuntime } from "./presenter-runtime.ts";
 
-export interface EditToolRuntime extends ToolChromeRuntime, DiffCardRuntime {
+export interface EditToolPresentationRuntime extends Omit<ToolChromeRuntime, "register" | "registerExecution" | "registerPresentation" | "forwardContract">, DiffCardRuntime {
 	summarizeDiff(added: number, removed: number): string;
 	linkedPath(path: string, cwd: string): string;
 	revealArgs(ctx: any): boolean;
@@ -27,25 +28,27 @@ export interface EditToolRuntime extends ToolChromeRuntime, DiffCardRuntime {
 	buildPreview(theme: Theme, language: any, operations: EditOperation[], diffs: ParsedDiff[], lines: number[], summary: any, expanded: boolean, width: number): Promise<string>;
 	hash(text: string): string;
 	revision(): number;
+	diffPresentationEnabled(): boolean;
 }
 
-function cachedSummary(runtime: EditToolRuntime, ctx: any, key: string, operations: EditOperation[]) {
+export interface EditToolRuntime extends EditToolPresentationRuntime {
+	register(definition: any): void;
+	registerExecution?: boolean;
+	registerPresentation?(presentation: ToolPresentationAdapter): void;
+	forwardContract(definition: any): Record<string, unknown>;
+}
+
+function cachedSummary(runtime: EditToolPresentationRuntime, ctx: any, key: string, operations: EditOperation[]) {
 	if (ctx.state?._editSummaryKey === key && ctx.state._editSummary) return ctx.state._editSummary;
 	const summary = summarizeEditOperations(operations, runtime.summarizeDiff);
 	if (ctx.state) { ctx.state._editSummaryKey = key; ctx.state._editSummary = summary; }
 	return summary;
 }
 
-export function registerEditTool(runtime: EditToolRuntime): void {
-	const native = createEditToolDefinition(runtime.cwd);
-	runtime.register({
+export function createEditToolPresentation(runtime: EditToolPresentationRuntime): ToolPresentationAdapter {
+	return {
 		name: "edit",
-		label: "edit",
-		description: native.description,
-		parameters: native.parameters,
-		...runtime.forwardContract(native),
-		execute: (toolCallId: string, params: any, signal: AbortSignal | undefined, onUpdate: any, ctx: any) =>
-			executeEditWithProvenance(runtime.cwd, toolCallId, params, signal, onUpdate, ctx, { summarizeDiff: runtime.summarizeDiff }),
+		overrideSelfShell: true,
 		renderCall(args: any, theme: Theme, ctx: any) {
 			const path = args?.path ?? args?.file_path ?? "";
 			const operations = getEditOperations(args);
@@ -53,7 +56,7 @@ export function registerEditTool(runtime: EditToolRuntime): void {
 			const summary = runtime.stableSummary(ctx, "_callSummary", () => runtime.linkedPath(path, ctx.cwd ?? runtime.cwd), reveal);
 			runtime.syncCallStatus(ctx);
 			const header = runtime.header("Update", summary, theme, runtime.statusDot(ctx, theme));
-			if (ctx.isPartial === false || !(ctx.argsComplete && operations.length > 0)) return runtime.makeText(ctx.lastComponent, header);
+			if (!runtime.diffPresentationEnabled() || ctx.isPartial === false || !(ctx.argsComplete && operations.length > 0)) return runtime.makeText(ctx.lastComponent, header);
 			const key = `edit-call:${path}:${runtime.hash(operations.map((edit) => `${edit.oldText}\u0000${edit.newText}`).join("\u0001"))}:${ctx.expanded ? 1 : 0}:${runtime.revision()}`;
 			const fallback = cachedSummary(runtime, ctx, key, operations);
 			const placeholder = `${header}\n${runtime.indentBranch(runtime.withBranch(theme.fg("muted", "(rendering diff…)"), theme, false, true))}`;
@@ -85,6 +88,7 @@ export function registerEditTool(runtime: EditToolRuntime): void {
 				const error = result.content?.filter((item: any) => item.type === "text").map((item: any) => item.text || "").join("\n") ?? "Error";
 				return runtime.makeText(ctx.lastComponent, runtime.indentBranch(runtime.withBranch(theme.fg("error", sanitizeToolOutput(error)), theme)));
 			}
+			if (!runtime.diffPresentationEnabled()) return runtime.makeText(ctx.lastComponent, runtime.indentBranch(runtime.withBranch(theme.fg("success", "Applied"), theme)));
 			const details = (result.details ?? {}) as Record<string, any>;
 			if (details._type === "diffUnavailable") {
 				return runtime.makeText(ctx.lastComponent, runtime.indentBranch(runtime.withBranch(`${runtime.resultSentence(theme, "Applied")} ${theme.fg("muted", "(diff unavailable: source provenance not captured)")}`, theme)));
@@ -123,5 +127,21 @@ export function registerEditTool(runtime: EditToolRuntime): void {
 			}
 			return runtime.makeText(ctx.lastComponent, runtime.indentBranch(runtime.withBranch(theme.fg("success", "Applied"), theme)));
 		},
+	};
+}
+
+export function registerEditTool(runtime: EditToolRuntime): void {
+	const presentation = createEditToolPresentation(runtime);
+	runtime.registerPresentation?.(presentation);
+	if (runtime.registerExecution === false) return;
+	const native = createEditToolDefinition(runtime.cwd);
+	runtime.register({
+		label: "edit",
+		description: native.description,
+		parameters: native.parameters,
+		...runtime.forwardContract(native),
+		execute: (toolCallId: string, params: any, signal: AbortSignal | undefined, onUpdate: any, ctx: any) =>
+			executeEditWithProvenance(runtime.cwd, toolCallId, params, signal, onUpdate, ctx, { summarizeDiff: runtime.summarizeDiff }),
+		...presentation,
 	});
 }

@@ -6,7 +6,6 @@ import { testedPiPatchBroker } from "../extensions/adapters/tested-pi/patch-brok
 import { installContainerRenderPatch, releaseContainerRenderPatch } from "../extensions/host/container-render-patch.ts";
 import { patchCustomMessageRenderer, releaseMessageRenderers } from "../extensions/host/message-patches.ts";
 import { patchMethodOnce } from "../extensions/host/patch-once.ts";
-import { releaseOwnedState, sharedState } from "../extensions/host/shared-state.ts";
 import {
 	genericToolLabel,
 	isMcpToolCandidate,
@@ -20,7 +19,7 @@ import {
 import { installToolFallbackSanitization, releaseToolFallbackSanitization } from "../extensions/host/tool-component-patches.ts";
 import { ToolRegistrationCoordinator } from "../extensions/host/tool-registration.ts";
 import { createThemeOrchestrator } from "../extensions/host/theme-orchestrator.ts";
-import { classifyToolOwner, claudifySourceRoot, readToolOwners, toolOwnershipSnapshot } from "../extensions/host/tool-ownership.ts";
+import { classifyToolOwner, claudifySourceRoot, readToolOwners } from "../extensions/host/tool-ownership.ts";
 
 const patchFlag = Symbol("test-patch");
 const patchTarget = { value: 1, read(this: { value: number }) { return this.value; } } as any;
@@ -43,20 +42,6 @@ releaseMessageRenderers(nestedCustomOwner);
 assert.deepEqual(new FakeCustomMessage().render(), ["new:payload"], "child message teardown restores the parent runtime");
 releaseMessageRenderers(customOwner);
 assert.deepEqual(new FakeCustomMessage().render(), ["payload"], "ownerless stable message wrapper delegates to the pristine host renderer");
-
-const testKey = Symbol.for("pi-claudify:test-shared-state");
-const first = sharedState(testKey, () => ({ owner: undefined as object | undefined, value: 1 }));
-const second = sharedState(testKey, () => ({ owner: undefined as object | undefined, value: 2 }));
-assert.equal(second, first, "hot-reloaded modules resolve the same process state");
-assert.equal(second.value, 1);
-const ownerA = {};
-const ownerB = {};
-first.owner = ownerA;
-assert.equal(releaseOwnedState(first, ownerB, (state) => { state.value = 0; }), false, "stale generations cannot release a newer owner");
-assert.equal(first.value, 1);
-assert.equal(releaseOwnedState(first, ownerA, (state) => { state.value = 0; }), true);
-assert.equal(first.value, 0);
-assert.equal(first.owner, undefined);
 
 const nestedParentOwner = {};
 const nestedChildOwner = {};
@@ -87,9 +72,6 @@ assert.equal(owners?.get("grep"), "external");
 let observedError: unknown;
 assert.equal(readToolOwners(() => { throw new Error("registry unavailable"); }, (error) => { observedError = error; }), null);
 assert.match(String(observedError), /registry unavailable/);
-const snapshot = toolOwnershipSnapshot();
-assert.ok(snapshot instanceof Map, "ownership snapshots use process-stable shared state");
-
 const registered: string[] = [];
 const live = new ToolRegistrationCoordinator<any>(
 	{
@@ -104,6 +86,17 @@ const live = new ToolRegistrationCoordinator<any>(
 live.add({ name: "alpha" });
 live.add({ name: "beta" });
 assert.deepEqual(registered, ["alpha"], "factory registration replaces proven builtins but preserves external owners");
+const additiveRegistrations: string[] = [];
+const additive = new ToolRegistrationCoordinator<any>(
+	{
+		registerTool: (definition) => additiveRegistrations.push(definition.name),
+		getAllTools: () => [{ name: "CronCreate", sourceInfo: { source: "builtin", path: "<builtin:CronCreate>" } }],
+	},
+	{ skipped: new Set(), replaceBuiltin: false },
+);
+additive.add({ name: "CronCreate", execute: () => "claudify" });
+additive.installDeferred();
+assert.deepEqual(additiveRegistrations, [], "additive tools never replace a host builtin with the same name");
 const unknownRegistered: string[] = [];
 const unknownOwner = new ToolRegistrationCoordinator<any>(
 	{
@@ -151,7 +144,7 @@ const firstOwnedGeneration = new ToolRegistrationCoordinator<any>(
 );
 firstOwnedGeneration.add({ name: ownedName, execute: () => "claudify" });
 firstOwnedGeneration.installDeferred();
-assert.equal(toolOwnershipSnapshot().get(ownedName), "self", "successful registration proves self ownership even when the host omits sourceInfo");
+assert.equal(ownedTools[0]?.name, ownedName, "first generation registers a genuinely absent additive tool");
 let registryReady = false;
 const reloadedOwned: string[] = [];
 const secondOwnedGeneration = new ToolRegistrationCoordinator<any>(
@@ -165,8 +158,8 @@ registryReady = true;
 secondOwnedGeneration.add({ name: ownedName, execute: () => "new generation" });
 const ownedWarnings: string[] = [];
 secondOwnedGeneration.installDeferred((message) => ownedWarnings.push(message));
-assert.deepEqual(reloadedOwned, [ownedName], "reload eagerly restores a previously proven Claudify-owned custom tool");
-assert.deepEqual(ownedWarnings, [], "missing host sourceInfo does not produce a false ownership warning for Claudify-owned tools");
+assert.deepEqual(reloadedOwned, [], "a stale self snapshot cannot authorize registration when the live owner lacks metadata");
+assert.equal(ownedWarnings.length, 1, "metadata-less live ownership fails closed even when a prior generation was self-owned");
 const renamedCheckoutRegistrations: string[] = [];
 const renamedCheckoutReload = new ToolRegistrationCoordinator<any>(
 	{
@@ -186,7 +179,6 @@ const disabledAfterReload = new ToolRegistrationCoordinator<any>(
 disabledAfterReload.add({ name: "restore_tool", execute: () => "new-claudify" });
 assert.deepEqual(skippedRegistrations, [], "metadata-only ToolInfo is never re-registered as an executable definition");
 
-snapshot.set("gamma", "builtin");
 const eager: string[] = [];
 const reloaded = new ToolRegistrationCoordinator<any>(
 	{
@@ -196,7 +188,7 @@ const reloaded = new ToolRegistrationCoordinator<any>(
 	{ skipped: new Set() },
 );
 reloaded.add({ name: "gamma" });
-assert.deepEqual(eager, ["gamma"], "a prior proven builtin is restored eagerly before transcript reconstruction");
+assert.deepEqual(eager, [], "a prior builtin snapshot never authorizes registration while the live registry is unavailable");
 
 const unknownWarnings: string[] = [];
 const unknown = new ToolRegistrationCoordinator<any>(

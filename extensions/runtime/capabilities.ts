@@ -6,6 +6,7 @@ const PUBLIC_CAPABILITIES: readonly CapabilityId[] = [
 	"public:commands",
 	"public:events",
 	"public:tools",
+	"public:send-user-message",
 	"public:tui",
 ];
 

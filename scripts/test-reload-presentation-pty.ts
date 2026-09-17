@@ -57,6 +57,9 @@ try {
 		&& capture().includes("Added 1 line, removed 1 line")
 		&& capture().includes("Ran 2 shell commands"));
 	const reloaded = capture();
+	const reloadState = JSON.parse(readFileSync(statePath, "utf8"));
+	assert.equal(reloadState.samePi, false, "reload supplies a new ExtensionAPI identity");
+	assert.equal(reloadState.sameEvents, false, "reload supplies a new event-bus identity, so handoff uses session identity instead");
 	assert.doesNotMatch(reloaded, /^edit reload-edit\.ts/m, "historical edit never falls back to its native pre-adapter renderer");
 	assert.match(reloaded, /Added 1 line, removed 1 line/, "historical settled diff survives reload presentation rebinding");
 	assert.match(reloaded, /Ran 2 shell commands/, "zero-height assistant separators do not split historical Bash grouping after reload");

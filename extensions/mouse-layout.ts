@@ -12,6 +12,8 @@ export interface MouseLayout {
 	children: MouseLayoutEntry[];
 }
 
+const OWNED_MOUSE_LAYOUT = Symbol.for("pi-claudify:owned-mouse-layout");
+
 /** Best-effort bridge to pi-tui >=0.85's currently undocumented hit map. */
 export function installMouseLayout(component: unknown, layout: MouseLayout | undefined): void {
 	// `mouseInteraction: false` never installs the hit map at all — nothing to
@@ -19,7 +21,14 @@ export function installMouseLayout(component: unknown, layout: MouseLayout | und
 	// goes through this property.
 	const enabled = settingsFeatureEnabled(readSettings().values, "mouseInteraction");
 	try {
-		(component as { mouseLayout?: MouseLayout }).mouseLayout = enabled ? layout : undefined;
+		const target = component as { mouseLayout?: MouseLayout; [OWNED_MOUSE_LAYOUT]?: MouseLayout };
+		if (!enabled || layout === undefined) {
+			if (target.mouseLayout === target[OWNED_MOUSE_LAYOUT]) target.mouseLayout = undefined;
+			delete target[OWNED_MOUSE_LAYOUT];
+			return;
+		}
+		target.mouseLayout = layout;
+		target[OWNED_MOUSE_LAYOUT] = layout;
 	} catch (error) {
 		// Older/read-only host: keyboard expansion still works.
 		debugDiagnostic("mouse-layout-install", error);
