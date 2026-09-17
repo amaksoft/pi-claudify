@@ -42,7 +42,7 @@ export class AdditiveToolsController {
 				registerTool: (definition) => pi.registerTool(definition),
 				getAllTools: () => (pi as any).getAllTools?.(),
 			},
-			{ skipped: disabled, onDiagnostic: options.onDiagnostic },
+			{ skipped: disabled, replaceBuiltin: false, onDiagnostic: options.onDiagnostic },
 		);
 		if (plan.featureEnabled("scheduledTasks") && typeof (pi as any).sendUserMessage === "function") {
 			const scheduler = new CronScheduler({
@@ -67,7 +67,15 @@ export class AdditiveToolsController {
 	}
 
 	registerAskForContext(ctx: any): boolean {
-		if (!this.runtime.isCurrent() || this.askQueued || !this.plan.featureEnabled("askUserQuestion") || ctx?.mode !== "tui" || !ctx?.hasUI) return false;
+		if (
+			!this.runtime.isCurrent()
+			|| this.askQueued
+			|| !this.plan.featureEnabled("askUserQuestion")
+			|| ctx?.mode !== "tui"
+			|| !ctx?.hasUI
+			|| typeof ctx.ui?.custom !== "function"
+			|| typeof ctx.ui?.input !== "function"
+		) return false;
 		this.askQueued = true;
 		registerAskUserQuestionTool(this.pi, (definition) => this.registration.add(definition));
 		return true;

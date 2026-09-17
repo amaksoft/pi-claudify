@@ -2,6 +2,7 @@ import { createBashToolDefinition, type BashToolDetails, type Theme } from "@ear
 
 import { bashHeaderCommand } from "../bash-preview.ts";
 import { classifyBashCommandForDisplay, emptyBashResultLabel } from "../domain/bash-display.ts";
+import type { ToolPresentationAdapter } from "../domain/tool-presentation.ts";
 import type { VisualPreviewMode } from "../visual-preview.ts";
 import type { WidthAwareToolRuntime } from "./presenter-runtime.ts";
 
@@ -18,21 +19,13 @@ export interface BashToolRuntime extends WidthAwareToolRuntime {
 	expandedRows(): number;
 }
 
-export function registerBashTool(runtime: BashToolRuntime): void {
-	const native = createBashToolDefinition(runtime.cwd);
-	runtime.register({
+export type BashToolPresentationRuntime = Omit<BashToolRuntime, "register" | "registerExecution" | "registerPresentation" | "forwardContract" | "hostSettings">;
+
+/** Creates the Bash renderer without coupling it to a schema or execution. */
+export function createBashToolPresentation(runtime: BashToolPresentationRuntime) {
+	return {
 		name: "bash",
-		label: "bash",
-		description: native.description,
-		parameters: native.parameters,
-		...runtime.forwardContract(native),
-		async execute(toolCallId: string, params: any, signal: AbortSignal | undefined, onUpdate: any, ctx: any) {
-			const cwd = ctx?.cwd ?? runtime.cwd;
-			const { shellPath, commandPrefix } = runtime.hostSettings(cwd, ctx);
-			const result = await createBashToolDefinition(cwd, { shellPath, commandPrefix }).execute(toolCallId, params, signal, onUpdate, ctx);
-			(result as any).details = { ...((result as any).details ?? {}), _claudifyPrefixApplied: !!commandPrefix };
-			return result;
-		},
+		overrideSelfShell: true,
 		renderCall(args: any, theme: Theme, ctx: any) {
 			runtime.syncCallStatus(ctx);
 			const semantic = runtime.semanticEnabled() ? classifyBashCommandForDisplay(args.command ?? "") : null;
@@ -99,5 +92,26 @@ export function registerBashTool(runtime: BashToolRuntime): void {
 				return runtime.renderLines(runtime.withBranch(body, theme), width);
 			}, runtime.revision);
 		},
+	} satisfies ToolPresentationAdapter;
+}
+
+export function registerBashTool(runtime: BashToolRuntime): void {
+	const presentation = createBashToolPresentation(runtime);
+	runtime.registerPresentation?.(presentation);
+	if (runtime.registerExecution === false) return;
+	const native = createBashToolDefinition(runtime.cwd);
+	runtime.register({
+		label: "bash",
+		description: native.description,
+		parameters: native.parameters,
+		...runtime.forwardContract(native),
+		async execute(toolCallId: string, params: any, signal: AbortSignal | undefined, onUpdate: any, ctx: any) {
+			const cwd = ctx?.cwd ?? runtime.cwd;
+			const { shellPath, commandPrefix } = runtime.hostSettings(cwd, ctx);
+			const result = await createBashToolDefinition(cwd, { shellPath, commandPrefix }).execute(toolCallId, params, signal, onUpdate, ctx);
+			(result as any).details = { ...((result as any).details ?? {}), _claudifyPrefixApplied: !!commandPrefix };
+			return result;
+		},
+		...presentation,
 	});
 }

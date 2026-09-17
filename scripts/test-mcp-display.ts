@@ -161,7 +161,6 @@ const publicBare = new Container();
 publicBare.addChild(tool(publicPi, "bare_list", "public-bare", {}, "ok"));
 assert.doesNotMatch(plain(publicBare.render(120)), /Called /, "ambiguous public bare tools fail closed to native/generic presentation");
 await publicPi.fire("session_shutdown", { reason: "quit" });
-await new Promise((resolve) => setTimeout(resolve, 1_050));
 
 const pi = new FakePi();
 // pi-mcp-adapter exposes MCP two ways, and both must render the same.

@@ -48,6 +48,7 @@ writeFileSync(join(imageOverrideCwd, ".pi", "settings.json"), JSON.stringify({ i
 writeFileSync(join(runtimeCwd, "runtime.txt"), "runtime cwd\n");
 
 process.env.HOME = home;
+process.env.PI_CLAUDIFY_NATIVE_EXECUTION = "0";
 process.env.PI_CODING_AGENT_DIR = customAgentDir;
 assert.equal(effectiveAgentDir(() => capabilityAgentDir), capabilityAgentDir, "getAgentDir capability takes precedence");
 assert.equal(effectiveAgentDir(), customAgentDir, "PI_CODING_AGENT_DIR is the compatibility fallback");

@@ -3,11 +3,11 @@
 // stacked block instead of separately-spaced rows.
 
 import { settingsFeatureEnabled } from "../domain/compatibility.ts";
-import { isToolExecutionLike } from "../pi-tool-adapter.ts";
 import { readSettings } from "../settings.ts";
+import { snapshotToolExecution } from "./tool-record.ts";
 
 export function isBashToolExecution(value: unknown): boolean {
-	return isToolExecutionLike(value) && (value as any).toolName === "bash";
+	return snapshotToolExecution(value)?.name === "bash";
 }
 
 export function shouldStackConsecutiveBash(): boolean {

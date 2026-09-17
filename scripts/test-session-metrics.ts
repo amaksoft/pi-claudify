@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 
-import { getSessionMetrics, registerSessionMetrics } from "../extensions/session-metrics.ts";
+import { getSessionMetrics, registerSessionMetrics, releaseSessionMetrics } from "../extensions/session-metrics.ts";
 
 class FakePi {
 	events = new Map<string, Array<(...args: any[]) => any>>();
@@ -61,5 +61,17 @@ assert.equal(metrics.startedAt, Date.parse(branchB[0].timestamp));
 branchB.push({ type: "compaction", timestamp: "2026-09-09T12:00:02.000Z", usage: { cost: { total: 0.2 } } });
 await pi.emit("session_compact", { compactionEntry: branchB.at(-1) }, branchContext);
 assertCost(getSessionMetrics().cost, 0.6, "successful compaction recomputes the active branch without double counting");
+releaseSessionMetrics();
+
+const parentOwner = {}, childOwner = {};
+const parent = new FakePi(), child = new FakePi();
+registerSessionMetrics(parent as any, parentOwner);
+registerSessionMetrics(child as any, childOwner);
+await parent.emit("session_start", {}, { sessionManager: { getBranch: () => [{ type: "message", message: { role: "assistant", usage: { cost: { total: 1 } } } }] } });
+await child.emit("session_start", {}, { sessionManager: { getBranch: () => [{ type: "message", message: { role: "assistant", usage: { cost: { total: 7 } } } }] } });
+assertCost(getSessionMetrics().cost, 1, "nested session metrics cannot overwrite the active parent footer");
+releaseSessionMetrics(childOwner);
+assertCost(getSessionMetrics().cost, 1, "child teardown preserves parent metrics");
+releaseSessionMetrics(parentOwner);
 
 console.log("session metrics tests passed");

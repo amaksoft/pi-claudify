@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
+import { ToolExecutionComponent, createEditToolDefinition, createWriteToolDefinition } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { initTheme } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 
@@ -19,6 +19,7 @@ const root = trackedTempDir("cc-diff-persist");
 const home = join(root, "home");
 mkdirSync(join(home, ".pi"), { recursive: true });
 process.env.HOME = home;
+process.env.PI_CLAUDIFY_NATIVE_EXECUTION = "0";
 process.chdir(root);
 
 class FakePi {
@@ -248,6 +249,9 @@ const directTextRenderer = (text: string): string[] => [text];
 
 initTheme("dark", false);
 const pi = new FakePi();
+for (const definition of [createEditToolDefinition(root), createWriteToolDefinition(root)]) {
+	pi.tools.set(definition.name, { ...definition, sourceInfo: { source: "builtin", path: `<builtin:${definition.name}>` } });
+}
 extension(pi as any);
 
 // --- Live edit preview: source-driven component reflows before execution. -----
@@ -291,12 +295,12 @@ writeFileSync("edit.ts", "const a = 1;\nconst b = 2;\n");
 const editResult = await pi.tools.get("edit").execute("live-edit", editArgs, undefined, undefined, {});
 const editHasNativePatch = typeof editResult.details?.patch === "string" && /^@@/m.test(editResult.details.patch);
 assert.equal(editResult.details?._type, "editInfo");
-assert.equal(editResult.details?.diff, undefined, "native display diff is replaced by one authoritative persisted representation");
 if (editHasNativePatch) {
 	assert.equal(editResult.details?.parsedDiff, undefined, "patch-capable hosts persist no redundant parsed render model");
 	assert.ok(JSON.stringify(editResult.details).length < editResult.details.patch.length * 2 + 1_000, "persisted single-edit metadata remains bounded relative to its native patch");
 } else {
-	assert.ok(Array.isArray(editResult.details?.parsedDiff?.lines), "Pi 0.74 converts its queue-owned numbered diff into one bounded persisted model");
+	assert.ok(editResult.details?.diff, "Pi 0.74 retains its native display diff for kill-switch fallback");
+	assert.ok(Array.isArray(editResult.details?.parsedDiff?.lines), "Pi 0.74 also converts its queue-owned numbered diff into one bounded persisted model");
 }
 const restoredPayload = JSON.parse(JSON.stringify(editResult));
 delete restoredPayload.details.language;
@@ -350,12 +354,12 @@ const multiResult = await pi.tools.get("edit").execute("live-multi", multiArgs, 
 const multiHasNativePatch = typeof multiResult.details?.patch === "string" && /^@@/m.test(multiResult.details.patch);
 assert.equal(multiResult.details?._type, "multiEditInfo");
 assert.equal(multiResult.details?.parsedDiffs, undefined, "operation-local models are never persisted");
-assert.equal(multiResult.details?.diff, undefined, "native display diff is replaced by one authoritative persisted representation");
 if (multiHasNativePatch) {
 	assert.equal(multiResult.details?.aggregateDiff, undefined, "multi-edit stores no redundant aggregate model beside native patch");
 	assert.ok(JSON.stringify(multiResult.details).length < multiResult.details.patch.length * 2 + 1_000, "persisted multi-edit metadata remains bounded relative to its native patch");
 } else {
-	assert.ok(Array.isArray(multiResult.details?.aggregateDiff?.lines), "Pi 0.74 converts its queue-owned aggregate diff into one bounded model");
+	assert.ok(multiResult.details?.diff, "Pi 0.74 retains its native multi-edit display diff for kill-switch fallback");
+	assert.ok(Array.isArray(multiResult.details?.aggregateDiff?.lines), "Pi 0.74 also converts its queue-owned aggregate diff into one bounded model");
 }
 const restoredMulti = restoredComponent(pi, "edit", "restored-multi", multiArgs, multiResult);
 const multiWide = await rendered(restoredMulti, 120);

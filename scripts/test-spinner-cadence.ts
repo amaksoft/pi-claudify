@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 
 import { Loader } from "@earendil-works/pi-tui";
+import { testedPiPatchBroker } from "../extensions/adapters/tested-pi/patch-broker.ts";
 
 // Importing spinner.ts monkey-patches Loader.prototype (start/stop/updateDisplay)
 // and exposes the captured live-spinner cadence.
@@ -64,7 +65,7 @@ assert.equal(
 	"✻",
 	"`✻` is a live rotation frame (the mis-capture that pinned the glyph to `·` was a polling alias)",
 );
-for (const handler of bootstrapEvents.get("session_shutdown") ?? []) await handler({}, { hasUI: false, ui: {} });
+for (const handler of bootstrapEvents.get("session_shutdown") ?? []) await handler({ reason: "quit" }, { hasUI: false, ui: {} });
 
 // --- Thinking phrase escalation is effort-independent. ----------------------
 // Frame-by-frame Claude 2.1.266 captures at low and medium effort use the same
@@ -168,7 +169,10 @@ assert.ok(shimmerElapsedMs() >= 0, "parent turn activates shimmer state");
 for (const handler of childSpinner.events.get("turn_start") ?? []) await handler({}, spinnerCtx);
 for (const handler of childSpinner.events.get("turn_end") ?? []) await handler({}, spinnerCtx);
 assert.ok(shimmerElapsedMs() >= 0, "child turn completion cannot clear a still-active parent shimmer");
-for (const handler of childSpinner.events.get("session_shutdown") ?? []) await handler({}, spinnerCtx);
-for (const handler of parentSpinner.events.get("session_shutdown") ?? []) await handler({}, spinnerCtx);
+for (const handler of childSpinner.events.get("session_shutdown") ?? []) await handler({ reason: "quit" }, spinnerCtx);
+for (const handler of parentSpinner.events.get("session_shutdown") ?? []) await handler({ reason: "quit" }, spinnerCtx);
+assert.equal(testedPiPatchBroker.active("spinner-shimmer"), undefined);
+for (const handler of parentSpinner.events.get("turn_start") ?? []) await handler({}, spinnerCtx);
+assert.equal(testedPiPatchBroker.active("spinner-shimmer"), undefined, "stale spinner callbacks cannot resurrect a retired owner");
 
 console.log("spinner-cadence: ok");

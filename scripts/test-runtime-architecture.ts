@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import { Loader } from "@earendil-works/pi-tui";
 
+import { activateTestedPiRuntime } from "../extensions/adapters/tested-pi/adapter.ts";
+import { testedPiPatchBroker } from "../extensions/adapters/tested-pi/patch-broker.ts";
 import { probeTestedPiCapabilities } from "../extensions/adapters/tested-pi/probes.ts";
 import { buildActivationPlan } from "../extensions/runtime/activation-plan.ts";
 import { detectHostDescriptor, parseProfilePreference, TESTED_PI_VERSIONS } from "../extensions/runtime/capabilities.ts";
+import { registerPointerExpansionLifecycle } from "../extensions/lifecycle/pointer-expansion.ts";
 import { registerSessionEvents } from "../extensions/lifecycle/session-events.ts";
 import { RuntimeHandle } from "../extensions/runtime/runtime-handle.ts";
 
@@ -29,6 +32,7 @@ assert.equal(portablePlan.featureEnabled("toolPresentation"), false);
 assert.equal(portablePlan.featureDecision("toolPresentation").reason, "missing-capability");
 
 const completeProbe = probeTestedPiCapabilities({
+	extensionApi: { registerCommand() {}, on() {}, registerTool() {}, getAllTools() {}, sendUserMessage() {} },
 	ToolExecutionComponent: { prototype: { hasRendererDefinition() {}, getCallRenderer() {}, getResultRenderer() {}, updateDisplay() {}, setExpanded() {} } },
 	Container: { prototype: { render() {} } },
 	AssistantMessageComponent: { prototype: { updateContent() {} } },
@@ -39,6 +43,10 @@ const completeProbe = probeTestedPiCapabilities({
 });
 assert.equal(completeProbe.failures.length, 0);
 assert.equal(completeProbe.capabilities.has("tested:spinner-loader"), true);
+assert.equal(completeProbe.capabilities.has("public:send-user-message"), true);
+const noSendProbe = probeTestedPiCapabilities({ extensionApi: { registerCommand() {}, on() {}, registerTool() {}, getAllTools() {} } });
+const noSendHost = detectHostDescriptor({ piVersion: "0.85.1", observedCapabilities: noSendProbe.capabilities });
+assert.equal(buildActivationPlan(noSendHost, undefined).featureEnabled("scheduledTasks"), false, "Cron fails closed without sendUserMessage");
 const partialProbe = probeTestedPiCapabilities({ Container: { prototype: { render() {} } } });
 assert.equal(partialProbe.capabilities.has("tested:container-composition"), true);
 assert.equal(partialProbe.capabilities.has("tested:component-renderers"), false);
@@ -73,6 +81,18 @@ runtime.add(() => { disposedLate = true; });
 await Promise.resolve();
 assert.equal(disposedLate, true);
 
+const failedRuntime = new RuntimeHandle("failed-activation");
+assert.throws(() => activateTestedPiRuntime(failedRuntime, () => {
+	testedPiPatchBroker.bind(failedRuntime.owner, "activation-test", "stale");
+	throw new Error("activation failed");
+}), /activation failed/);
+assert.equal(failedRuntime.state, "disposed");
+assert.equal(testedPiPatchBroker.active("activation-test"), undefined, "partial activation releases every broker surface");
+const retryRuntime = new RuntimeHandle("retry-activation");
+activateTestedPiRuntime(retryRuntime, () => testedPiPatchBroker.bind(retryRuntime.owner, "activation-test", "fresh"));
+assert.equal(testedPiPatchBroker.active("activation-test"), "fresh");
+testedPiPatchBroker.releaseOwner(retryRuntime.owner);
+
 const lifecycleEvents = new Map<string, Function>();
 const lifecycleCalls: string[] = [];
 let lifecycleCurrent = true;
@@ -95,11 +115,27 @@ assert.deepEqual(lifecycleCalls, ["start", "deferred", "discover"], "retired run
 await lifecycleEvents.get("session_shutdown")?.({ reason: "reload" }, {});
 assert.equal(lifecycleCalls.at(-1), "shutdown", "shutdown always reaches the owning runtime exactly once");
 
+const pointerEvents = new Map<string, Function>();
+const pointerOwner = {};
+let pointerCurrent = true;
+registerPointerExpansionLifecycle({ on(name: string, handler: Function) { pointerEvents.set(name, handler); } } as any, pointerOwner, {
+	isCurrent: () => pointerCurrent,
+	shouldWarnRestart: () => false,
+	warning: "unused",
+});
+await pointerEvents.get("session_start")?.({}, { hasUI: true, ui: { onTerminalInput: () => () => {} } });
+assert.ok(testedPiPatchBroker.owned(pointerOwner, "pointer-expansion"));
+pointerCurrent = false;
+await pointerEvents.get("session_shutdown")?.({ reason: "quit" }, {});
+await pointerEvents.get("session_compact")?.({}, {});
+assert.equal(testedPiPatchBroker.owned(pointerOwner, "pointer-expansion"), undefined, "stale pointer callbacks cannot recreate retired owner state");
+
 // A forced portable generation must be a true native pass-through: invoking
 // the package entry point performs no registration and touches no Pi method.
 const oldProfile = process.env.PI_CLAUDIFY_PROFILE;
 process.env.PI_CLAUDIFY_PROFILE = "portable";
 try {
+	const globalSymbolsBefore = new Set(Object.getOwnPropertySymbols(globalThis).map((symbol) => Symbol.keyFor(symbol)).filter(Boolean));
 	const extension = await import(`../extensions/index.ts?portable-runtime-test=${Date.now()}`);
 	const tools = new Map<string, any>();
 	const events = new Map<string, Function[]>();
@@ -110,10 +146,12 @@ try {
 		sendUserMessage() {},
 	};
 	extension.default(fakePi as any);
-	for (const handler of events.get("session_start") ?? []) await handler({}, { mode: "tui", hasUI: true, ui: {}, isProjectTrusted: () => false });
+	for (const handler of events.get("session_start") ?? []) await handler({}, { mode: "tui", hasUI: true, ui: { custom() {}, input() {} }, isProjectTrusted: () => false });
 	for (const name of ["CronCreate", "CronList", "CronDelete", "AskUserQuestion"]) assert.equal(tools.has(name), true, `${name} remains available through portable public APIs`);
 	const { testedPiPatchBroker } = await import("../extensions/adapters/tested-pi/patch-broker.ts");
 	assert.deepEqual(testedPiPatchBroker.inspect(), { owners: 0, retiring: 0, surfaces: 0 }, "portable mode installs no tested-Pi broker binding");
+	const addedGlobalSymbols = Object.getOwnPropertySymbols(globalThis).map((symbol) => Symbol.keyFor(symbol)).filter((key): key is string => !!key && !globalSymbolsBefore.has(key));
+	assert.equal(addedGlobalSymbols.includes("pi-claudify:host-container-render"), false, "portable import does not capture private host render state");
 
 	const before = {
 		updateDisplay: (Loader.prototype as any).updateDisplay,

@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
 
-import { ToolExecutionComponent } from "@earendil-works/pi-coding-agent";
+import {
+	ToolExecutionComponent,
+	createBashToolDefinition,
+	createEditToolDefinition,
+	createFindToolDefinition,
+	createGrepToolDefinition,
+	createLsToolDefinition,
+	createReadToolDefinition,
+	createWriteToolDefinition,
+} from "@earendil-works/pi-coding-agent";
 import { Container, visibleWidth } from "@earendil-works/pi-tui";
 import { initTheme } from "../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js";
 
@@ -89,6 +98,10 @@ assert.deepEqual(
 
 initTheme("dark", false);
 const pi = new FakePi();
+for (const definition of [
+	createReadToolDefinition(process.cwd()), createWriteToolDefinition(process.cwd()), createEditToolDefinition(process.cwd()),
+	createBashToolDefinition(process.cwd()), createGrepToolDefinition(process.cwd()), createFindToolDefinition(process.cwd()), createLsToolDefinition(process.cwd()),
+]) pi.tools.set(definition.name, { ...definition, sourceInfo: { source: "builtin", path: `<builtin:${definition.name}>` } });
 for (const name of ["webfetch", "web_search", "Agent", "code_search", "apply_patch"]) {
 	pi.registerTool({
 		name,

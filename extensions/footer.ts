@@ -4,6 +4,7 @@ import { basename, dirname } from "node:path";
 import { Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth } from "@earendil-works/pi-tui";
 
+import { testedPiPatchBroker } from "./adapters/tested-pi/patch-broker.ts";
 import { settingsFeatureEnabled } from "./domain/compatibility.ts";
 import { getSessionMetrics } from "./session-metrics.ts";
 import { readSettings, type SettingsFile } from "./settings.ts";
@@ -790,6 +791,8 @@ export function installClaudeFooter(ctx: any, pi?: any): void {
 }
 
 const BORDER_PATCH_FLAG = Symbol.for("claudify.editorBorderPatch");
+const BORDER_PATCH_SURFACE = "editor-border";
+const DEFAULT_BORDER_OWNER = {};
 
 /**
  * Pin pi's input-box border to gray, the way Claude Code keeps it in every
@@ -801,7 +804,8 @@ const BORDER_PATCH_FLAG = Symbol.for("claudify.editorBorderPatch");
  * waiting for a thinking-level event. Bash mode (getBashModeBorderColor) is
  * left untouched — Claude Code recolors that state too.
  */
-export function patchEditorBorderColor(): void {
+export function patchEditorBorderColor(owner: object = DEFAULT_BORDER_OWNER): void {
+	testedPiPatchBroker.bind(owner, BORDER_PATCH_SURFACE, true);
 	const proto = Theme.prototype as any;
 	if (proto[BORDER_PATCH_FLAG]) return;
 	const original = proto.getThinkingBorderColor;
@@ -810,7 +814,7 @@ export function patchEditorBorderColor(): void {
 		const passthrough = original.call(this, level);
 		return (str: string): string => {
 			const settings = readSettings().values;
-			if (!settingsFeatureEnabled(settings, "footer") || resolveFooterSettings(settings).editorBorder !== "gray") return passthrough(str);
+			if (!testedPiPatchBroker.active<boolean>(BORDER_PATCH_SURFACE) || !settingsFeatureEnabled(settings, "footer") || resolveFooterSettings(settings).editorBorder !== "gray") return passthrough(str);
 			try {
 				return this.fg("borderMuted", str);
 			} catch {
@@ -819,4 +823,8 @@ export function patchEditorBorderColor(): void {
 		};
 	};
 	proto[BORDER_PATCH_FLAG] = true;
+}
+
+export function releaseEditorBorderColor(owner: object = DEFAULT_BORDER_OWNER): void {
+	testedPiPatchBroker.releaseSurface(owner, BORDER_PATCH_SURFACE);
 }

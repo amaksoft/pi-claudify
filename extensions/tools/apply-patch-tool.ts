@@ -31,6 +31,7 @@ export interface ApplyPatchRuntime {
 	maxPreviewLines: number;
 	maxRenderLines: number;
 	hash(text: string): string;
+	diffPresentationEnabled(): boolean;
 }
 
 function describe(change: ApplyPatchChangePreview): string {
@@ -73,7 +74,7 @@ export function renderApplyPatchCall(runtime: ApplyPatchRuntime, args: any, them
 	const shortPath = (path: string) => runtime.displayPath(path);
 	const summary = runtime.stableSummary(ctx, "_callSummary", () => runtime.summarizeCall(args, theme, shortPath));
 	const header = runtime.header("Apply Patch", summary, theme, runtime.statusDot(ctx, theme));
-	if (!ctx.argsComplete) return runtime.makeText(ctx.lastComponent, header);
+	if (!runtime.diffPresentationEnabled() || !ctx.argsComplete) return runtime.makeText(ctx.lastComponent, header);
 	const preview = cachedPreview(runtime, patchText, ctx);
 	if (!preview?.changes.length) {
 		ctx.state._openAiPatchFiles = [];
@@ -136,6 +137,7 @@ export function renderApplyPatchResult(runtime: ApplyPatchRuntime, result: any, 
 		const raw = sanitizeToolOutput(getTextContent(result)).trim();
 		return runtime.makeText(ctx.lastComponent, runtime.withBranch(theme.fg("error", raw ? raw.split("\n")[0] : "Apply patch failed"), theme));
 	}
+	if (!runtime.diffPresentationEnabled()) return runtime.makeText(ctx.lastComponent, runtime.withBranch(theme.fg("success", "Applied"), theme));
 	const meta = resultMeta(runtime, ctx.args, ctx);
 	if (!meta?.changeCount) return runtime.makeText(ctx.lastComponent, runtime.withBranch(theme.fg("success", "Applied"), theme));
 	if (meta.changeCount === 1 && meta.firstChange) {

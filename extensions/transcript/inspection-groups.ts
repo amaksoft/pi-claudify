@@ -3,10 +3,11 @@
 // the pieces index.ts needs to build one InspectionGroupRuntime per call.
 
 import { reconcileInspectionGroups, type InspectionGroupPolicy } from "../inspection-group.ts";
-import { isSettledToolExecution, setToolExpanded } from "../pi-tool-adapter.ts";
+import { setToolExpanded } from "../pi-tool-adapter.ts";
 import { isInspectionGroupCandidate } from "./inspection-candidates.ts";
 import { renderActiveInspectionGroup, renderSettledInspectionGroup } from "./inspection-render.ts";
 import type { InspectionGroupRuntime } from "./runtime.ts";
+import { snapshotToolExecution } from "./tool-record.ts";
 
 export type { InspectionGroupRuntime, ToolBackgroundMode } from "./runtime.ts";
 export {
@@ -31,7 +32,7 @@ export { fitInspectionLine, frameInspectionLines, renderActiveInspectionGroup, r
  * effectively unreachable.
  * Capture: docs/plans/2026-09-07-inspection-group-interaction.md
  */
-export const isSettledInspectionTool = isSettledToolExecution;
+export const isSettledInspectionTool = (value: unknown): boolean => snapshotToolExecution(value)?.phase === "settled";
 
 /** Builds the policy fresh per call so it always closes over the current runtime. */
 export function createInspectionGroupPolicy(runtime: InspectionGroupRuntime): InspectionGroupPolicy {

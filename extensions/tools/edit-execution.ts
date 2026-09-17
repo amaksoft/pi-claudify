@@ -25,7 +25,6 @@ export function normalizeEditResultProvenance(
 	const { summary } = summarizeEditOperations(operations, dependencies.summarizeDiff);
 	const baseDetails = { ...((result.details ?? {}) as Record<string, unknown>) };
 	const legacyDisplayDiff = baseDetails.diff;
-	delete baseDetails.diff;
 	const nativePatchDiff = parsePersistedEditPatch(baseDetails.patch);
 	const legacyDiff = nativePatchDiff ? null : parseLegacyEditDiff(legacyDisplayDiff);
 	const aggregateDiff = nativePatchDiff ?? legacyDiff;

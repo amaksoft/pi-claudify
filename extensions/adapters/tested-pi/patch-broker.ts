@@ -11,14 +11,16 @@ interface OwnerBinding {
 interface BrokerState {
 	owners: Map<object, OwnerBinding>;
 	nextRank: number;
+	handoffs: Map<string, { owner: object; rank: number }>;
 }
 
 function state(): BrokerState {
 	const root = globalThis as Record<PropertyKey, unknown>;
-	const current = (root[PATCH_BROKER_KEY] ??= { owners: new Map<object, OwnerBinding>(), nextRank: 1 }) as BrokerState;
+	const current = (root[PATCH_BROKER_KEY] ??= { owners: new Map<object, OwnerBinding>(), nextRank: 1, handoffs: new Map() }) as BrokerState;
 	// One-time shape migration for a broker created by an older hot-reloaded
 	// generation. Preserve insertion order when assigning its missing ranks.
 	if (typeof current.nextRank !== "number") current.nextRank = 1;
+	if (!(current.handoffs instanceof Map)) current.handoffs = new Map();
 	for (const value of current.owners.values()) {
 		if (typeof value.rank !== "number") value.rank = current.nextRank++;
 	}
@@ -29,10 +31,7 @@ function binding(owner: object): OwnerBinding {
 	const broker = state();
 	let value = broker.owners.get(owner);
 	if (!value) {
-		const retiringRank = [...broker.owners.values()]
-			.filter((candidate) => candidate.retiring)
-			.reduce<number | undefined>((lowest, candidate) => lowest === undefined ? candidate.rank : Math.min(lowest, candidate.rank), undefined);
-		value = { retiring: false, rank: retiringRank ?? broker.nextRank++, surfaces: new Map() };
+		value = { retiring: false, rank: broker.nextRank++, surfaces: new Map() };
 		broker.owners.set(owner, value);
 	}
 	return value;
@@ -41,10 +40,11 @@ function binding(owner: object): OwnerBinding {
 /**
  * Process-stable owner selection shared by every tested-Pi trampoline.
  *
- * Rank gives the outer/parent runtime priority over nested AgentSessions. A
- * successor inherits the lowest retiring rank, so parent reload cannot leave
- * an overlapping child authoritative. A retiring owner remains the gap
- * fallback for each surface until its same-rank successor binds that surface.
+ * Rank gives the outer/parent runtime priority over nested AgentSessions.
+ * Reload successors claim their exact predecessor rank through a stable
+ * session key; ranks are never guessed from whichever retiring owner happens
+ * to bind first. A retiring owner remains a per-surface gap fallback until its
+ * same-session successor claims the handoff and binds that surface.
  */
 export class PatchBroker {
 	bind<T>(owner: object, surface: string, value: T): Disposable {
@@ -86,15 +86,38 @@ export class PatchBroker {
 		if (value) value.retiring = true;
 	}
 
+	offerSessionHandoff(owner: object, sessionKey: string): boolean {
+		const value = state().owners.get(owner);
+		if (!value || !sessionKey) return false;
+		state().handoffs.set(sessionKey, { owner, rank: value.rank });
+		return true;
+	}
+
+	claimSessionHandoff(owner: object, sessionKey: string): boolean {
+		const broker = state();
+		const handoff = broker.handoffs.get(sessionKey);
+		const value = broker.owners.get(owner);
+		if (!handoff || !value) return false;
+		value.rank = handoff.rank;
+		broker.handoffs.delete(sessionKey);
+		return true;
+	}
+
+	private removeOwner(owner: object): void {
+		const broker = state();
+		broker.owners.delete(owner);
+		for (const [key, handoff] of broker.handoffs) if (handoff.owner === owner) broker.handoffs.delete(key);
+	}
+
 	releaseSurface(owner: object, surface: string): void {
 		const value = state().owners.get(owner);
 		if (!value) return;
 		value.surfaces.delete(surface);
-		if (value.surfaces.size === 0) state().owners.delete(owner);
+		if (value.surfaces.size === 0) this.removeOwner(owner);
 	}
 
 	releaseOwner(owner: object): void {
-		state().owners.delete(owner);
+		this.removeOwner(owner);
 	}
 
 	clearSurface(surface: string): void {

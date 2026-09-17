@@ -52,7 +52,9 @@ export class MessageLifecycle {
 			}
 			patchMessage(event, ctx.ui?.theme);
 		});
-		pi.on("agent_end", async () => { this.agentStart = undefined; this.assistantStart = undefined; });
+		const reset = () => { this.agentStart = undefined; this.assistantStart = undefined; };
+		pi.on("agent_end", async () => reset());
+		pi.on("session_shutdown", async () => reset());
 		pi.on("context", async (event) => {
 			if (!Array.isArray((event as any).messages)) return;
 			for (const message of (event as any).messages) {

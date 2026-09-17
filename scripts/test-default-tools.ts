@@ -21,7 +21,7 @@ try {
 	};
 	claudify(pi as any);
 	for (const handler of events.get("session_start") ?? []) {
-		await handler({}, { mode: "tui", hasUI: true, ui: { theme: {}, requestRender() {} }, isProjectTrusted: () => false });
+		await handler({}, { mode: "tui", hasUI: true, ui: { theme: {}, requestRender() {}, custom() {}, input() {} }, isProjectTrusted: () => false });
 	}
 	for (const name of ["CronCreate", "CronList", "CronDelete", "AskUserQuestion"]) {
 		assert.ok(tools.has(name), `${name} is registered with zero configuration in interactive TUI mode`);
@@ -39,6 +39,17 @@ try {
 	for (const handler of printEvents.get("session_start") ?? []) await handler({}, { mode: "print", hasUI: false, ui: {}, isProjectTrusted: () => false });
 	assert.equal(printTools.has("AskUserQuestion"), false, "AskUserQuestion is not model-visible outside interactive TUI mode");
 	for (const name of ["CronCreate", "CronList", "CronDelete"]) assert.ok(printTools.has(name), `${name} remains available outside TUI mode`);
+
+	const limitedTools = new Map<string, any>();
+	const limitedEvents = new Map<string, Function[]>();
+	claudify({
+		registerTool(definition: any) { limitedTools.set(definition.name, definition); }, registerCommand() {},
+		on(name: string, handler: Function) { limitedEvents.set(name, [...(limitedEvents.get(name) ?? []), handler]); },
+		getAllTools() { return [...limitedTools.values()]; }, getThinkingLevel() { return "off"; },
+	} as any);
+	for (const handler of limitedEvents.get("session_start") ?? []) await handler({}, { mode: "tui", hasUI: true, ui: {}, isProjectTrusted: () => false });
+	assert.equal(limitedTools.has("AskUserQuestion"), false, "Ask stays hidden when custom/input TUI capabilities are absent");
+	for (const name of ["CronCreate", "CronList", "CronDelete"]) assert.equal(limitedTools.has(name), false, `${name} stays hidden without sendUserMessage`);
 } finally {
 	if (previousHome === undefined) delete process.env.HOME;
 	else process.env.HOME = previousHome;

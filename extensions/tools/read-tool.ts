@@ -1,8 +1,9 @@
 import { createReadToolDefinition, type ReadToolDetails, type Theme } from "@earendil-works/pi-coding-agent";
+import type { ToolPresentationAdapter } from "../domain/tool-presentation.ts";
 import { sanitizeToolText } from "../terminal-sanitize.ts";
 import type { WidthAwareToolRuntime } from "./presenter-runtime.ts";
 
-export interface ReadToolRuntime extends WidthAwareToolRuntime {
+export interface ReadToolPresentationRuntime extends Omit<WidthAwareToolRuntime, "register" | "registerExecution" | "registerPresentation" | "forwardContract"> {
 	autoResizeImages(cwd: string, ctx: any): boolean;
 	linkedPath(path: string, cwd: string): string;
 	firstImage(result: any): unknown;
@@ -14,19 +15,17 @@ export interface ReadToolRuntime extends WidthAwareToolRuntime {
 	expandedRows(): number;
 }
 
-export function registerReadTool(runtime: ReadToolRuntime): void {
-	const native = createReadToolDefinition(runtime.cwd);
-	runtime.register({
+export interface ReadToolRuntime extends ReadToolPresentationRuntime {
+	register(definition: any): void;
+	registerExecution?: boolean;
+	registerPresentation?(presentation: ToolPresentationAdapter): void;
+	forwardContract(definition: any): Record<string, unknown>;
+}
+
+export function createReadToolPresentation(runtime: ReadToolPresentationRuntime): ToolPresentationAdapter {
+	return {
 		name: "read",
-		label: "read",
-		description: native.description,
-		parameters: native.parameters,
-		...runtime.forwardContract(native),
-		async execute(toolCallId: string, params: any, signal: AbortSignal | undefined, onUpdate: any, ctx: any) {
-			const cwd = ctx?.cwd ?? runtime.cwd;
-			return createReadToolDefinition(cwd, { autoResizeImages: runtime.autoResizeImages(cwd, ctx) })
-				.execute(toolCallId, params, signal, onUpdate, ctx);
-		},
+		overrideSelfShell: true,
 		renderCall(args: any, theme: Theme, ctx: any) {
 			runtime.syncCallStatus(ctx);
 			const summary = runtime.stableSummary(ctx, "_callSummary", () => {
@@ -66,6 +65,25 @@ export function registerReadTool(runtime: ReadToolRuntime): void {
 				const preview = runtime.visualPreview(content.text, width, runtime.expandedRows(), "dim", theme, true);
 				return runtime.renderLines(runtime.withBranch(`${text}\n${preview}`, theme), width);
 			}, runtime.revision);
+		},
+	};
+}
+
+export function registerReadTool(runtime: ReadToolRuntime): void {
+	const presentation = createReadToolPresentation(runtime);
+	runtime.registerPresentation?.(presentation);
+	if (runtime.registerExecution === false) return;
+	const native = createReadToolDefinition(runtime.cwd);
+	runtime.register({
+		...presentation,
+		label: "read",
+		description: native.description,
+		parameters: native.parameters,
+		...runtime.forwardContract(native),
+		async execute(toolCallId: string, params: any, signal: AbortSignal | undefined, onUpdate: any, ctx: any) {
+			const cwd = ctx?.cwd ?? runtime.cwd;
+			return createReadToolDefinition(cwd, { autoResizeImages: runtime.autoResizeImages(cwd, ctx) })
+				.execute(toolCallId, params, signal, onUpdate, ctx);
 		},
 	});
 }

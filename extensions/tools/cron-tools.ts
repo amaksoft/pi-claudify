@@ -75,7 +75,13 @@ export class CronScheduler {
 		if (this.sessionKey) sessionTaskStore().delete(this.sessionKey);
 	}
 
+	clearSessionOnlyTasks(): void {
+		for (const [id, task] of this.tasks) if (!task.durable) this.tasks.delete(id);
+		this.awaitingSettlement = false;
+	}
+
 	setContext(context: any, loadDurable = true): void {
+		this.stopped = false;
 		this.context = context;
 		if (loadDurable && !this.loaded) this.load();
 		this.schedule();
@@ -314,7 +320,10 @@ export function installCronLifecycle(pi: ExtensionAPI, scheduler: CronScheduler)
 	(pi as any).on("agent_settled", async (_event: unknown, ctx: any) => scheduler.agentSettled(ctx));
 	pi.on("session_shutdown", async (event: any) => {
 		if (event?.reason === "reload") scheduler.preserveSessionTasks();
-		else scheduler.discardSessionTasks();
+		else {
+			scheduler.discardSessionTasks();
+			scheduler.clearSessionOnlyTasks();
+		}
 		scheduler.stop();
 	});
 }

@@ -7,7 +7,7 @@ import { registerWriteTool } from "./write-tool.ts";
 /** Composition-only wiring for the seven built-in tool presenters. */
 export function registerBuiltinTools(env: any): void {
 	const {
-		cwd, registerBuiltinOverride, forwardedToolContract, hostToolSettings, hostSettingsContext,
+		cwd, registerBuiltinOverride, registerBuiltinExecution = true, registerPresentation, forwardedToolContract, hostToolSettings, hostSettingsContext,
 		spl, sp, syncToolCallStatus, stableCallSummary, makeText, toolHeader, toolStatusDot,
 		withBranch, withFinalBranchBlock, renderToolTextLines, setupBlinkTimer, clearBlinkTimer, setToolStatus,
 		firstImageBlock, renderReadImage, shortPath, errorText, resultSentence, claudeChromeEnabled,
@@ -18,11 +18,13 @@ export function registerBuiltinTools(env: any): void {
 		diffCard, getCachedParsedDiff, diffContentWidth, claudeDiffPaletteEnabled, renderFileListing,
 		renderUnified, resolveDiffColors, diffCollapsedLimit, MAX_RENDER_LINES, renderPrewrappedDiffLines,
 		indentBranchBlock, computeAggregateEditDiff, computeLocalizedEditDiffs,
-		buildAggregateEditPreviewText, buildEditPreviewText,
+		buildAggregateEditPreviewText, buildEditPreviewText, diffPresentationEnabled,
 	} = env;
 	registerReadTool({
 		cwd,
 		register: registerBuiltinOverride,
+		registerExecution: registerBuiltinExecution,
+		registerPresentation,
 		forwardContract: forwardedToolContract,
 		autoResizeImages: (runtimeCwd, ctx) => hostToolSettings(runtimeCwd, hostSettingsContext(ctx)).autoResizeImages,
 		linkedPath: spl,
@@ -59,6 +61,8 @@ export function registerBuiltinTools(env: any): void {
 	registerBashTool({
 		cwd,
 		register: registerBuiltinOverride,
+		registerExecution: registerBuiltinExecution,
+		registerPresentation,
 		forwardContract: forwardedToolContract,
 		hostSettings: (runtimeCwd, ctx) => hostToolSettings(runtimeCwd, hostSettingsContext(ctx)),
 		semanticEnabled: bashSemanticDisplayEnabled,
@@ -88,6 +92,8 @@ export function registerBuiltinTools(env: any): void {
 	registerSearchTools({
 		cwd,
 		register: registerBuiltinOverride,
+		registerExecution: registerBuiltinExecution,
+		registerPresentation,
 		forwardContract: forwardedToolContract,
 		shortPath: sp,
 		syncCallStatus: syncToolCallStatus,
@@ -112,6 +118,8 @@ export function registerBuiltinTools(env: any): void {
 	registerWriteTool({
 		cwd,
 		register: registerBuiltinOverride,
+		registerExecution: registerBuiltinExecution,
+		registerPresentation,
 		forwardContract: forwardedToolContract,
 		summarizeDiff,
 		linkedPath: spl,
@@ -143,11 +151,14 @@ export function registerBuiltinTools(env: any): void {
 		renderPrewrapped: renderPrewrappedDiffLines,
 		hash: hashText,
 		revision: getSettingsRevision,
+		diffPresentationEnabled,
 	});
 
 	registerEditTool({
 		cwd,
 		register: registerBuiltinOverride,
+		registerExecution: registerBuiltinExecution,
+		registerPresentation,
 		forwardContract: forwardedToolContract,
 		summarizeDiff,
 		linkedPath: spl,
@@ -169,6 +180,7 @@ export function registerBuiltinTools(env: any): void {
 		computeLocalized: computeLocalizedEditDiffs,
 		buildAggregate: buildAggregateEditPreviewText,
 		buildPreview: buildEditPreviewText,
+		diffPresentationEnabled,
 		renderPrewrapped: renderPrewrappedDiffLines,
 		hash: hashText,
 		revision: getSettingsRevision,

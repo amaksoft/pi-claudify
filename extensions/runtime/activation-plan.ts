@@ -26,7 +26,7 @@ const FEATURE_REQUIREMENTS: Readonly<Record<CompatibilityFeatureId, readonly Cap
 	footer: ["tested:message-renderers"],
 	banner: ["tested:message-renderers"],
 	promptPointer: ["tested:message-renderers"],
-	scheduledTasks: ["public:events", "public:tools"],
+	scheduledTasks: ["public:events", "public:tools", "public:send-user-message"],
 	askUserQuestion: ["public:tools", "public:tui"],
 };
 

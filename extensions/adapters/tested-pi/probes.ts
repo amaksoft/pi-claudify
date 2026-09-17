@@ -1,6 +1,8 @@
 import type { CapabilityId } from "../../runtime/contracts.ts";
 
 export interface TestedPiProbeInput {
+	extensionApi?: Record<string, unknown>;
+	assumeTuiContext?: boolean;
 	ToolExecutionComponent?: { prototype?: object };
 	Container?: { prototype?: object };
 	AssistantMessageComponent?: { prototype?: object };
@@ -22,8 +24,13 @@ function hasMethods(value: unknown, methods: readonly string[]): boolean {
 
 /** Non-mutating structural probes for every private surface used by Tier 2. */
 export function probeTestedPiCapabilities(input: TestedPiProbeInput): TestedPiProbeResult {
-	const capabilities = new Set<CapabilityId>(["public:commands", "public:events", "public:tools", "public:tui"]);
+	const capabilities = new Set<CapabilityId>();
 	const failures: string[] = [];
+	if (typeof input.extensionApi?.registerCommand === "function") capabilities.add("public:commands"); else failures.push("public-commands");
+	if (typeof input.extensionApi?.on === "function") capabilities.add("public:events"); else failures.push("public-events");
+	if (typeof input.extensionApi?.registerTool === "function" && typeof input.extensionApi?.getAllTools === "function") capabilities.add("public:tools"); else failures.push("public-tools");
+	if (typeof input.extensionApi?.sendUserMessage === "function") capabilities.add("public:send-user-message"); else failures.push("public-send-user-message");
+	if (input.assumeTuiContext !== false) capabilities.add("public:tui"); else failures.push("public-tui");
 	if (hasMethods(input.ToolExecutionComponent?.prototype, ["hasRendererDefinition", "getCallRenderer", "getResultRenderer", "updateDisplay"])) {
 		capabilities.add("tested:component-renderers");
 	} else failures.push("tool-component-renderers");
