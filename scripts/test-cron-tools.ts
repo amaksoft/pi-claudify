@@ -1,0 +1,177 @@
+import { trackedTempDir } from "./sandbox-home.ts";
+import assert from "node:assert/strict";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+import { cronMatches, formatCronList, humanCron, nextCronTime, parseCron } from "../extensions/domain/cron.ts";
+import { CronScheduler, installCronLifecycle, registerCronTools } from "../extensions/tools/cron-tools.ts";
+
+assert.throws(() => parseCron("not-a-valid-cron"), /Expected 5 fields: M H DoM Mon DoW/);
+assert.throws(() => parseCron("*/0 * * * *"), /Invalid cron field/);
+assert.throws(() => parseCron("-5 * * * *"), /Invalid cron field/, "bare-leading-dash ranges are rejected rather than coerced to zero");
+assert.throws(() => parseCron("61 * * * *"), /Expected 0-59/);
+assert.equal(humanCron("*/5 * * * *"), "Every 5 minutes");
+assert.equal(humanCron("0 9 * * *"), "Every day at 9:00 AM");
+assert.equal(cronMatches(parseCron("30 14 * * *"), new Date(2026, 0, 2, 14, 30)), true);
+assert.equal(nextCronTime("0 9 * * *", new Date(2026, 0, 2, 8, 59, 30).getTime()), new Date(2026, 0, 2, 9, 0).getTime());
+assert.equal(nextCronTime("0 0 29 2 *", new Date(2025, 2, 1).getTime()), new Date(2028, 1, 29).getTime(), "sparse leap-day schedules remain supported");
+const sparseStarted = performance.now();
+assert.throws(() => nextCronTime("0 0 31 2 *", new Date(2026, 0, 1).getTime()), /no occurrence/);
+assert.ok(performance.now() - sparseStarted < 100, "impossible calendar schedules fail without a multi-million-minute event-loop scan");
+assert.equal(formatCronList([]), "No scheduled jobs.");
+
+const cwd = trackedTempDir("pi-claudify-cron");
+let now = new Date(2026, 0, 2, 8, 59, 30).getTime();
+let sequence = 0;
+const sent: string[] = [];
+let idle = true;
+const scheduler = new CronScheduler({ cwd, now: () => now, id: () => `0000000${++sequence}`, random: () => 0, sendUserMessage: (prompt) => sent.push(prompt) });
+scheduler.setContext({ isIdle: () => idle });
+const first = scheduler.create("0 9 * * *", "daily check", false, false);
+assert.equal(first.id, "00000001");
+assert.equal(first.nextRunAt, new Date(2026, 0, 2, 9, 0).getTime());
+const duplicate = scheduler.create("0 9 * * *", "daily check", false, false);
+assert.notEqual(duplicate.id, first.id, "identical schedules are allowed and receive distinct IDs");
+assert.equal(scheduler.delete(duplicate.id), true);
+const durable = scheduler.create("*/5 * * * *", "durable check", true, true);
+assert.match(readFileSync(scheduler.storagePath, "utf8"), new RegExp(durable.id));
+assert.match(formatCronList(scheduler.list()), /\[session-only\]: daily check/);
+
+now = first.nextRunAt;
+idle = false;
+await scheduler.flushDue();
+assert.deepEqual(sent, [], "due jobs wait while the agent is busy");
+idle = true;
+await scheduler.flushDue();
+assert.deepEqual(sent, ["daily check"]);
+assert.equal(scheduler.list().some((task) => task.id === first.id), false, "one-shot jobs auto-delete after firing");
+assert.equal(scheduler.delete("missing"), false);
+assert.equal(scheduler.delete(durable.id), true);
+assert.doesNotMatch(readFileSync(scheduler.storagePath, "utf8"), new RegExp(durable.id));
+scheduler.stop();
+
+let recurringNow = new Date(2026, 0, 2, 8, 59, 30).getTime();
+const recurringSent: string[] = [];
+const fallbackScheduler = new CronScheduler({ cwd: join(cwd, "fallback"), now: () => recurringNow, id: () => "feedface", random: () => 0, sendUserMessage: (prompt) => recurringSent.push(prompt) });
+fallbackScheduler.setContext({ isIdle: () => true }, false);
+const recurring = fallbackScheduler.create("* * * * *", "repeat", true, false);
+recurringNow = recurring.nextRunAt;
+await fallbackScheduler.flushDue();
+recurringNow += 60_000;
+await fallbackScheduler.flushDue();
+assert.deepEqual(recurringSent, ["repeat", "repeat"], "polling fallback keeps recurring jobs alive without agent_settled support");
+fallbackScheduler.stop();
+
+let failingNow = new Date(2026, 0, 2, 8, 59, 30).getTime();
+const sendErrors: unknown[] = [];
+const failingSender = new CronScheduler({ cwd: join(cwd, "send-failure"), now: () => failingNow, id: () => "deadbeef", random: () => 0, sendUserMessage: () => { throw new Error("host unavailable"); }, onError: (error) => sendErrors.push(error) });
+failingSender.setContext({ isIdle: () => true }, false);
+const retryable = failingSender.create("* * * * *", "retry me", false, false);
+failingNow = retryable.nextRunAt;
+await failingSender.flushDue();
+assert.equal(sendErrors.length, 1, "timer-path send failures are contained and reported");
+assert.equal(failingSender.list().some((task) => task.id === retryable.id), true, "failed dispatch restores the task for retry");
+failingSender.stop();
+
+const jitterBase = new Date(2026, 0, 2, 9, 1).getTime();
+const jittered = new CronScheduler({ cwd: join(cwd, "jitter"), now: () => jitterBase, id: () => "12345678", random: () => 0.5 });
+const jitteredTask = jittered.create("*/10 * * * *", "jitter", true, false);
+assert.equal(jitteredTask.nextRunAt, new Date(2026, 0, 2, 9, 10, 30).getTime(), "recurring jitter is bounded to ten percent of the period");
+jittered.stop();
+
+let expiryNow = new Date(2026, 0, 2, 9, 0).getTime();
+const expirySent: string[] = [];
+const expiryScheduler = new CronScheduler({ cwd: join(cwd, "expiry"), now: () => expiryNow, id: () => "87654321", random: () => 0, sendUserMessage: (prompt) => expirySent.push(prompt) });
+expiryScheduler.setContext({ isIdle: () => true }, false);
+const expiring = expiryScheduler.create("* * * * *", "last run", true, false);
+expiryNow = expiring.createdAt + 7 * 24 * 60 * 60 * 1000 + 60_000;
+await expiryScheduler.flushDue();
+assert.deepEqual(expirySent, ["last run"], "an expired recurring task fires once more");
+assert.equal(expiryScheduler.list().some((task) => task.id === expiring.id), false, "expired recurring task deletes after its final run");
+expiryScheduler.stop();
+
+const plantedRoot = join(cwd, "untrusted");
+mkdirSync(join(plantedRoot, ".pi"), { recursive: true });
+writeFileSync(join(plantedRoot, ".pi", "scheduled_tasks.json"), JSON.stringify({ tasks: [{ id: "badc0ffe", cron: "* * * * *", prompt: "planted", createdAt: now, recurring: true }] }));
+const untrustedScheduler = new CronScheduler({ cwd: plantedRoot, now: () => now, random: () => 0 });
+untrustedScheduler.setContext({ isIdle: () => true, isProjectTrusted: () => false }, false);
+const untrustedDefinitions = new Map<string, any>();
+registerCronTools({} as any, untrustedScheduler, (definition) => untrustedDefinitions.set(definition.name, definition));
+const untrustedContext = { isIdle: () => true, isProjectTrusted: () => false };
+const untrustedList = await untrustedDefinitions.get("CronList").execute("id", {}, undefined, undefined, untrustedContext);
+assert.equal(untrustedList.details.jobs.length, 0, "CronList cannot load planted durable jobs from an untrusted project");
+await assert.rejects(() => untrustedDefinitions.get("CronCreate").execute("id", { cron: "* * * * *", prompt: "x", durable: true }, undefined, undefined, untrustedContext), /trusted project/);
+untrustedScheduler.stop();
+
+let confirmation = false;
+let confirmationMessage = "";
+const consentScheduler = new CronScheduler({ cwd: join(cwd, "consent"), now: () => now, id: () => "d00dabcd", random: () => 0 });
+const consentDefinitions = new Map<string, any>();
+registerCronTools({} as any, consentScheduler, (definition) => consentDefinitions.set(definition.name, definition));
+const consentContext = { mode: "tui", hasUI: true, isIdle: () => true, isProjectTrusted: () => true, ui: { confirm: async (_title: string, message: string) => { confirmationMessage = message; return confirmation; } } };
+await assert.rejects(() => consentDefinitions.get("CronCreate").execute("id", { cron: "* * * * *", prompt: "durable", durable: true }, undefined, undefined, consentContext), /declined/);
+confirmation = true;
+await consentDefinitions.get("CronCreate").execute("id", { cron: "* * * * *", prompt: "durable\u001b]8;;https://spoof.invalid\u0007link", durable: true }, undefined, undefined, consentContext);
+assert.doesNotMatch(confirmationMessage, /\u001b|\u0007/, "durable confirmation sanitizes terminal control envelopes");
+confirmation = false;
+await assert.rejects(() => consentDefinitions.get("CronDelete").execute("id", { id: "d00dabcd" }, undefined, undefined, consentContext), /declined/);
+confirmation = true;
+await consentDefinitions.get("CronDelete").execute("id", { id: "d00dabcd" }, undefined, undefined, consentContext);
+consentScheduler.stop();
+
+const sharedRoot = join(cwd, "multi-process");
+const writerA = new CronScheduler({ cwd: sharedRoot, now: () => now, id: () => "aaaa0001", random: () => 0 });
+const writerB = new CronScheduler({ cwd: sharedRoot, now: () => now, id: () => "bbbb0002", random: () => 0 });
+writerA.setContext({ isIdle: () => true }, true);
+writerB.setContext({ isIdle: () => true }, true);
+writerA.create("* * * * *", "writer A", true, true);
+writerB.create("*/2 * * * *", "writer B", true, true);
+let sharedFile = JSON.parse(readFileSync(writerA.storagePath, "utf8"));
+assert.deepEqual(sharedFile.tasks.map((task: any) => task.id).sort(), ["aaaa0001", "bbbb0002"], "locked merge preserves durable creates from concurrent scheduler instances");
+writerA.delete("aaaa0001");
+sharedFile = JSON.parse(readFileSync(writerA.storagePath, "utf8"));
+assert.deepEqual(sharedFile.tasks.map((task: any) => task.id), ["bbbb0002"], "one scheduler's delete does not clobber another scheduler's task");
+writerA.stop(); writerB.stop();
+
+const definitions = new Map<string, any>();
+const toolScheduler = new CronScheduler({ cwd, now: () => now, id: () => "abcdef12", random: () => 0 });
+registerCronTools({} as any, toolScheduler, (definition) => definitions.set(definition.name, definition));
+assert.deepEqual([...definitions.keys()], ["CronCreate", "CronList", "CronDelete"]);
+const createResult = await definitions.get("CronCreate").execute("id", { cron: "*/5 * * * *", prompt: "ping" }, undefined, undefined, { isIdle: () => true });
+assert.match(createResult.content[0].text, /^Scheduled recurring job abcdef12 \(Every 5 minutes\)\./);
+assert.equal(createResult.details.durable, false);
+const listResult = await definitions.get("CronList").execute("id", {}, undefined, undefined, { isIdle: () => true });
+assert.match(listResult.content[0].text, /abcdef12 — Every 5 minutes \(recurring\) \[session-only\]: ping/);
+await assert.rejects(() => definitions.get("CronDelete").execute("id", { id: "missing" }, undefined, undefined, { isIdle: () => true }), /No scheduled job/);
+toolScheduler.stop();
+
+const lifecycleHandlers = new Map<string, Function>();
+const lifecycleSent: string[] = [];
+let lifecycleNow = new Date(2026, 0, 2, 9, 0).getTime();
+const lifecycleScheduler = new CronScheduler({ cwd: join(cwd, "lifecycle"), now: () => lifecycleNow, id: () => "aabbccdd", random: () => 0, sendUserMessage: (prompt) => lifecycleSent.push(prompt) });
+installCronLifecycle({ on: (name: string, handler: Function) => lifecycleHandlers.set(name, handler) } as any, lifecycleScheduler);
+const lifecycleContext = { isIdle: () => true, isProjectTrusted: () => false, sessionManager: { getSessionId: () => "reload-session" } };
+await lifecycleHandlers.get("session_start")?.({}, lifecycleContext);
+const lifecycleTask = lifecycleScheduler.create("* * * * *", "settled run", true, false);
+lifecycleNow = lifecycleTask.nextRunAt;
+await lifecycleScheduler.flushDue();
+assert.deepEqual(lifecycleSent, ["settled run"]);
+lifecycleNow += 60_000;
+await lifecycleHandlers.get("agent_settled")?.({}, { isIdle: () => true });
+assert.deepEqual(lifecycleSent, ["settled run", "settled run"], "agent_settled releases the next due recurring dispatch");
+await lifecycleHandlers.get("session_shutdown")?.({ reason: "reload" });
+
+const reloadHandlers = new Map<string, Function>();
+const reloadedScheduler = new CronScheduler({ cwd: join(cwd, "lifecycle"), now: () => lifecycleNow, random: () => 0 });
+installCronLifecycle({ on: (name: string, handler: Function) => reloadHandlers.set(name, handler) } as any, reloadedScheduler);
+await reloadHandlers.get("session_start")?.({ reason: "reload" }, lifecycleContext);
+assert.equal(reloadedScheduler.list().some((task) => task.id === lifecycleTask.id), true, "session-only scheduled tasks survive extension reload in the same Pi session");
+await reloadHandlers.get("session_shutdown")?.({ reason: "quit" });
+const finalScheduler = new CronScheduler({ cwd: join(cwd, "lifecycle"), now: () => lifecycleNow, random: () => 0 });
+finalScheduler.bindSession("reload-session");
+assert.equal(finalScheduler.list().length, 0, "session-only scheduled tasks are discarded on real session shutdown");
+finalScheduler.stop();
+
+rmSync(cwd, { recursive: true, force: true });
+
+console.log("cron tool and scheduler tests passed");

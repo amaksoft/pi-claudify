@@ -34,6 +34,7 @@ export const COMPATIBILITY_FEATURE_IDS = [
 	"footer",
 	"banner",
 	"promptPointer",
+	"scheduledTasks",
 ] as const;
 
 export type CompatibilityFeatureId = (typeof COMPATIBILITY_FEATURE_IDS)[number];
@@ -52,6 +53,9 @@ export function isCompatibilityFeatureId(value: unknown): value is Compatibility
  */
 export const BUILTIN_COMPATIBILITY_TOOL_NAMES = ["read", "write", "edit", "bash", "grep", "find", "ls", "apply_patch"] as const;
 export type BuiltinCompatibilityToolName = (typeof BUILTIN_COMPATIBILITY_TOOL_NAMES)[number];
+
+export const CRON_COMPATIBILITY_TOOL_NAMES = ["croncreate", "cronlist", "crondelete"] as const;
+export const CLAUDIFY_REGISTERED_TOOL_NAMES = [...BUILTIN_COMPATIBILITY_TOOL_NAMES, ...CRON_COMPATIBILITY_TOOL_NAMES] as const;
 
 const BUILTIN_COMPATIBILITY_TOOL_NAME_SET: ReadonlySet<string> = new Set(BUILTIN_COMPATIBILITY_TOOL_NAMES);
 

@@ -18,7 +18,8 @@
       "spinner": true,
       "footer": true,
       "banner": true,
-      "promptPointer": true
+      "promptPointer": true,
+      "scheduledTasks": true
     },
     "tools": {
       "default": true,
@@ -30,6 +31,9 @@
       "find": true,
       "ls": true,
       "apply_patch": true,
+      "CronCreate": true,
+      "CronList": true,
+      "CronDelete": true,
       "mcp:*": true,
       "openai:*": true,
       "generic:*": true
