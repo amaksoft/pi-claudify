@@ -1,4 +1,5 @@
 import { testedPiPatchBroker } from "../adapters/tested-pi/patch-broker.ts";
+import { isTaskToolName } from "../domain/task-view.ts";
 import { sanitizeToolText } from "../terminal-sanitize.ts";
 
 const SURFACE = "tool-discovery";
@@ -77,7 +78,7 @@ export function releaseToolDiscovery(owner?: object): void {
 export function isOpenAiToolCandidate(tool: unknown): boolean {
 	const record = tool as Record<string, unknown> | undefined;
 	const name = typeof record?.name === "string" ? record.name : "";
-	return !!name && !CORE_TOOL_OVERRIDES.has(name) && !isMcpToolCandidate(tool) && OPENAI_STYLE_TOOL_NAMES.has(name);
+	return !!name && !CORE_TOOL_OVERRIDES.has(name) && !isMcpToolCandidate(tool) && (isTaskToolName(name) || OPENAI_STYLE_TOOL_NAMES.has(name));
 }
 
 export function shouldUseGenericToolRenderer(name: unknown): boolean {

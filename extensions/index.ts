@@ -159,6 +159,7 @@ import {
 	stripAnsi,
 } from "./domain/render-text.ts";
 import { getRawStringArg, getStringArg, getTextContent } from "./domain/tool-arguments.ts";
+import { isTaskToolName, taskPresentationEnvironmentEnabled } from "./domain/task-view.ts";
 export { classifyBashCommandForDisplay, type BashDisplayInfo } from "./domain/bash-display.ts";
 import {
 	ASK_USER_QUESTION_TOOL_NAME,
@@ -237,6 +238,7 @@ import { createToolChrome } from "./render/tool-chrome.ts";
 import { selectVisualItems, selectVisualPreview, widthAwareText, type VisualPreviewMode } from "./visual-preview.ts";
 import { computeAggregateEditDiff, computeLocalizedEditDiffs } from "./tools/edit-preview.ts";
 import { registerBuiltinTools } from "./tools/register-builtins.ts";
+import { TaskPresentationController } from "./tools/task-presentation.ts";
 import { renderApplyPatchCall as renderApplyPatchCallWithRuntime, renderApplyPatchResult as renderApplyPatchResultWithRuntime, type ApplyPatchRuntime } from "./tools/apply-patch-tool.ts";
 import { renderGenericToolCall as renderGenericCall, renderGenericToolResult as renderGenericResult, type GenericToolRuntime } from "./tools/generic-tool.ts";
 import { mcpServerForComponent, mcpServerName, renderMcpToolResult as renderMcpResult } from "./tools/mcp-tool.ts";
@@ -348,6 +350,7 @@ export function sanitizeRenderedTextBlockLines(lines: string[], _style: "claude"
 
 function compatibilityToolFamilyForName(name: string): CompatibilityToolFamily | undefined {
 	if (isMcpToolName(name)) return "mcp";
+	if (isTaskToolName(name)) return "task";
 	if (isOpenAiToolCandidate({ name })) return "openai";
 	return "generic";
 }
@@ -365,6 +368,7 @@ function presentationOverrideSkipped(toolName: unknown): boolean {
 	if (typeof toolName !== "string" || toolName.length === 0) return false;
 	const name = toolName.toLowerCase();
 	const settings = readSettings().values;
+	if (isTaskToolName(toolName) && !settingsFeatureEnabled(settings, "taskPresentation")) return true;
 	const config = parseCompatibilityConfig(settings.compatibility);
 	const legacySkipped = skippedToolOverrides(settings).has(name);
 	const family = (CLAUDIFY_REGISTERED_TOOL_NAMES as readonly string[]).includes(name) ? undefined : compatibilityToolFamilyForName(name);
@@ -411,13 +415,14 @@ function hostContainerPrototype(): any {
 	return candidate && typeof candidate.render === "function" ? candidate : Container.prototype;
 }
 
-function patchGlobalToolBorders(owner: object, pointerOwner: object): void {
+function patchGlobalToolBorders(owner: object, pointerOwner: object, taskPresentation?: TaskPresentationController): void {
 	installContainerRenderPatch(
 		[hostContainerPrototype(), Container.prototype],
 		owner,
 		hostContainerRender(),
 		{
 			presentationSkipped: presentationOverrideSkipped,
+			hideToolRow: (value) => taskPresentation?.shouldHideRow(value) === true,
 			isInspectionCandidate: (value) => isInspectionGroupCandidate(value, presentationOverrideSkipped),
 			ensureInspectionGroups: (container, width) => ensureInspectionGroupsWithRuntime(container, inspectionGroupRuntime(pointerOwner), width),
 			renderStackedBash: (container, width) => renderWithStackedConsecutiveBash(container, width, { isBlankLine }),
@@ -556,14 +561,20 @@ function toolPresentationSkipped(toolName: unknown): boolean {
 	return presentationOverrideSkipped(toolName);
 }
 
-function patchToolExecutionRenderers(owner: object, canOverrideSelfShell: (name: string, definition: unknown) => boolean): void {
+function patchToolExecutionRenderers(
+	owner: object,
+	canOverrideSelfShell: (name: string, definition: unknown) => boolean,
+	taskPresentation?: TaskPresentationController,
+): void {
 	legacyToolRendererPatchDetected = installToolRendererPatch(owner, {
 		presentationSkipped: toolPresentationSkipped,
-		shouldUseGeneric: shouldUseGenericToolRenderer,
+		shouldUseGeneric: (name) => isTaskToolName(name) ? taskPresentation?.supports(name) === true : shouldUseGenericToolRenderer(name),
+		shouldUseNativeCall: (_name, component) => taskPresentation?.shouldUseNativeResult(component) === true,
+		shouldUseNativeResult: (_name, component) => taskPresentation?.shouldUseNativeResult(component) === true,
 		renderApplyCall: (args, theme, ctx) => renderApplyPatchCall(args, theme, ctx, (path) => shortPath(ctx.cwd ?? process.cwd(), path)),
 		renderApplyResult: (result, options, theme, ctx) => renderApplyPatchResult(result, !!options?.isPartial, theme, ctx),
-		renderGenericCall: renderGenericToolCall,
-		renderGenericResult: renderGenericToolResult,
+		renderGenericCall: (name, args, theme, ctx) => taskPresentation?.renderCall(name) ?? renderGenericToolCall(name, args, theme, ctx),
+		renderGenericResult: (name, result, options, theme, ctx) => taskPresentation?.renderResult(name, !!ctx?.isError) ?? renderGenericToolResult(name, result, options, theme, ctx),
 		canOverrideSelfShell,
 		diagnostic: (key, error) => debugDiagnostic(key, error),
 	});
@@ -1074,13 +1085,23 @@ function activateCurrentTestedPi(
 		testedPiPatchBroker.claimSessionHandoff(runtime.owner, String(key));
 	};
 	let executionOwners = new Map<string, ToolOwnerKind>();
-	const refreshExecutionOwners = (knownTools?: unknown[]): void => {
-		if (process.env.PI_CLAUDIFY_NATIVE_EXECUTION === "0") return;
+	const refreshExecutionOwners = (knownTools?: unknown[], failClosed = false): void => {
 		const observed = readToolOwners(() => knownTools ?? (pi as any).getAllTools?.());
 		if (observed) executionOwners = observed;
+		else if (failClosed) executionOwners = new Map();
 	};
 	try { refreshExecutionOwners(); } catch { /* registry is unavailable during factory loading on current Pi */ }
-	if (featureEnabled("spinner")) registerSpinner(pi, runtime);
+	const taskPresentation = featureEnabled("taskPresentation")
+		&& featureEnabled("toolPresentation")
+		&& taskPresentationEnvironmentEnabled(process.env.PI_CLAUDIFY_TASK_PRESENTATION)
+		? new TaskPresentationController(runtime, {
+			isSupportedOwner: (name) => executionOwners.get(name.toLowerCase()) === "external",
+			toolEnabled: (name) => !presentationOverrideSkipped(name),
+			refreshOwnership: () => { try { refreshExecutionOwners(undefined, true); } catch { executionOwners = new Map(); } },
+		})
+		: undefined;
+	taskPresentation?.register(pi, (PiCodingAgent as any).InteractiveMode);
+	if (featureEnabled("spinner")) registerSpinner(pi, runtime, { activeTaskForm: () => taskPresentation?.activeForm() });
 	if (featureEnabled("toolPresentation")) {
 		patchToolFallbackSanitization(fallbackSanitizerOwner);
 		patchToolRenderCacheInvalidation();
@@ -1088,7 +1109,7 @@ function activateCurrentTestedPi(
 		releaseToolFallbackSanitization(fallbackSanitizerOwner);
 	}
 	if (featureEnabled("toolPresentation") && !presentationOverrideSkipped("read")) patchReadImageExpansion(fallbackSanitizerOwner);
-	if (featureEnabled("toolBackground") || featureEnabled("inspectionGroups") || featureEnabled("bashStacking")) patchGlobalToolBorders(globalRenderOwner, pointerExpansionOwner);
+	if (featureEnabled("toolBackground") || featureEnabled("inspectionGroups") || featureEnabled("bashStacking") || !!taskPresentation) patchGlobalToolBorders(globalRenderOwner, pointerExpansionOwner, taskPresentation);
 	else releaseGlobalToolBorders(globalRenderOwner);
 	// A fresh disabled feature installs no private wrapper. Stable wrappers from
 	// prior generations remain inert because ownerless dispatch now delegates to
@@ -1124,6 +1145,7 @@ function activateCurrentTestedPi(
 			const directOwner = classifyToolOwner(definition);
 			return directOwner !== "external" && (directOwner === "builtin" || executionOwners.get(name.toLowerCase()) === "builtin");
 		},
+		taskPresentation,
 	);
 	if (featureEnabled("footer")) patchEditorBorderColor(runtime.owner);
 	if (featureEnabled("diffPresentation")) applyDiffPalette();
@@ -1345,7 +1367,7 @@ function activateCurrentTestedPi(
 		})
 		: undefined;
 	if (preserveNativeExecution && featureEnabled("toolPresentation")) {
-		pi.on("tool_execution_start", async () => { try { refreshExecutionOwners(); } catch { /* retain the last complete snapshot */ } });
+		pi.on("tool_execution_start", async () => { try { refreshExecutionOwners(undefined, true); } catch { executionOwners = new Map(); } });
 	}
 	if (provenanceObserver) {
 		pi.on("tool_call", async (event: any, ctx: any) => {
@@ -1456,6 +1478,7 @@ export default function (pi: ExtensionAPI): void {
 		CustomMessageComponent,
 		CompactionSummaryMessageComponent,
 		Loader,
+		InteractiveMode: (PiCodingAgent as any).InteractiveMode,
 	});
 	const host = detectHostDescriptor({
 		piVersion: typeof (PiCodingAgent as any).VERSION === "string" ? (PiCodingAgent as any).VERSION : undefined,

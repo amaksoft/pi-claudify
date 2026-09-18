@@ -36,6 +36,7 @@ export const COMPATIBILITY_FEATURE_IDS = [
 	"promptPointer",
 	"scheduledTasks",
 	"askUserQuestion",
+	"taskPresentation",
 ] as const;
 
 export type CompatibilityFeatureId = (typeof COMPATIBILITY_FEATURE_IDS)[number];
@@ -65,9 +66,9 @@ export function isBuiltinCompatibilityToolName(value: unknown): value is Builtin
 	return typeof value === "string" && BUILTIN_COMPATIBILITY_TOOL_NAME_SET.has(value);
 }
 
-/** Dynamic (non-builtin) tool families addressable via `mcp:*` / `openai:*` / `generic:*`. */
-export type CompatibilityToolFamily = "mcp" | "openai" | "generic";
-export const COMPATIBILITY_TOOL_FAMILIES: readonly CompatibilityToolFamily[] = ["mcp", "openai", "generic"];
+/** Dynamic (non-builtin) tool families addressable via family wildcards. */
+export type CompatibilityToolFamily = "mcp" | "openai" | "task" | "generic";
+export const COMPATIBILITY_TOOL_FAMILIES: readonly CompatibilityToolFamily[] = ["mcp", "openai", "task", "generic"];
 
 export function compatibilityToolFamilyKey(family: CompatibilityToolFamily): string {
 	return `${family}:*`;

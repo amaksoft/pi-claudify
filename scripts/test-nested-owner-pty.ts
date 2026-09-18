@@ -11,6 +11,9 @@ const piBin = process.env.PI_TEST_BIN ?? resolve(repo, "node_modules/.bin/pi");
 const fixture = resolve(here, "fixtures/nested-owner-extension.ts");
 const tmux = process.env.TMUX_BIN ?? "tmux";
 const sandbox = trackedTempDir("claudify-nested-owner-pty");
+const tmuxTempDir = `/tmp/claudify-tmux-${process.pid}`;
+process.env.TMUX_TMPDIR = tmuxTempDir;
+mkdirSync(tmuxTempDir, { recursive: true });
 const home = join(sandbox, "home");
 const agentDir = join(sandbox, "agent");
 const statePath = join(sandbox, "state.json");
@@ -42,4 +45,5 @@ try {
 } finally {
 	run(tmux, ["kill-session", "-t", session], true);
 	rmSync(sandbox, { recursive: true, force: true });
+	rmSync(tmuxTempDir, { recursive: true, force: true });
 }

@@ -13,7 +13,8 @@ export type CapabilityId =
 	| "tested:container-composition"
 	| "tested:message-renderers"
 	| "tested:mouse-layout"
-	| "tested:spinner-loader";
+	| "tested:spinner-loader"
+	| "tested:task-widget";
 
 export interface HostDescriptor {
 	readonly id: string;

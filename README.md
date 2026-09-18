@@ -36,7 +36,7 @@ Most rows save as soon as they change. Pickers preview the highlighted choice li
 
 ### Compatibility controls
 
-Every Claudify integration has a config kill switch so it can coexist with other UX extensions. Set `compatibility.enabled` to `false` to disable the package completely, or use `compatibility.features` for individual surfaces such as `spinner`, `footer`, `inspectionGroups`, `mouseInteraction`, or `assistantMessages`. `compatibility.tools` accepts exact tool names, the families `mcp:*`, `openai:*`, and `generic:*`, plus a `default` fallback. Exact names take precedence over family and default entries. See `config/config.example.json` for the complete list.
+Every Claudify integration has a config kill switch so it can coexist with other UX extensions. Set `compatibility.enabled` to `false` to disable the package completely, or use `compatibility.features` for individual surfaces such as `spinner`, `footer`, `inspectionGroups`, `mouseInteraction`, or `assistantMessages`. `compatibility.tools` accepts exact tool names, the families `mcp:*`, `openai:*`, `task:*`, and `generic:*`, plus a `default` fallback. Exact names take precedence over family and default entries. See `config/config.example.json` for the complete list.
 
 A disabled tool is not registered, adapted, or grouped by Claudify; the host or external owner keeps execution and native presentation. The legacy `skipToolOverrides` list remains supported as an exact per-tool opt-out. Structural changes take full effect after `/reload`; restart Pi only when warned that an older generation installed a legacy host patch.
 
@@ -46,7 +46,9 @@ Built-in tool execution remains owned by Pi (or the pre-existing external extens
 
 Scheduled prompts are available out of the box through `CronCreate`, `CronList`, and `CronDelete`. They use five-field local-time cron expressions and run only while Pi is open and idle. Jobs are session-only unless `durable: true`, which requires a trusted project and explicit TUI confirmation before persisting to the current project's `.pi/scheduled_tasks.json`; deleting a durable job also requires confirmation. Recurring jobs expire after seven days. Disable the entire scheduler with `compatibility.features.scheduledTasks`, or disable any Cron tool by name under `compatibility.tools`.
 
-`AskUserQuestion` provides Claude-style structured questions with single-select, multi-select, free-text, review, submit, and cancel flows. It is enabled automatically in interactive TUI sessions. Disable it with `compatibility.features.askUserQuestion` or `compatibility.tools.AskUserQuestion` if another extension owns the interaction UX.
+`AskUserQuestion` provides Pi-branded structured questions with single-select, multi-select, free-text, clarification, review, submit, keyboard, mouse, paste, and optional expanded-editor flows. It is enabled automatically in interactive TUI sessions. Disable it with `compatibility.features.askUserQuestion` or `compatibility.tools.AskUserQuestion` if another extension owns the interaction UX.
+
+When externally owned `TaskCreate`, `TaskList`, `TaskGet`, and `TaskUpdate` tools expose a `tasks` widget, Claudify decorates that authoritative widget while leaving every executable definition untouched. Successful CRUD rows stay out of transcript history only after the widget grammar is recognized; malformed widgets and errors remain fully native. The external widget retains ownership of persistence, active forms, blockers, timers, and visibility controls. Disable the complete surface with `compatibility.features.taskPresentation`, `compatibility.tools["task:*"]`, or the emergency `PI_CLAUDIFY_TASK_PRESENTATION=0`; exact task tool names also work under `compatibility.tools`.
 
 ### Sections
 

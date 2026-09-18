@@ -740,8 +740,9 @@ export function activeThinkingProgressPhrase(thinkingStartedAt: number, now: num
 }
 
 export interface SpinnerRuntimeAuthority { owner: object; isCurrent(): boolean }
+export interface SpinnerOptions { activeTaskForm?(): string | undefined }
 
-export default function (pi: ExtensionAPI, supplied?: object | SpinnerRuntimeAuthority) {
+export default function (pi: ExtensionAPI, supplied?: object | SpinnerRuntimeAuthority, options: SpinnerOptions = {}) {
 	// Disabled generations register no event handlers. The process-stable Loader
 	// wrapper installed above simultaneously has no active hooks and delegates to
 	// the captured native implementation.
@@ -800,9 +801,10 @@ export default function (pi: ExtensionAPI, supplied?: object | SpinnerRuntimeAut
 			statusParts.push(`thought for ${Math.max(1, Math.round(thinkingStatus / 1000))}s`);
 		}
 
+		const displayVerb = sanitizeSpinnerVerb(options.activeTaskForm?.() ?? "") || currentVerb;
 		let message = shimmerActive()
-			? colorizeShimmerVerb(`${currentVerb}…`, elapsed)
-			: `${CLAUDE_ORANGE}${currentVerb}…${RESET}`;
+			? colorizeShimmerVerb(`${displayVerb}…`, elapsed)
+			: `${CLAUDE_ORANGE}${displayVerb}…${RESET}`;
 		if (statusParts.length > 0) {
 			message += statusText(` (${statusParts.join(" · ")})`);
 		}

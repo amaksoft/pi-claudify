@@ -74,7 +74,6 @@ export class AdditiveToolsController {
 			|| ctx?.mode !== "tui"
 			|| !ctx?.hasUI
 			|| typeof ctx.ui?.custom !== "function"
-			|| typeof ctx.ui?.input !== "function"
 		) return false;
 		this.askQueued = true;
 		registerAskUserQuestionTool(this.pi, (definition) => this.registration.add(definition));

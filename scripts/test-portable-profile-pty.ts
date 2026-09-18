@@ -12,6 +12,9 @@ const packageSource = process.env.PI_CLAUDIFY_PACKAGE ?? repo;
 const fixture = resolve(here, "fixtures/tool-registration-extension.ts");
 const tmux = process.env.TMUX_BIN ?? "tmux";
 const sandbox = trackedTempDir("claudify-portable-profile-pty");
+const tmuxTempDir = `/tmp/claudify-tmux-${process.pid}`;
+process.env.TMUX_TMPDIR = tmuxTempDir;
+mkdirSync(tmuxTempDir, { recursive: true });
 const agentDir = join(sandbox, "agent");
 const home = join(sandbox, "home");
 const statePath = join(sandbox, "state.json");
@@ -66,4 +69,5 @@ try {
 } finally {
 	run(tmux, ["kill-session", "-t", session], true);
 	rmSync(sandbox, { recursive: true, force: true });
+	rmSync(tmuxTempDir, { recursive: true, force: true });
 }
