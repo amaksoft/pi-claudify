@@ -1,6 +1,6 @@
 import { trackedTempDir } from "./sandbox-home.ts";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
@@ -11,6 +11,9 @@ const tmux = process.env.TMUX_BIN ?? "tmux";
 const piBin = resolve(repo, "node_modules/.bin/pi");
 const fixture = resolve(here, "fixtures/mouse-dispatch-extension.ts");
 const sandbox = trackedTempDir("claudify-mouse-pty");
+const tmuxTempDir = `/tmp/claudify-tmux-${process.pid}`;
+process.env.TMUX_TMPDIR = tmuxTempDir;
+mkdirSync(tmuxTempDir, { recursive: true });
 const home = join(sandbox, "home");
 const statePath = join(sandbox, "state.json");
 const stderrPath = join(sandbox, "pi.stderr.log");
@@ -186,4 +189,5 @@ try {
 	console.log("real PTY mouse dispatch tests passed");
 } finally {
 	run(tmux, ["kill-session", "-t", session], true);
+	rmSync(tmuxTempDir, { recursive: true, force: true });
 }

@@ -40,6 +40,7 @@ const completeProbe = probeTestedPiCapabilities({
 	CustomMessageComponent: { prototype: { render() {} } },
 	CompactionSummaryMessageComponent: { prototype: { updateDisplay() {} } },
 	Loader: { prototype: { updateDisplay() {}, start() {}, stop() {} } },
+	InteractiveMode: { prototype: { setExtensionWidget() {}, renderWidgetContainer() {} } },
 });
 assert.equal(completeProbe.failures.length, 0);
 assert.equal(completeProbe.capabilities.has("tested:spinner-loader"), true);

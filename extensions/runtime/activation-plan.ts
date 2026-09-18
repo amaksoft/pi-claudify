@@ -28,6 +28,7 @@ const FEATURE_REQUIREMENTS: Readonly<Record<CompatibilityFeatureId, readonly Cap
 	promptPointer: ["tested:message-renderers"],
 	scheduledTasks: ["public:events", "public:tools", "public:send-user-message"],
 	askUserQuestion: ["public:tools", "public:tui"],
+	taskPresentation: ["tested:component-renderers", "tested:task-widget"],
 };
 
 export function buildActivationPlan(host: HostDescriptor, compatibility: CompatibilityConfig | undefined): ActivationPlan {

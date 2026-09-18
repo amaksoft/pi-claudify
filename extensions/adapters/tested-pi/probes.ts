@@ -10,6 +10,7 @@ export interface TestedPiProbeInput {
 	CustomMessageComponent?: { prototype?: object };
 	CompactionSummaryMessageComponent?: { prototype?: object };
 	Loader?: { prototype?: object };
+	InteractiveMode?: { prototype?: object };
 }
 
 export interface TestedPiProbeResult {
@@ -47,5 +48,7 @@ export function probeTestedPiCapabilities(input: TestedPiProbeInput): TestedPiPr
 	else failures.push("tool-expansion");
 	if (hasMethods(input.Loader?.prototype, ["updateDisplay", "start", "stop"])) capabilities.add("tested:spinner-loader");
 	else failures.push("spinner-loader");
+	if (hasMethods(input.InteractiveMode?.prototype, ["setExtensionWidget", "renderWidgetContainer"])) capabilities.add("tested:task-widget");
+	else failures.push("task-widget");
 	return Object.freeze({ capabilities, failures: Object.freeze(failures) });
 }

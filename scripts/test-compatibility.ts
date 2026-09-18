@@ -45,10 +45,11 @@ const EXPECTED_FEATURE_IDS = [
 	"promptPointer",
 	"scheduledTasks",
 	"askUserQuestion",
+	"taskPresentation",
 ];
 assert.deepEqual([...COMPATIBILITY_FEATURE_IDS], EXPECTED_FEATURE_IDS, "the feature ids are fixed and ordered");
-assert.equal(COMPATIBILITY_FEATURE_IDS.length, 19, "exactly 19 feature ids");
-assert.equal(new Set(COMPATIBILITY_FEATURE_IDS).size, 19, "feature ids are unique");
+assert.equal(COMPATIBILITY_FEATURE_IDS.length, 20, "exactly 20 feature ids");
+assert.equal(new Set(COMPATIBILITY_FEATURE_IDS).size, 20, "feature ids are unique");
 for (const id of EXPECTED_FEATURE_IDS) assert.ok(isCompatibilityFeatureId(id), `${id} is a recognized feature id`);
 assert.equal(isCompatibilityFeatureId("notAFeature"), false);
 assert.equal(isCompatibilityFeatureId(42), false);
@@ -61,9 +62,10 @@ assert.equal(isBuiltinCompatibilityToolName("mcp"), false);
 assert.equal(ASK_USER_QUESTION_TOOL_NAME, "askuserquestion");
 assert.deepEqual([...CLAUDIFY_REGISTERED_TOOL_NAMES], [...EXPECTED_BUILTIN_TOOLS, "croncreate", "cronlist", "crondelete", "askuserquestion"], "every registered tool has a compatibility key");
 
-assert.deepEqual([...COMPATIBILITY_TOOL_FAMILIES], ["mcp", "openai", "generic"]);
+assert.deepEqual([...COMPATIBILITY_TOOL_FAMILIES], ["mcp", "openai", "task", "generic"]);
 assert.equal(compatibilityToolFamilyKey("mcp"), "mcp:*");
 assert.equal(compatibilityToolFamilyKey("openai"), "openai:*");
+assert.equal(compatibilityToolFamilyKey("task"), "task:*");
 assert.equal(compatibilityToolFamilyKey("generic"), "generic:*");
 assert.equal(COMPATIBILITY_TOOL_DEFAULT_KEY, "default");
 

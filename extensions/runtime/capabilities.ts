@@ -17,6 +17,7 @@ const TESTED_CAPABILITIES: readonly CapabilityId[] = [
 	"tested:message-renderers",
 	"tested:mouse-layout",
 	"tested:spinner-loader",
+	"tested:task-widget",
 ];
 
 export function parseProfilePreference(value: unknown): ClaudifyProfilePreference {

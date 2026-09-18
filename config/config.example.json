@@ -20,7 +20,8 @@
       "banner": true,
       "promptPointer": true,
       "scheduledTasks": true,
-      "askUserQuestion": true
+      "askUserQuestion": true,
+      "taskPresentation": true
     },
     "tools": {
       "default": true,
@@ -38,6 +39,7 @@
       "AskUserQuestion": true,
       "mcp:*": true,
       "openai:*": true,
+      "task:*": true,
       "generic:*": true
     }
   },

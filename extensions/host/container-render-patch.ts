@@ -12,6 +12,7 @@ const PRESENTATION_REVISION = Symbol.for("pi-claudify:tool-component-presentatio
 interface Registry { originalRender: (this: unknown, width: number) => string[] }
 export interface ContainerRenderHooks {
 	presentationSkipped(name: unknown): boolean;
+	hideToolRow?(value: unknown): boolean;
 	isInspectionCandidate(value: unknown): boolean;
 	ensureInspectionGroups(container: unknown, width: number): void;
 	renderStackedBash(container: unknown, width: number): { lines: string[]; layout: Array<{ component: unknown; height: number }> } | null;
@@ -48,6 +49,7 @@ function installOn(proto: any, pristine: (this: unknown, width: number) => strin
 
 function renderWithHooks(self: unknown, width: number, original: (this: unknown, width: number) => string[], hooks: ContainerRenderHooks): string[] {
 	if (isToolExecutionLike(self) && hooks.presentationSkipped(toolComponentRecord(self).toolName)) return original.call(self, width);
+	if (isToolExecutionLike(self) && hooks.hideToolRow?.(self)) { installMouseLayout(self, { width, children: [] }); return []; }
 	if (!isToolExecutionLike(self)) {
 		const children = Array.isArray((self as any).children) ? (self as any).children as unknown[] : [];
 		if (children.some((child) => isInspectionGroupComponent(child) || hooks.isInspectionCandidate(child))) {

@@ -49,7 +49,7 @@ try {
 		assert.equal(tools.get(name), originals.get(name), `${name} execution definition remains exactly Pi-owned`);
 	}
 	for (const handler of events.get("session_start") ?? []) {
-		await handler({ reason: "startup" }, { mode: "tui", hasUI: true, cwd: root, ui: { theme: {}, requestRender() {} }, isProjectTrusted: () => false });
+		await handler({ reason: "startup" }, { mode: "tui", hasUI: true, cwd: root, ui: { theme: {}, requestRender() {}, setHeader() {}, setFooter() {}, setHiddenThinkingLabel() {}, setWidget() {}, custom() {}, input() {} }, isProjectTrusted: () => false });
 	}
 	const read = new ToolExecutionComponent(
 		"read", "native-read", { path: "sample.txt" }, { showImages: false }, tools.get("read"),

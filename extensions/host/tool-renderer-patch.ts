@@ -23,6 +23,8 @@ interface OwnerState {
 export interface ToolRendererHooks {
 	presentationSkipped(name: unknown): boolean;
 	shouldUseGeneric(name: unknown): boolean;
+	shouldUseNativeCall?(name: string, component: unknown): boolean;
+	shouldUseNativeResult?(name: string, component: unknown): boolean;
 	renderApplyCall(args: any, theme: Theme, ctx: any): unknown;
 	renderApplyResult(result: any, options: any, theme: Theme, ctx: any): unknown;
 	renderGenericCall(name: string, args: any, theme: Theme, ctx: any): unknown;
@@ -64,6 +66,7 @@ export function installToolRendererPatch(owner: object, hooks: ToolRendererHooks
 		proto.getCallRenderer = function stableGetCallRenderer(this: any) {
 			const state = activeOwnerState();
 			const toolName = typeof this?.toolName === "string" ? this.toolName : "";
+			if (state?.hooks?.shouldUseNativeCall?.(toolName, this)) return typeof registry!.originalCall === "function" ? registry!.originalCall.call(this) : undefined;
 			// The `apply_patch` and generic-tool branches below are compatibility.tools
 			// gates (exact name / mcp:*/openai:*/generic:* family / default) that
 			// `compatible()` does not cover on its own — check once, up front, so a
@@ -86,7 +89,7 @@ export function installToolRendererPatch(owner: object, hooks: ToolRendererHooks
 		proto.getResultRenderer = function stableGetResultRenderer(this: any) {
 			const state = activeOwnerState();
 			const toolName = typeof this?.toolName === "string" ? this.toolName : "";
-			if (state?.hooks?.presentationSkipped(toolName)) {
+			if (state?.hooks?.presentationSkipped(toolName) || state?.hooks?.shouldUseNativeResult?.(toolName, this)) {
 				return typeof registry!.originalResult === "function" ? registry!.originalResult.call(this) : undefined;
 			}
 			const adapter = compatible(this, "result");

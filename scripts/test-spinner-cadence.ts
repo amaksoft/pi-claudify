@@ -175,4 +175,12 @@ assert.equal(testedPiPatchBroker.active("spinner-shimmer"), undefined);
 for (const handler of parentSpinner.events.get("turn_start") ?? []) await handler({}, spinnerCtx);
 assert.equal(testedPiPatchBroker.active("spinner-shimmer"), undefined, "stale spinner callbacks cannot resurrect a retired owner");
 
+const taskSpinner = fakePi();
+let taskWorkingMessage = "";
+registerSpinner(taskSpinner.pi, undefined, { activeTaskForm: () => "Implementing task UI" });
+const taskCtx = { hasUI: true, ui: { theme: undefined, setWorkingMessage(value?: string) { if (value) taskWorkingMessage = value; } } };
+for (const handler of taskSpinner.events.get("turn_start") ?? []) await handler({}, taskCtx);
+assert.match(taskWorkingMessage.replace(ANSI_RE, ""), /Implementing task UI…/, "active task form replaces the random spinner verb");
+for (const handler of taskSpinner.events.get("session_shutdown") ?? []) await handler({ reason: "quit" }, taskCtx);
+
 console.log("spinner-cadence: ok");
