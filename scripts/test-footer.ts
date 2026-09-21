@@ -30,6 +30,7 @@ const {
 	resolveFooterSettings,
 } = await import("../extensions/footer.ts");
 const { clearSettingsCache } = await import("../extensions/settings.ts");
+const { registerSessionMetrics, releaseSessionMetrics } = await import("../extensions/session-metrics.ts");
 const { ClaudifyScreen, CLAUDIFY_SECTIONS } = await import("../extensions/claudify-screen.ts");
 
 function setSettings(values: Record<string, unknown>): void {
@@ -59,12 +60,14 @@ assert.deepEqual(defaults, {
 	effort: true,
 	cost: true,
 	sessionStats: true,
+	timeMode: "active",
 	editorBorder: "gray",
 });
 assert.equal(resolveFooterSettings({ footerColor: "not-a-color" }).color, DEFAULT_FOOTER_COLOR, "invalid stored hex falls back");
 assert.equal(resolveFooterSettings({ footerStyle: "pi" }).style, "pi");
 assert.equal(resolveFooterSettings({}).effort, true, "the effort suffix defaults on");
 assert.equal(resolveFooterSettings({ footerEffort: false }).effort, false);
+assert.equal(resolveFooterSettings({ footerTimeMode: "wall" }).timeMode, "wall", "legacy wall-clock mode remains available explicitly");
 assert.equal(resolveFooterSettings({ editorBorder: "thinking" }).editorBorder, "thinking");
 
 // --- projectNameFrom: the first segment names the repo, not the worktree -----
@@ -423,7 +426,7 @@ const rendered = component.render(200);
 assert.equal(rendered[0], "  project │ ⎇ main │ Fable 5 │ Ctx: 25% │ Week: 50% ▓▓▓▓▓░░░░░ → Reset: 08:00 PM");
 assert.deepEqual(rendered.slice(1), ["  a status line", "  MCP: 0/8 servers", "  z status"], "extension statuses render sorted, sanitized, and stripped of baked colors");
 assert.ok(component.render(20)[0].replace(/\x1b\[[0-9;]*m/g, "").length <= 20, "lines truncate to the viewport");
-let idleRepaints = 0;
+let timedRepaints = 0;
 const timedComponent = new ClaudeFooterComponent(fakeFooterData, {
 	getDirectory: () => "project",
 	getBranch: () => null,
@@ -431,13 +434,35 @@ const timedComponent = new ClaudeFooterComponent(fakeFooterData, {
 	getEffort: () => null,
 	getContextPercent: () => 0,
 	getUsage: () => [],
-}, undefined, () => { idleRepaints++; });
+}, undefined, () => { timedRepaints++; });
 await new Promise((resolve) => setTimeout(resolve, 1_050));
-assert.ok(idleRepaints >= 1, "idle session clock schedules its own repaint");
+assert.equal(timedRepaints, 0, "an idle session has no footer repaint timer");
+const metricEvents = new Map<string, Function[]>();
+const metricPi = {
+	on(name: string, handler: Function) { metricEvents.set(name, [...(metricEvents.get(name) ?? []), handler]); },
+	appendEntry() {},
+};
+const emitMetric = async (name: string, event: any, ctx: any) => { for (const handler of metricEvents.get(name) ?? []) await handler(event, ctx); };
+registerSessionMetrics(metricPi as any);
+await emitMetric("session_start", {}, { sessionManager: { getBranch: () => [] } });
+await emitMetric("message_end", { message: { role: "user" } }, {});
+await emitMetric("agent_start", {}, {});
+assert.doesNotMatch(timedComponent.render(200)[0], /168h/, "active footer duration uses the monotonic clock rather than Date.now");
+const activeRepaintBaseline = timedRepaints;
+await new Promise((resolve) => setTimeout(resolve, 1_050));
+assert.ok(timedRepaints > activeRepaintBaseline, "active agent time schedules footer repaints");
+await emitMetric("agent_settled", {}, {});
+const idleRepaintBaseline = timedRepaints;
+await new Promise((resolve) => setTimeout(resolve, 1_050));
+assert.equal(timedRepaints, idleRepaintBaseline, "settling the agent stops footer repainting while idle");
+setSettings({ footerTimeMode: "wall" });
+timedComponent.render(80);
+const wallRepaintBaseline = timedRepaints;
+await new Promise((resolve) => setTimeout(resolve, 1_050));
+assert.ok(timedRepaints > wallRepaintBaseline, "legacy wall-clock mode continues repainting while idle");
 timedComponent.dispose();
-const repaintsAfterDispose = idleRepaints;
-await new Promise((resolve) => setTimeout(resolve, 1_050));
-assert.equal(idleRepaints, repaintsAfterDispose, "disposing the footer stops idle repainting");
+releaseSessionMetrics();
+setSettings({ footerTimeMode: "active" });
 
 // --- installClaudeFooter ------------------------------------------------------
 

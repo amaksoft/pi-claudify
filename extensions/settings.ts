@@ -58,6 +58,7 @@ export interface SettingsFile {
 	footerEffort?: boolean;
 	footerCost?: boolean;
 	footerSessionStats?: boolean;
+	footerTimeMode?: "active" | "wall";
 	editorBorder?: "gray" | "thinking";
 	accentColor?: "claude" | "theme" | `#${string}`;
 	userMessageBox?: "theme" | "claude" | "off" | `#${string}`;

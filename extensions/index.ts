@@ -1048,6 +1048,14 @@ function renderOpenAiToolResult(name: string, result: any, expanded: boolean, is
 // Extension
 // ===========================================================================
 
+function supportsAgentSettledEvent(version: string | undefined): boolean {
+	if (!version) return false;
+	const match = /^(\d+)\.(\d+)\.(\d+)/.exec(version);
+	if (!match) return false;
+	const [major, minor, patch] = match.slice(1).map(Number);
+	return major > 0 || minor > 80 || (minor === 80 && patch >= 4);
+}
+
 function activateCurrentTestedPi(
 	pi: ExtensionAPI,
 	runtime: RuntimeHandle,
@@ -1161,7 +1169,15 @@ function activateCurrentTestedPi(
 		appendWorked: appendWorkedDurationLine,
 	});
 	if (featureEnabled("fullscreenTui")) registerFullscreenTui(pi);
-	if (featureEnabled("footer")) registerSessionMetrics(pi, runtime.owner);
+	if (featureEnabled("footer")) registerSessionMetrics(pi, runtime.owner, {
+		agentSettledSupported: supportsAgentSettledEvent(activationPlan.host.piVersion),
+		enabled: () => {
+			const settings = readSettings().values;
+			return settings.footerStyle !== "pi"
+				&& settings.footerSessionStats !== false
+				&& settings.footerTimeMode !== "wall";
+		},
+	});
 	if (featureEnabled("banner")) registerBanner(pi);
 	if (featureEnabled("promptPointer")) registerPromptPointer(pi);
 
@@ -1200,7 +1216,7 @@ function activateCurrentTestedPi(
 			if (featureEnabled("spinner") && ["spinnerColor", "spinnerStatusColor", "spinnerShimmer", "spinnerVerbs", "spinnerVerbMode", "themeAdaptive"].includes(key)) bustSpinnerSettingsCache();
 			if (key === "diffSyntaxHighlighting" && featureEnabled("diffPresentation")) { clearHighlightCache(); bumpDiffPresentationEpoch(); }
 			if (featureEnabled("diffPresentation") && ["diffTheme", "diffPalette", "themeAdaptive"].includes(key)) refreshDiffPalette(ctx, requestRender);
-			if (key === "footerStyle" && featureEnabled("footer")) installClaudeFooter(ctx, pi);
+			if (key === "footerStyle" && featureEnabled("footer")) installClaudeFooter(ctx, pi, runtime.owner);
 			requestRender();
 		},
 		onSettingPreview: (key, value, ctx, requestRender) => {
@@ -1412,7 +1428,7 @@ function activateCurrentTestedPi(
 				(ctx.ui as any).requestRender?.();
 			}
 			if (featureEnabled("assistantMessages")) applyHiddenThinkingLabel(ctx);
-			if (featureEnabled("footer")) installClaudeFooter(ctx, pi);
+			if (featureEnabled("footer")) installClaudeFooter(ctx, pi, runtime.owner);
 		},
 		onTurnStart: (ctx) => {
 			if (!ctx.hasUI) return;

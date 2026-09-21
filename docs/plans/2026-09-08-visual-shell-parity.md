@@ -12,8 +12,9 @@ The package promises Claude UX by default and explicit opt-outs:
   condensed thereafter), with `off` and `always` alternatives;
 - banner frame: on; off selects the borderless condensed form;
 - prompt pointer: on, unless another extension already owns the custom editor;
-- Claude footer: on; provider quota, session cost, elapsed time and prompt count
-  are on, with independent opt-outs;
+- Claude footer: on; provider quota, session cost, active-agent time and prompt
+  count are on, with independent opt-outs; legacy wall-clock session age remains
+  available through `footerTimeMode: "wall"`;
 - MCP result output: hidden, matching the existing live capture;
 - Pi's `hideThinkingBlock` remains the authority for thinking visibility;
   claudify only controls the hidden label.
@@ -55,9 +56,16 @@ default only if claudify still owns the active factory.
 ## Footer metrics
 
 Session cost and prompt/time metrics extend the existing claudify footer; they
-do not replace context or provider-quota segments. Resume seeds all metrics from
-the same branch history and anchors elapsed time to the earliest timestamp.
-Only provider-reported cost is counted.
+do not replace context or provider-quota segments. Prompt count and completed
+foreground-agent spans are rebuilt from the active branch. Active time advances
+from `agent_start` through `agent_settled`, includes foreground subagent waits,
+does not multiply parallel child time, and pauses while the parent session is
+idle. Live spans use a monotonic clock. Versioned start/completion journals are
+stored as TUI-only custom entries; completion records are associated with their
+terminal visible entry so reload, resume, tree navigation, and forks retain
+branch-correct totals. Same-process reload continuity uses a bounded process-local
+handoff rather than trusting persisted wall-clock markers. Only provider-reported
+cost is counted.
 
 ## Tests and live verification
 

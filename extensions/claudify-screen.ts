@@ -92,6 +92,7 @@ type EditableSettingsKey =
 	| "footerEffort"
 	| "footerCost"
 	| "footerSessionStats"
+	| "footerTimeMode"
 	| "editorBorder"
 	| "accentColor"
 	| "userMessageBox";
@@ -480,9 +481,17 @@ const FOOTER_ROWS: readonly ImmediateRowDefinition[] = [
 	{
 		kind: "boolean",
 		key: "footerSessionStats",
-		label: "Session time and prompts",
-		description: "Appends elapsed session time and submitted prompt count.",
+		label: "Time and prompts",
+		description: "Appends the selected time metric and submitted prompt count.",
 		defaultValue: true,
+	},
+	{
+		kind: "enum",
+		key: "footerTimeMode",
+		label: "Time metric",
+		description: "Active counts foreground-agent work; wall preserves elapsed session age.",
+		values: ["active", "wall"],
+		defaultValue: "active",
 	},
 	{
 		kind: "enum",

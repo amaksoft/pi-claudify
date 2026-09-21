@@ -101,7 +101,7 @@ Each verb editor has a mode row for **append** versus **replace**, an **Add…**
 - **Usage bar** (`footerUsageBar`) controls quota bars beside known provider percentages.
 - **Effort** (`footerEffort`) appends the active thinking level to the model segment.
 - **Session cost** (`footerCost`, default on) adds provider-reported accumulated cost.
-- **Session time and prompts** (`footerSessionStats`, default on) adds elapsed time and submitted prompt count, seeded consistently from resumed history.
+- **Time and prompts** (`footerSessionStats`, default on) adds submitted prompt count and a branch-persistent time metric. `footerTimeMode: "active"` is the default and counts foreground-agent wall time while pausing when idle; `"wall"` preserves the legacy elapsed-session-age behavior.
 
 ### Migration from 1.x
 
