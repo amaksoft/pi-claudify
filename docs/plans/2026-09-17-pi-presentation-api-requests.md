@@ -108,6 +108,17 @@ Useful smaller APIs:
 
 These retire Loader, Theme, and private component-layout patches without changing Claudify's domain or rendering layers.
 
+## 6. Opaque branch-scoped extension metadata
+
+Claudify's active-agent timer needs small branch-aware records that survive reload,
+resume, tree navigation, and forks without entering model context. `appendEntry()`
+provides the required branch semantics, but every timing journal record remains a
+physical session-tree node and append-only sessions cannot compact or replace those
+records. Pi should expose opaque branch-scoped extension metadata with stable
+association to a semantic message/turn, hidden from tree navigation and model
+context, plus bounded snapshot/compaction support. Until then Claudify uses validated,
+deduplicated custom start/completion records and accepts linear bookkeeping growth.
+
 ## Conformance fixtures
 
 Each proposed API should ship with host tests for:

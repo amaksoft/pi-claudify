@@ -88,5 +88,6 @@
   "bannerFrame": true,
   "promptPointer": true,
   "footerCost": true,
-  "footerSessionStats": true
+  "footerSessionStats": true,
+  "footerTimeMode": "active"
 }

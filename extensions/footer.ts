@@ -6,7 +6,7 @@ import { truncateToWidth } from "@earendil-works/pi-tui";
 
 import { testedPiPatchBroker } from "./adapters/tested-pi/patch-broker.ts";
 import { settingsFeatureEnabled } from "./domain/compatibility.ts";
-import { getSessionMetrics } from "./session-metrics.ts";
+import { getActiveSessionDuration, getSessionMetrics, subscribeSessionMetrics } from "./session-metrics.ts";
 import { readSettings, type SettingsFile } from "./settings.ts";
 
 // Claude Code-style statusline footer + pinned-gray input border.
@@ -14,6 +14,7 @@ import { readSettings, type SettingsFile } from "./settings.ts";
 
 export type FooterStyle = "claude" | "pi";
 export type FooterColorMode = "colored" | "single" | "monochrome";
+export type FooterTimeMode = "active" | "wall";
 export type EditorBorderMode = "gray" | "thinking";
 export type UsageWindowLabel = "Usage" | "Week";
 
@@ -25,6 +26,7 @@ export interface FooterSettings {
 	readonly effort: boolean;
 	readonly cost: boolean;
 	readonly sessionStats: boolean;
+	readonly timeMode: FooterTimeMode;
 	readonly editorBorder: EditorBorderMode;
 }
 
@@ -103,6 +105,7 @@ export function resolveFooterSettings(values: SettingsFile): FooterSettings {
 		effort: values.footerEffort !== false,
 		cost: values.footerCost !== false,
 		sessionStats: values.footerSessionStats !== false,
+		timeMode: values.footerTimeMode === "wall" ? "wall" : "active",
 		editorBorder: values.editorBorder === "thinking" ? "thinking" : "gray",
 	};
 }
@@ -648,17 +651,36 @@ export class ClaudeFooterComponent {
 	private readonly footerData: FooterDataLike;
 	private readonly sources: FooterSources;
 	private readonly theme: unknown;
-	private readonly repaintTimer?: ReturnType<typeof setInterval>;
+	private readonly requestRender?: () => void;
+	private readonly metricsOwner?: object;
+	private repaintTimer?: ReturnType<typeof setInterval>;
+	private readonly unsubscribeMetrics?: () => void;
 
-	constructor(footerData: FooterDataLike, sources: FooterSources, theme?: unknown, requestRender?: () => void) {
+	constructor(footerData: FooterDataLike, sources: FooterSources, theme?: unknown, requestRender?: () => void, metricsOwner?: object) {
 		this.footerData = footerData;
 		this.sources = sources;
 		this.theme = theme;
+		this.requestRender = requestRender;
+		this.metricsOwner = metricsOwner;
 		if (requestRender) {
-			this.repaintTimer = setInterval(() => {
-				if (resolveFooterSettings(readSettings().values).sessionStats) requestRender();
-			}, 1_000);
+			this.unsubscribeMetrics = subscribeSessionMetrics(() => {
+				this.syncRepaintTimer(resolveFooterSettings(readSettings().values));
+				requestRender();
+			});
+			this.syncRepaintTimer(resolveFooterSettings(readSettings().values));
+		}
+	}
+
+	private syncRepaintTimer(settings: FooterSettings): void {
+		const metrics = getSessionMetrics(this.metricsOwner);
+		const shouldTick = settings.sessionStats
+			&& (settings.timeMode === "wall" ? metrics.promptCount > 0 : metrics.active);
+		if (shouldTick && !this.repaintTimer && this.requestRender) {
+			this.repaintTimer = setInterval(this.requestRender, 1_000);
 			this.repaintTimer.unref?.();
+		} else if (!shouldTick && this.repaintTimer) {
+			clearInterval(this.repaintTimer);
+			this.repaintTimer = undefined;
 		}
 	}
 
@@ -668,12 +690,15 @@ export class ClaudeFooterComponent {
 
 	dispose(): void {
 		if (this.repaintTimer) clearInterval(this.repaintTimer);
+		this.repaintTimer = undefined;
+		this.unsubscribeMetrics?.();
 		this.sources.dispose?.();
 	}
 
 	render(width: number): string[] {
 		const settings = resolveFooterSettings(readSettings().values);
-		const session = getSessionMetrics();
+		const session = getSessionMetrics(this.metricsOwner);
+		this.syncRepaintTimer(settings);
 		const line = buildFooterLine(
 			{
 				directory: this.sources.getDirectory(),
@@ -684,7 +709,9 @@ export class ClaudeFooterComponent {
 				usage: this.sources.getUsage(),
 				sessionCost: session.cost,
 				sessionCostAvailable: session.costAvailable,
-				sessionElapsedMs: Date.now() - session.startedAt,
+				sessionElapsedMs: settings.timeMode === "wall"
+					? Math.max(0, Date.now() - session.startedAt)
+					: getActiveSessionDuration(undefined, this.metricsOwner),
 				promptCount: session.promptCount,
 			},
 			settings,
@@ -710,7 +737,7 @@ export class ClaudeFooterComponent {
  * the extension API; only the thinking level is read from it, so omitting it just
  * drops the effort suffix.
  */
-export function installClaudeFooter(ctx: any, pi?: any): void {
+export function installClaudeFooter(ctx: any, pi?: any, metricsOwner?: object): void {
 	if (!ctx?.hasUI || typeof ctx.ui?.setFooter !== "function") return;
 	const settings = readSettings().values;
 	// `footer: false` reuses the existing "style !== claude" pass-through path,
@@ -786,7 +813,7 @@ export function installClaudeFooter(ctx: any, pi?: any): void {
 				usageSource?.dispose();
 			},
 		};
-		return new ClaudeFooterComponent(footerData, sources, theme, () => tui.requestRender());
+		return new ClaudeFooterComponent(footerData, sources, theme, () => tui.requestRender(), metricsOwner);
 	});
 }
 
