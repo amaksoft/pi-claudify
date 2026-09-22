@@ -44,13 +44,18 @@ export class ToolProvenanceObserver {
 		private readonly dependencies: ToolProvenanceDependencies,
 	) {}
 
-	onToolCall(event: ToolCallObservation, cwd: string): void {
+	async onToolCall(event: ToolCallObservation, cwd: string): Promise<void> {
 		if (!this.runtime.isCurrent() || event.toolName.toLowerCase() !== "write" || !this.dependencies.isBuiltinOwner("write")) return;
 		const input = event.input as Record<string, unknown> | undefined;
 		const filePath = typeof input?.path === "string" ? input.path : typeof input?.file_path === "string" ? input.file_path : "";
 		const content = typeof input?.content === "string" ? input.content : "";
 		if (!filePath) return;
 		const absolutePath = resolve(cwd, filePath);
+		// Skip the preimage read when diff presentation is off: details are never
+		// rendered, so any fs access on dispatch is pure event-loop cost.
+		const snapshot: WriteSnapshot = this.dependencies.isDiffPresentationEnabled?.() === false
+			? { kind: "omitted", reason: "unreadable" }
+			: await captureWriteSnapshot(absolutePath);
 		for (const pending of this.pendingWrites.values()) {
 			if (pending.absolutePath === absolutePath) pending.ambiguous = true;
 		}
@@ -64,7 +69,7 @@ export class ToolProvenanceObserver {
 			filePath,
 			absolutePath,
 			content,
-			snapshot: captureWriteSnapshot(absolutePath),
+			snapshot,
 			ambiguous: [...this.pendingWrites.values()].some((pending) => pending.absolutePath === absolutePath),
 		});
 	}

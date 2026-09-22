@@ -63,8 +63,29 @@ export function makeToolText(last: unknown, text: string, style: ToolTextStylePr
 	return component;
 }
 
+const TOOL_TEXT_CACHE_LIMIT = 32;
+// Width+text LRU so repeated renders of unchanged tool output (every frame
+// re-renders settled rows) reuse the wrapped lines instead of allocating a
+// throwaway ToolTextComponent per call. Keyed on the style strings too, so a
+// theme/palette change cannot serve stale-colored rows.
+const toolTextCache = new Map<string, string[]>();
+
 export function renderToolTextLines(text: string, width: number, style: ToolTextStyle): string[] {
-	return new ToolTextComponent(text, () => style).render(width);
+	const key = `${width}\n${style.rule}\n${style.reset}\n${text}`;
+	const cached = toolTextCache.get(key);
+	if (cached) {
+		toolTextCache.delete(key);
+		toolTextCache.set(key, cached);
+		return cached;
+	}
+	const rendered = new ToolTextComponent(text, () => style).render(width);
+	toolTextCache.set(key, rendered);
+	while (toolTextCache.size > TOOL_TEXT_CACHE_LIMIT) {
+		const oldest = toolTextCache.keys().next();
+		if (oldest.done) break;
+		toolTextCache.delete(oldest.value);
+	}
+	return rendered;
 }
 
 export function renderPrewrappedDiffLines(text: string, width: number): string[] {

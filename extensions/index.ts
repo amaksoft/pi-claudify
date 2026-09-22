@@ -25,7 +25,6 @@ import {
 	wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 
-import * as Diff from "diff";
 // Shiki loading/caching/token conversion and the ANSI diff renderer live in
 // extensions/render/diff-syntax.ts and extensions/render/diff-render.ts; only
 // the BundledLanguage type is still referenced directly in this file.
@@ -39,12 +38,11 @@ import { probeTestedPiCapabilities } from "./adapters/tested-pi/probes.ts";
 import { registerBanner } from "./banner.ts";
 import { CLAUDE_PALETTE } from "./claude-palette.ts";
 import { effectiveAgentDir, forwardedToolContract, hostToolSettings, skippedToolOverrides } from "./builtin-contracts.ts";
-import { ClaudifyScreen } from "./claudify-screen.ts";
 import { debugDiagnostic } from "./debug.ts";
 import { bumpDiffPresentationEpoch, diffCard } from "./diff-card.ts";
 import { markPointerExpandedMembers } from "./expansion-coordinator.ts";
 import { deferGenerationRelease } from "./lifecycle/generation-handoff.ts";
-import { installClaudeFooter, normalizeHexColor, patchEditorBorderColor, releaseEditorBorderColor } from "./footer.ts";
+import { installClaudeFooter, patchEditorBorderColor, releaseEditorBorderColor } from "./footer.ts";
 import { registerClaudifyCommand } from "./lifecycle/claudify-command.ts";
 import { MessageLifecycle } from "./lifecycle/message-lifecycle.ts";
 import { registerPointerExpansionLifecycle } from "./lifecycle/pointer-expansion.ts";
@@ -60,13 +58,43 @@ import {
 
 export { InspectionGroupComponent } from "./inspection-group.ts";
 export { isSettledInspectionTool } from "./transcript/inspection-groups.ts";
-import { registerFullscreenTui } from "./fullscreen-tui.ts";
+// extensions/fullscreen-tui.ts stays off the factory graph: /tui is registered
+// synchronously (hosts read it straight after activation), while the module
+// backing it loads on first invocation and then serves every later use from
+// the module cache with identical behavior.
+function registerFullscreenTuiLazy(pi: ExtensionAPI): void {
+	type FullscreenCommand = { handler: (args: unknown, ctx: any) => unknown };
+	let installed: Promise<FullscreenCommand | undefined> | undefined;
+	const ensureInstalled = (): Promise<FullscreenCommand | undefined> => (installed ??= import("./fullscreen-tui.ts").then((module) => {
+		let command: FullscreenCommand | undefined;
+		module.registerFullscreenTui({
+			registerCommand: (name: string, definition: FullscreenCommand) => {
+				if (name === "tui") command = definition;
+			},
+			// The real shutdown hook owns no state before first use, so it is
+			// safe to forward it to the host only once the module loads.
+			on: (event: string, handler: (...args: any[]) => unknown) => (pi as any).on(event, handler),
+		} as unknown as ExtensionAPI);
+		return command;
+	}));
+	pi.registerCommand("tui", {
+		description: "Toggle Claude Code-style fullscreen layout",
+		handler: async (args, ctx) => {
+			const command = await ensureInstalled();
+			if (!command) {
+				(ctx as any)?.ui?.notify?.("Fullscreen TUI is unavailable in this Pi version", "warning");
+				return;
+			}
+			await command.handler(args, ctx);
+		},
+	});
+}
 import {
 	describeInspectionsActive,
 	describeInspectionsDone,
 	type InspectionKind,
 } from "./inspection-summary.ts";
-import { describeEdit, describeWrite, type SummaryEmphasis } from "./mutation-summary.ts";
+import { describeEdit, type SummaryEmphasis } from "./mutation-summary.ts";
 import { anchorFramedHeights } from "./mouse-layout.ts";
 import { patchAssistantMessageRenderer, releaseAssistantMessageRenderer } from "./host/assistant-message-patch.ts";
 import { BlinkScheduler } from "./host/blink-scheduler.ts";
@@ -146,7 +174,7 @@ import type { ActivationPlan } from "./runtime/contracts.ts";
 import { RuntimeHandle } from "./runtime/runtime-handle.ts";
 import { DEFAULT_DIFF_COLLAPSED_LINES, DEFAULT_EXPANDED_PREVIEW_MAX_LINES, getSettingsRevision, readSettings } from "./settings.ts";
 import registerSpinner from "./spinner.ts";
-import { sanitizeToolContent, sanitizeToolOutput, sanitizeToolText, WRAP_MARK } from "./terminal-sanitize.ts";
+import { sanitizeToolText } from "./terminal-sanitize.ts";
 import { languageForPath as lang } from "./domain/language.ts";
 import { linkedPath, shortPath } from "./domain/path-links.ts";
 import {
@@ -158,7 +186,6 @@ import {
 	splitRenderedImageBlock,
 	stripAnsi,
 } from "./domain/render-text.ts";
-import { getRawStringArg, getStringArg, getTextContent } from "./domain/tool-arguments.ts";
 import { isTaskToolName, taskPresentationEnvironmentEnabled } from "./domain/task-view.ts";
 export { classifyBashCommandForDisplay, type BashDisplayInfo } from "./domain/bash-display.ts";
 import {
@@ -205,7 +232,9 @@ import {
 	applyImmediateDiffPalette,
 	applyThemeDerivedPalette,
 	autoDeriveBgFromTheme,
+	branchDiffWidth,
 	claudeDiffPaletteEnabled,
+	diffSummaryWithMeta,
 	D_RST,
 	DEFAULT_DIFF_COLORS,
 	DIFF_PRESET_KEYS,
@@ -218,30 +247,70 @@ import {
 	MAX_RENDER_LINES,
 	MAX_TERM_WIDTH,
 	setDiffThemePreview,
+	summarizeDiff,
 	themeAdaptiveEnabled,
 } from "./domain/diff-palette.ts";
 export { DIFF_PRESET_KEYS } from "./domain/diff-palette.ts";
-import {
-	branchDiffWidth,
-	configureDiffWidthOps,
-	diffSummaryWithMeta,
-	renderFileListing,
-	renderSplit,
-	renderUnified,
-	summarizeDiff,
-} from "./render/diff-render.ts";
-export { renderFileListing, renderUnified } from "./render/diff-render.ts";
-import { clearHighlightCache } from "./render/diff-syntax.ts";
+// ---------------------------------------------------------------------------
+// Lazy heavy graph: ./render/diff-render.ts pulls `diff` plus
+// ./render/diff-syntax.ts, which statically bundles 30 Shiki languages and
+// the Monokai theme. Nothing on the extension factory path needs it — diffs
+// only render after tools run — so the first diff render pays the cost once
+// and every later use hits the cached modules with identical behavior.
+// ---------------------------------------------------------------------------
+type DiffRenderModule = typeof import("./render/diff-render.ts");
+type DiffSyntaxModule = typeof import("./render/diff-syntax.ts");
+let diffRenderModule: DiffRenderModule | undefined;
+let diffRenderLoading: Promise<DiffRenderModule> | undefined;
+let diffSyntaxModule: DiffSyntaxModule | undefined;
+let diffSyntaxLoading: Promise<DiffSyntaxModule> | undefined;
+
+function loadDiffRender(): Promise<DiffRenderModule> {
+	return (diffRenderLoading ??= import("./render/diff-render.ts").then((module) => {
+		// render/diff-render.ts must not import @earendil-works/pi-tui directly
+		// (render/ boundary rule); the composition root wires its width
+		// dependency on first use instead of at module load.
+		module.configureDiffWidthOps({ visibleWidth, truncateToWidth });
+		return (diffRenderModule = module);
+	}));
+}
+
+function loadDiffSyntax(): Promise<DiffSyntaxModule> {
+	return (diffSyntaxLoading ??= import("./render/diff-syntax.ts").then((syntax) => (diffSyntaxModule = syntax)));
+}
+
+function renderSplit(diff: ParsedDiff, language: BundledLanguage | undefined, max?: number, dc?: DiffColors, width?: number): Promise<string> {
+	return (diffRenderModule ? Promise.resolve(diffRenderModule) : loadDiffRender()).then((module) =>
+		module.renderSplit(diff, language, max, dc, width));
+}
+
+export function renderFileListing(content: string, language: BundledLanguage | undefined, max?: number, width?: number): Promise<string> {
+	return (diffRenderModule ? Promise.resolve(diffRenderModule) : loadDiffRender()).then((module) =>
+		module.renderFileListing(content, language, max, width));
+}
+
+export function renderUnified(diff: ParsedDiff, language: BundledLanguage | undefined, max?: number, dc?: DiffColors, width?: number): Promise<string> {
+	return (diffRenderModule ? Promise.resolve(diffRenderModule) : loadDiffRender()).then((module) =>
+		module.renderUnified(diff, language, max, dc, width));
+}
+
+function clearHighlightCache(): void {
+	if (diffSyntaxModule) { diffSyntaxModule.clearHighlightCache(); return; }
+	// Unloaded: the highlight cache starts empty, so there is nothing to
+	// clear yet. Prime the load so a pre-first-render clear still reaches the
+	// live cache; output is unaffected either way (the cache is perf-only).
+	void loadDiffSyntax().then((syntax) => syntax.clearHighlightCache());
+}
 import { configureMessageComponents, DottedParagraph, ThinkingParagraph } from "./render/message-components.ts";
 export { DottedParagraph, ThinkingParagraph } from "./render/message-components.ts";
 import { createToolChrome } from "./render/tool-chrome.ts";
-import { selectVisualItems, selectVisualPreview, widthAwareText, type VisualPreviewMode } from "./visual-preview.ts";
+import { selectVisualPreview, widthAwareText, type VisualPreviewMode } from "./visual-preview.ts";
 import { computeAggregateEditDiff, computeLocalizedEditDiffs } from "./tools/edit-preview.ts";
 import { registerBuiltinTools } from "./tools/register-builtins.ts";
 import { TaskPresentationController } from "./tools/task-presentation.ts";
 import { renderApplyPatchCall as renderApplyPatchCallWithRuntime, renderApplyPatchResult as renderApplyPatchResultWithRuntime, type ApplyPatchRuntime } from "./tools/apply-patch-tool.ts";
 import { renderGenericToolCall as renderGenericCall, renderGenericToolResult as renderGenericResult, type GenericToolRuntime } from "./tools/generic-tool.ts";
-import { mcpServerForComponent, mcpServerName, renderMcpToolResult as renderMcpResult } from "./tools/mcp-tool.ts";
+import { mcpServerName, renderMcpToolResult as renderMcpResult } from "./tools/mcp-tool.ts";
 import { renderOpenAiToolResult as renderOpenAiResult, summarizeOpenAiToolCall as summarizeOpenAiCall } from "./tools/openai-tool.ts";
 export { mcpServerName } from "./tools/mcp-tool.ts";
 import { firstImageBlock, renderReadImage } from "./tools/read-image.ts";
@@ -746,10 +815,6 @@ function claudeChromeEnabled(): boolean {
 	return readSettings().values.toolChrome !== "theme";
 }
 
-// render/diff-render.ts must not import @earendil-works/pi-tui directly
-// (render/ boundary rule); wire its width dependency once at load time.
-configureDiffWidthOps({ visibleWidth, truncateToWidth });
-
 // Owns the mutable border/worked-line/tool-rule palette state and the
 // theme-identity cache gate; see extensions/host/theme-orchestrator.ts.
 const themeOrchestrator = createThemeOrchestrator({
@@ -1168,7 +1233,7 @@ function activateCurrentTestedPi(
 		stripWorked: stripWorkedDurationLine,
 		appendWorked: appendWorkedDurationLine,
 	});
-	if (featureEnabled("fullscreenTui")) registerFullscreenTui(pi);
+	if (featureEnabled("fullscreenTui")) registerFullscreenTuiLazy(pi);
 	if (featureEnabled("footer")) registerSessionMetrics(pi, runtime.owner, {
 		agentSettledSupported: supportsAgentSettledEvent(activationPlan.host.piVersion),
 		enabled: () => {
@@ -1380,6 +1445,7 @@ function activateCurrentTestedPi(
 		? new ToolProvenanceObserver(runtime, {
 			isBuiltinOwner: (name) => !presentationOverrideSkipped(name) && executionOwners.get(name) === "builtin",
 			summarizeDiff,
+			isDiffPresentationEnabled: () => featureEnabled("diffPresentation"),
 		})
 		: undefined;
 	if (preserveNativeExecution && featureEnabled("toolPresentation")) {
@@ -1388,7 +1454,7 @@ function activateCurrentTestedPi(
 	if (provenanceObserver) {
 		pi.on("tool_call", async (event: any, ctx: any) => {
 			try { refreshExecutionOwners(); } catch { /* retain the last complete snapshot */ }
-			provenanceObserver.onToolCall(event, ctx?.cwd ?? cwd);
+			await provenanceObserver.onToolCall(event, ctx?.cwd ?? cwd);
 		});
 		pi.on("tool_result", async (event: any) => provenanceObserver.onToolResult(event));
 		pi.on("tool_execution_end", async (event: any) => provenanceObserver.onToolEnd(event.toolCallId));
@@ -1442,7 +1508,7 @@ function activateCurrentTestedPi(
 		},
 		installDeferred: installDeferredRegistrations,
 		discoverTools: discoverPresentationTools,
-		onTurnEnd: () => { blinkScheduler.clear(); clearHighlightCache(); },
+		onTurnEnd: () => { blinkScheduler.clear(); }, // Highlight cache is theme/language-keyed and stays warm across turns; it is cleared only on theme, language, or syntax-setting changes (see refreshDiffPalette and the diffSyntaxHighlighting switch below).
 		onShutdown: (reason) => {
 			// Current Pi reuses the extension factory across new/resume/fork even
 			// though session-scoped resources receive shutdown/start events. Keep
@@ -1451,7 +1517,6 @@ function activateCurrentTestedPi(
 			if (reason !== "reload" && reason !== "quit") {
 				provenanceObserver?.clear();
 				blinkScheduler.clear();
-				clearHighlightCache();
 				return;
 			}
 			if (reason === "reload" && runtime.sessionKey) testedPiPatchBroker.offerSessionHandoff(runtime.owner, runtime.sessionKey);

@@ -18,7 +18,15 @@ export function shouldStackConsecutiveBash(): boolean {
 	return settings.bashStackConsecutive !== false;
 }
 
-function hasConsecutiveBashToolChildren(children: unknown[], width: number): boolean {
+function cachedRenderLines(child: any, width: number, cache: Map<unknown, string[]>): string[] {
+	const hit = cache.get(child);
+	if (hit !== undefined) return hit;
+	const lines = child.render(width);
+	cache.set(child, lines);
+	return lines;
+}
+
+function hasConsecutiveBashToolChildren(children: unknown[], width: number, cache: Map<unknown, string[]>): boolean {
 	let previousWasBash = false;
 	for (const child of children) {
 		const currentIsBash = isBashToolExecution(child);
@@ -26,7 +34,7 @@ function hasConsecutiveBashToolChildren(children: unknown[], width: number): boo
 		if (currentIsBash) previousWasBash = true;
 		else {
 			let transparent = false;
-			try { transparent = typeof (child as any)?.render === "function" && (child as any).render(width).length === 0; } catch { /* visible boundary */ }
+			try { transparent = typeof (child as any)?.render === "function" && cachedRenderLines(child as any, width, cache).length === 0; } catch { /* visible boundary */ }
 			if (!transparent) previousWasBash = false;
 		}
 	}
@@ -63,14 +71,21 @@ export function renderWithStackedConsecutiveBash(
 ): StackedBashRender | null {
 	if (!shouldStackConsecutiveBash()) return null;
 	const children = Array.isArray(container?.children) ? container.children : null;
-	if (!children || !hasConsecutiveBashToolChildren(children, width)) return null;
+	// Single-frame probe cache: the transparency probe above renders non-bash
+	// children, and the layout pass below needs the same lines. The cache lives
+	// for this (container, width) call only, so no width/settingsRevision key
+	// is needed — settings cannot change mid-call — and each child renders at
+	// most once across both passes. Only successful renders are cached, so a
+	// throwing child still surfaces from the layout pass as before.
+	const probe = new Map<unknown, string[]>();
+	if (!children || !hasConsecutiveBashToolChildren(children, width, probe)) return null;
 
 	const lines: string[] = [];
 	const layout: StackedBashLayoutEntry[] = [];
 	let previousWasBash = false;
 	for (const child of children) {
 		const currentIsBash = isBashToolExecution(child);
-		const childLines = typeof child?.render === "function" ? child.render(width) : [];
+		const childLines = typeof (child as any)?.render === "function" ? cachedRenderLines(child as any, width, probe) : [];
 		const painted = currentIsBash && previousWasBash ? dropLeadingSpacerLine(childLines, runtime) : childLines;
 		lines.push(...painted);
 		layout.push({ component: child, height: painted.length });

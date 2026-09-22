@@ -50,6 +50,9 @@ const SPINNER_SETTINGS_TTL_MS = 1_000;
 export const MAX_CUSTOM_SPINNER_VERBS = 200;
 export const MAX_SPINNER_VERB_LENGTH = 48;
 const spinnerGraphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+// buildWorkingMessage() runs on every spinner tick; constructing this per token
+// count showed up in profiles (P2), so it lives at module scope.
+const spinnerCountFormat = new Intl.NumberFormat("en-US");
 // Cross-extension bust signal: the Claudify screen in index.ts bumps this
 // counter and we drop the cache when it changes.
 const SPINNER_BUST_KEY = Symbol.for("pi-claudify:spinner-settings-bust");
@@ -210,8 +213,13 @@ const SHIMMER_CYCLE_MS = SHIMMER_SWEEP_MS + SHIMMER_BREATHE_MS;
 const SHIMMER_SWEEP_STEP_MS = 200; // ~5 char-steps/s
 const SHIMMER_BREATH_PERIOD_MS = 1_600;
 const SHIMMER_BREATHE_MIN = 0.55; // dimmest fraction of base brightness within a breath
-// Refresh cadence while the animation runs — smooth enough for the sweep + breath.
-export const SHIMMER_REFRESH_MS = 200;
+// Refresh cadence while the animation runs. Aligned to the 500 ms glyph timer:
+// every refresh forces a full-TUI repaint, so a faster shimmer tick stacks
+// redundant repaints on top of the glyph frames (~7/s combined). The sweep and
+// breathe phases are functions of wall-clock elapsed time, not tick count, so
+// sampling them at 2 Hz keeps the captured escalation correct with coarser
+// motion — roughly 4 repaints/s worst case instead of 7.
+export const SHIMMER_REFRESH_MS = 500;
 
 function rgbAnsi({ r, g, b }: Rgb): string {
 	return `\x1b[38;2;${Math.round(r)};${Math.round(g)};${Math.round(b)}m`;
@@ -399,9 +407,20 @@ function customStart(this: any): void {
 	const generation = (this[LOADER_GENERATION] ?? 0) + 1;
 	this[LOADER_GENERATION] = generation;
 	delete this[LOADER_LAST_TEXT];
+	// The broker object owning the spinner surface right now. A later /reload
+	// (or quit) binds a successor surface or releases this one; the abandoned
+	// chain must stop itself instead of re-arming a native Timeout root that
+	// pins the old Loader (and its UI/message graph) for the life of the
+	// process. Identity comparison is enough: every generation binds a fresh
+	// hooks object, and the same generation never rebinds this surface.
+	const capturedHooks = testedPiPatchBroker.active<LoaderPatchHooks>(LOADER_PATCH_SURFACE);
 	this.updateDisplay();
 	const scheduleNext = () => {
 		if (this[LOADER_ACTIVE] !== true || this[LOADER_GENERATION] !== generation) return;
+		if (testedPiPatchBroker.active<LoaderPatchHooks>(LOADER_PATCH_SURFACE) !== capturedHooks) {
+			customStop.call(this);
+			return;
+		}
 		const timer = setTimeout(() => {
 			this.intervalId = null;
 			if (this[LOADER_ACTIVE] !== true || this[LOADER_GENERATION] !== generation) return;
@@ -656,7 +675,7 @@ function formatDuration(ms: number): string {
 }
 
 function formatCount(value: number): string {
-	return new Intl.NumberFormat("en-US").format(value);
+	return spinnerCountFormat.format(value);
 }
 
 function outputTokens(value: any): number | null {

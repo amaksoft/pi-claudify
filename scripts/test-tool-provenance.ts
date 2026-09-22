@@ -19,7 +19,7 @@ try {
 
 	const file = join(root, "value.ts");
 	writeFileSync(file, "const value = 1;\n");
-	observer.onToolCall({ toolCallId: "write-1", toolName: "write", input: { path: "value.ts", content: "const value = 2;\n" } }, root);
+	await observer.onToolCall({ toolCallId: "write-1", toolName: "write", input: { path: "value.ts", content: "const value = 2;\n" } }, root);
 	assert.equal(observer.pendingCount(), 1);
 	const writePatch = observer.onToolResult({
 		toolCallId: "write-1", toolName: "write", input: { path: "value.ts", content: "const value = 2;\n" },
@@ -31,19 +31,19 @@ try {
 	assert.equal(observer.pendingCount(), 0);
 
 	writeFileSync(file, "A");
-	observer.onToolCall({ toolCallId: "parallel-1", toolName: "write", input: { path: "value.ts", content: "B" } }, root);
-	observer.onToolCall({ toolCallId: "parallel-2", toolName: "write", input: { path: "value.ts", content: "C" } }, root);
+	await observer.onToolCall({ toolCallId: "parallel-1", toolName: "write", input: { path: "value.ts", content: "B" } }, root);
+	await observer.onToolCall({ toolCallId: "parallel-2", toolName: "write", input: { path: "value.ts", content: "C" } }, root);
 	const parallelOne = observer.onToolResult({ toolCallId: "parallel-1", toolName: "write", input: { path: "value.ts", content: "B" }, content: [], details: {}, isError: false });
 	const parallelTwo = observer.onToolResult({ toolCallId: "parallel-2", toolName: "write", input: { path: "value.ts", content: "C" }, content: [], details: {}, isError: false });
 	assert.equal((parallelOne?.details as any)?._type, "diffOmitted");
 	assert.equal((parallelTwo?.details as any)?._type, "diffOmitted", "same-path concurrent writes fail closed instead of claiming a false preimage");
 
-	observer.onToolCall({ toolCallId: "mutated", toolName: "write", input: { path: "value.ts", content: "B" } }, root);
+	await observer.onToolCall({ toolCallId: "mutated", toolName: "write", input: { path: "value.ts", content: "B" } }, root);
 	const mutated = observer.onToolResult({ toolCallId: "mutated", toolName: "write", input: { path: "value.ts", content: "C" }, content: [], details: {}, isError: false });
 	assert.equal((mutated?.details as any)?._type, "diffOmitted", "later argument mutation invalidates captured provenance");
 
 	owners.set("write", false);
-	observer.onToolCall({ toolCallId: "external-write", toolName: "write", input: { path: "value.ts", content: "external" } }, root);
+	await observer.onToolCall({ toolCallId: "external-write", toolName: "write", input: { path: "value.ts", content: "external" } }, root);
 	assert.equal(observer.pendingCount(), 0, "external same-name writes are never snapshotted");
 	assert.equal(observer.onToolResult({ toolCallId: "external-write", toolName: "write", input: {}, content: [], details: {}, isError: false }), undefined);
 
@@ -58,7 +58,7 @@ try {
 
 	owners.set("write", true);
 	for (let index = 0; index < 80; index++) {
-		observer.onToolCall({ toolCallId: `bounded-${index}`, toolName: "write", input: { path: "value.ts", content: String(index) } }, root);
+		await observer.onToolCall({ toolCallId: `bounded-${index}`, toolName: "write", input: { path: "value.ts", content: String(index) } }, root);
 	}
 	assert.equal(observer.pendingCount(), 64, "pending provenance is bounded");
 	const evicted = observer.onToolResult({ toolCallId: "bounded-0", toolName: "write", input: { path: "value.ts", content: "0" }, content: [], details: {}, isError: false });
@@ -75,7 +75,7 @@ try {
 	assert.equal(legacyResults.every((result) => result.details?._type === "diffOmitted"), true, "legacy fallback also fails closed for concurrent same-path writes");
 
 	runtime.beginRetirement();
-	observer.onToolCall({ toolCallId: "stale", toolName: "write", input: { path: "value.ts", content: "stale" } }, root);
+	await observer.onToolCall({ toolCallId: "stale", toolName: "write", input: { path: "value.ts", content: "stale" } }, root);
 	assert.equal(observer.pendingCount(), 0, "retired generations reject stale observations");
 } finally {
 	rmSync(root, { recursive: true, force: true });

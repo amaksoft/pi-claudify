@@ -63,6 +63,13 @@ const USAGE_LEVELS = [
 const FALLBACK_BORDER_GRAY = "\x1b[38;5;244m";
 
 const BAR_BLOCKS = 10;
+// render()/buildFooterLine() run every frame; constructing this per reset label
+// showed up in profiles (P2), so it lives at module scope.
+const RESET_TIME_FORMAT = new Intl.DateTimeFormat("en-US", {
+	hour: "2-digit",
+	minute: "2-digit",
+	hour12: true,
+});
 const USAGE_CACHE_TTL_MS = 60_000;
 const USAGE_REQUEST_TIMEOUT_MS = 10_000;
 const ANTHROPIC_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
@@ -438,7 +445,25 @@ function themeFgAnsi(theme: any, key: string, fallback: string): string {
 	return fallback;
 }
 
+// buildFooterLine() runs every frame; theme lookups do string work per segment,
+// so memoize the palette per (colorMode, color, theme identity) (P2).
+let _paletteCacheKey: string | null = null;
+let _paletteCacheTheme: unknown = undefined;
+let _paletteCachePalette: SegmentPalette | null = null;
+
 function paletteFor(settings: FooterSettings, theme?: any): SegmentPalette {
+	const themeKey = settings.colorMode === "colored" ? theme : undefined;
+	const key = `${settings.colorMode}|${settings.color}`;
+	if (_paletteCachePalette && _paletteCacheKey === key && _paletteCacheTheme === themeKey) {
+		return _paletteCachePalette;
+	}
+	_paletteCachePalette = buildPalette(settings, theme);
+	_paletteCacheKey = key;
+	_paletteCacheTheme = themeKey;
+	return _paletteCachePalette;
+}
+
+function buildPalette(settings: FooterSettings, theme?: any): SegmentPalette {
 	if (settings.colorMode === "monochrome") {
 		return {
 			dir: "",
@@ -527,11 +552,7 @@ function resetTime(resetsAt: number | null): string | null {
 	if (resetsAt === null || !Number.isFinite(resetsAt) || resetsAt <= 0) return null;
 	try {
 		const rounded = Math.round(resetsAt / 60_000) * 60_000;
-		return new Intl.DateTimeFormat("en-US", {
-			hour: "2-digit",
-			minute: "2-digit",
-			hour12: true,
-		}).format(new Date(rounded));
+		return RESET_TIME_FORMAT.format(new Date(rounded));
 	} catch {
 		return null;
 	}
@@ -655,6 +676,8 @@ export class ClaudeFooterComponent {
 	private readonly metricsOwner?: object;
 	private repaintTimer?: ReturnType<typeof setInterval>;
 	private readonly unsubscribeMetrics?: () => void;
+	private lastStatusFingerprint: string | null = null;
+	private sortedStatuses: Array<readonly [string, string]> = [];
 
 	constructor(footerData: FooterDataLike, sources: FooterSources, theme?: unknown, requestRender?: () => void, metricsOwner?: object) {
 		this.footerData = footerData;
@@ -720,8 +743,15 @@ export class ClaudeFooterComponent {
 		const lines = [truncateToWidth(line, width, "…")];
 		// pi's stock footer surfaces other extensions' ctx.ui.setStatus lines;
 		// replacing the footer must not eat them.
-		const statuses = [...this.footerData.getExtensionStatuses().entries()]
-			.sort(([a], [b]) => a.localeCompare(b));
+		// render() runs every frame; localeCompare in the sort is the expensive
+		// part, so reuse the sorted entries while the map contents are unchanged (P2).
+		const liveStatuses = [...this.footerData.getExtensionStatuses().entries()];
+		const fingerprint = liveStatuses.map(([key, value]) => `${key}\x00${value}`).join("\x01");
+		if (fingerprint !== this.lastStatusFingerprint) {
+			this.lastStatusFingerprint = fingerprint;
+		this.sortedStatuses = liveStatuses.sort(([a], [b]) => a.localeCompare(b));
+		}
+		const statuses = this.sortedStatuses;
 		const dim = settings.colorMode === "monochrome" ? "" : GRAY;
 		for (const [, text] of statuses) {
 			const status = sanitizeStatusText(text);

@@ -182,7 +182,11 @@ export const MAX_RENDER_LINES = 150;
 export const WORD_DIFF_MIN_SIM = 0.15;
 export const MAX_WRAP_ROWS_WIDE = 3;
 export const MAX_WRAP_ROWS_MED = 2;
-export const MAX_WRAP_ROWS_NARROW = 1;
+// Narrow terminals reflow long diff lines across up to 2 rows before
+// truncating with the › marker. A 1-row cap amputated every overflowing
+// line below 120 cols (hiding the added/removed tokens the diff exists to
+// show); 2 rows keeps narrow output bounded while preserving content.
+export const MAX_WRAP_ROWS_NARROW = 2;
 
 // Pure ANSI literals mirroring index.ts's shared RESET/TRANSPARENT_BG/
 // TRANSPARENT_RESET/FG_DEFAULT constants. Duplicated (not imported) because
@@ -505,4 +509,55 @@ export function applyDiffPalette(): void {
 	// preset or per-color override; otherwise we would overwrite their config
 	// with the hardcoded dark palette on first render.
 	autoDerivePending = !hasExplicitBgConfig;
+}
+
+// ---------------------------------------------------------------------------
+// Sync width/summary helpers — pure functions of counts, palette constants,
+// and terminal width with no Shiki dependency. They live here (not in
+// render/diff-render.ts) so synchronous render call sites in the composition
+// root stay off the lazily-loaded Shiki graph; render/diff-render.ts
+// re-exports them for compatibility.
+// ---------------------------------------------------------------------------
+
+export function termW(): number {
+	const raw =
+		process.stdout.columns ||
+		(process.stderr as any).columns ||
+		Number.parseInt(process.env.COLUMNS ?? "", 10) ||
+		DEFAULT_TERM_WIDTH;
+	return Math.max(40, Math.min(raw - 4, MAX_TERM_WIDTH));
+}
+
+export function branchDiffWidth(): number {
+	return Math.max(40, termW() - 8);
+}
+
+export function renderDiffStatBar(added: number, removed: number, width = termW()): string {
+	const total = added + removed;
+	if (total === 0 || width < 20) return "";
+	const slots = Math.max(8, Math.min(20, Math.floor(width / 14)));
+	let addSlots = Math.max(0, Math.min(slots, Math.round((added / total) * slots)));
+	if (added > 0 && addSlots === 0) addSlots = 1;
+	if (removed > 0 && addSlots >= slots) addSlots = slots - 1;
+	const removeSlots = Math.max(0, slots - addSlots);
+	const addBar = addSlots > 0 ? `${FG_ADD}${"━".repeat(addSlots)}${D_RST}` : "";
+	const removeBar = removeSlots > 0 ? `${FG_DEL}${"━".repeat(removeSlots)}${D_RST}` : "";
+	return `${FG_DIM}[${D_RST}${addBar}${removeBar}${FG_DIM}]${D_RST}`;
+}
+
+export function summarizeDiff(added: number, removed: number): string {
+	const parts: string[] = [];
+	if (added > 0) parts.push(`${FG_ADD}+${added}${D_RST}`);
+	if (removed > 0) parts.push(`${FG_DEL}-${removed}${D_RST}`);
+	if (!parts.length) return `${FG_DIM}no changes${D_RST}`;
+	const bar = renderDiffStatBar(added, removed);
+	return bar ? `${parts.join(" ")} ${bar}` : parts.join(" ");
+}
+
+export function diffSummaryWithMeta(added: number, removed: number, hunks: number, mode: string): string {
+	const base = summarizeDiff(added, removed);
+	const extras: string[] = [];
+	if (hunks > 0) extras.push(`${FG_DIM}${hunks} hunk${hunks === 1 ? "" : "s"}${D_RST}`);
+	if (mode) extras.push(`${FG_DIM}${mode}${D_RST}`);
+	return extras.length ? `${base} ${FG_DIM}•${D_RST} ${extras.join(` ${FG_DIM}•${D_RST} `)}` : base;
 }

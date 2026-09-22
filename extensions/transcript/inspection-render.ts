@@ -21,8 +21,19 @@ const CLAUDE_COLLAPSED_INDENT = "  ";
 
 export function fitInspectionLine(line: string, width: number, runtime: InspectionGroupRuntime): string[] {
 	if (width <= 0) return [];
-	return runtime.wrapMarkedLine(line.replace(/\t/g, "   "), width)
-		.map((part) => runtime.padToWidth(visibleWidth(part) > width ? truncateToWidth(part, width, "") : part, width));
+	// Single pass: wrap, then fit each part with one visibleWidth measurement.
+	// Over-wide parts (wide-char/ANSI edge cases wrapTextWithAnsi cannot split)
+	// keep the old truncate-then-pad path; common parts pad inline, which is
+	// exactly what runtime.padToWidth appends, without re-measuring.
+	const wrapped = runtime.wrapMarkedLine(line.replace(/\t/g, "   "), width);
+	for (let i = 0; i < wrapped.length; i++) {
+		const part = wrapped[i];
+		const partWidth = visibleWidth(part);
+		wrapped[i] = partWidth > width
+			? runtime.padToWidth(truncateToWidth(part, width, ""), width)
+			: partWidth < width ? `${part}${" ".repeat(width - partWidth)}` : part;
+	}
+	return wrapped;
 }
 
 /** Frame aggregate content and report the exact clickable row range. */

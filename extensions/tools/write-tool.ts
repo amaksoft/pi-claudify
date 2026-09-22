@@ -115,7 +115,7 @@ export function registerWriteTool(runtime: WriteToolRuntime): void {
 		parameters: native.parameters,
 		...runtime.forwardContract(native),
 		execute: (toolCallId: string, params: any, signal: AbortSignal | undefined, onUpdate: any, ctx: any) =>
-			executeWriteWithSnapshot(runtime.cwd, toolCallId, params, signal, onUpdate, ctx, { summarizeDiff: runtime.summarizeDiff }),
+			executeWriteWithSnapshot(runtime.cwd, toolCallId, params, signal, onUpdate, ctx, { summarizeDiff: runtime.summarizeDiff, isDiffPresentationEnabled: () => runtime.diffPresentationEnabled() }),
 		...presentation,
 	});
 }

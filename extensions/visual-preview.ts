@@ -23,6 +23,22 @@ export interface VisualItemPreview<T> {
 
 const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
+// Printable-ASCII lines (no tabs, no wide graphemes) wrap at exactly one column
+// per character, so they can be sliced without grapheme segmentation. The
+// output is byte-identical to scanWrappedLine for such lines; the segmenter
+// path below only runs for lines that actually need it (wide/emoji/combining).
+const ASCII_LINE_RE = /^[ -~]*$/;
+
+function scanWrappedAsciiLine(line: string, width: number, visit: (row: string) => void): void {
+	if (!line) {
+		visit("");
+		return;
+	}
+	for (let start = 0; start < line.length; start += width) {
+		visit(line.slice(start, start + width).replace(/ +$/, ""));
+	}
+}
+
 function scanWrappedLine(line: string, width: number, visit: (row: string) => void): void {
 	if (!line) {
 		visit("");
@@ -81,7 +97,9 @@ export function selectVisualPreview(text: string, width: number, rowBudget: numb
 	while (lineStart <= safe.length) {
 		const newline = safe.indexOf("\n", lineStart);
 		const lineEnd = newline === -1 ? safe.length : newline;
-		scanWrappedLine(safe.slice(lineStart, lineEnd), wrapWidth, visit);
+		const line = safe.slice(lineStart, lineEnd);
+		if (ASCII_LINE_RE.test(line)) scanWrappedAsciiLine(line, wrapWidth, visit);
+		else scanWrappedLine(line, wrapWidth, visit);
 		if (newline === -1) break;
 		lineStart = newline + 1;
 	}

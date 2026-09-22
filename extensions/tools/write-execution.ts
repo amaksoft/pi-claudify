@@ -7,6 +7,7 @@ import { captureWriteSnapshot, writeDiffOmissionReason, type WriteSnapshot } fro
 
 export interface WriteExecutionDependencies {
 	summarizeDiff(added: number, removed: number): string;
+	isDiffPresentationEnabled?: () => boolean;
 }
 
 interface InFlightWrite { ambiguous: boolean }
@@ -62,7 +63,11 @@ export async function executeWriteWithSnapshot(
 	for (const active of concurrent) active.ambiguous = true;
 	concurrent.add(operation);
 	inFlightWrites.set(fullPath, concurrent);
-	const snapshot = captureWriteSnapshot(fullPath);
+	// Skip the preimage read entirely when diff presentation is off: the
+	// enriched details are never rendered, so any fs access is pure dispatch cost.
+	const snapshot: WriteSnapshot = dependencies.isDiffPresentationEnabled?.() === false
+		? { kind: "omitted", reason: "unreadable" }
+		: await captureWriteSnapshot(fullPath);
 	try {
 		const result: any = await createWriteToolDefinition(cwd).execute(toolCallId, params, signal, onUpdate, ctx);
 		return enrichWriteResultWithSnapshot(operation.ambiguous ? { kind: "omitted", reason: "unreadable" } : snapshot, filePath, params.content ?? "", result, dependencies);

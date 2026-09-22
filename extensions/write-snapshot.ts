@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { open } from "node:fs/promises";
 
 export { MAX_WRITE_DIFF_INPUT_BYTES, MAX_WRITE_SNAPSHOT_BYTES } from "./domain/limits.ts";
 import { MAX_WRITE_DIFF_INPUT_BYTES, MAX_WRITE_SNAPSHOT_BYTES } from "./domain/limits.ts";
@@ -8,15 +8,28 @@ export type WriteSnapshot =
 	| { kind: "content"; content: string; bytes: number }
 	| { kind: "omitted"; reason: "oversized" | "unreadable"; bytes?: number };
 
-/** Capture an existing file without allowing diff generation to become an OOM path. */
-export function captureWriteSnapshot(fullPath: string): WriteSnapshot {
-	if (!fullPath || !existsSync(fullPath)) return { kind: "new" };
+/** Capture an existing file without allowing diff generation to become an OOM path.
+ * Async single bounded read: stat gates allocation at MAX_WRITE_SNAPSHOT_BYTES,
+ * then one positional read of at most that many bytes. Never blocks dispatch. */
+export async function captureWriteSnapshot(fullPath: string): Promise<WriteSnapshot> {
+	if (!fullPath) return { kind: "new" };
+	let handle;
 	try {
-		const bytes = statSync(fullPath).size;
-		if (bytes > MAX_WRITE_SNAPSHOT_BYTES) return { kind: "omitted", reason: "oversized", bytes };
-		return { kind: "content", content: readFileSync(fullPath, "utf8"), bytes };
+		handle = await open(fullPath, "r");
+	} catch (error) {
+		return (error as NodeJS.ErrnoException)?.code === "ENOENT" ? { kind: "new" } : { kind: "omitted", reason: "unreadable" };
+	}
+	try {
+		const size = (await handle.stat()).size;
+		if (size > MAX_WRITE_SNAPSHOT_BYTES) return { kind: "omitted", reason: "oversized", bytes: size };
+		if (size === 0) return { kind: "content", content: "", bytes: 0 };
+		const buffer = Buffer.alloc(size);
+		await handle.read(buffer, 0, size, 0);
+		return { kind: "content", content: buffer.toString("utf8"), bytes: size };
 	} catch {
 		return { kind: "omitted", reason: "unreadable" };
+	} finally {
+		await handle.close().catch(() => {});
 	}
 }
 
