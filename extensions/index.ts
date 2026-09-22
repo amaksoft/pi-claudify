@@ -271,13 +271,21 @@ function loadDiffRender(): Promise<DiffRenderModule> {
 		// (render/ boundary rule); the composition root wires its width
 		// dependency on first use instead of at module load.
 		module.configureDiffWidthOps({ visibleWidth, truncateToWidth });
-		return (diffRenderModule = module);
+		diffRenderModule = module;
+		// The render module statically imports ./diff-syntax.ts, so this
+		// resolves from the import cache with no extra load. Without it the
+		// module handle would stay undefined (loadDiffSyntax is never called
+		// directly) and clearHighlightCache() would no-op forever, leaving
+		// theme/palette/toggle/shutdown clears unable to reach the live hlCache.
+		void loadDiffSyntax();
+		return diffRenderModule;
 	}));
 }
 
 function loadDiffSyntax(): Promise<DiffSyntaxModule> {
 	return (diffSyntaxLoading ??= import("./render/diff-syntax.ts").then((syntax) => (diffSyntaxModule = syntax)));
 }
+
 
 function renderSplit(diff: ParsedDiff, language: BundledLanguage | undefined, max?: number, dc?: DiffColors, width?: number): Promise<string> {
 	return (diffRenderModule ? Promise.resolve(diffRenderModule) : loadDiffRender()).then((module) =>
