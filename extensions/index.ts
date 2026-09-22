@@ -76,6 +76,11 @@ function registerFullscreenTuiLazy(pi: ExtensionAPI): void {
 			on: (event: string, handler: (...args: any[]) => unknown) => (pi as any).on(event, handler),
 		} as unknown as ExtensionAPI);
 		return command;
+	}).catch(() => {
+		// A transient import failure must not poison the memoized loader and
+		// disable /tui until restart; the next invocation retries the load.
+		installed = undefined;
+		return undefined;
 	}));
 	pi.registerCommand("tui", {
 		description: "Toggle Claude Code-style fullscreen layout",
@@ -266,7 +271,7 @@ let diffSyntaxModule: DiffSyntaxModule | undefined;
 let diffSyntaxLoading: Promise<DiffSyntaxModule> | undefined;
 
 function loadDiffRender(): Promise<DiffRenderModule> {
-	return (diffRenderLoading ??= import("./render/diff-render.ts").then((module) => {
+	return (diffRenderLoading ??= import("./render/diff-render.ts").then(async (module) => {
 		// render/diff-render.ts must not import @earendil-works/pi-tui directly
 		// (render/ boundary rule); the composition root wires its width
 		// dependency on first use instead of at module load.
@@ -277,7 +282,15 @@ function loadDiffRender(): Promise<DiffRenderModule> {
 		// module handle would stay undefined (loadDiffSyntax is never called
 		// directly) and clearHighlightCache() would no-op forever, leaving
 		// theme/palette/toggle/shutdown clears unable to reach the live hlCache.
-		void loadDiffSyntax();
+		try {
+			await loadDiffSyntax();
+		} catch {
+			// A transient failure resets the memoized loader so the next
+			// render retries instead of no-op clears until restart. (In
+			// practice unreachable: the static import above already
+			// instantiated the module, so this resolves from cache.)
+			diffSyntaxLoading = undefined;
+		}
 		return diffRenderModule;
 	}));
 }

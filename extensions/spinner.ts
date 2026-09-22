@@ -424,6 +424,13 @@ function customStart(this: any): void {
 		const timer = setTimeout(() => {
 			this.intervalId = null;
 			if (this[LOADER_ACTIVE] !== true || this[LOADER_GENERATION] !== generation) return;
+			// Re-check ownership here, not just when arming: a reload/quit
+			// landing mid-interval must not buy one stray frame + repaint
+			// from the retired Loader before the next scheduleNext stops it.
+			if (testedPiPatchBroker.active<LoaderPatchHooks>(LOADER_PATCH_SURFACE) !== capturedHooks) {
+				customStop.call(this);
+				return;
+			}
 			this.currentFrame = (this.currentFrame + 1) % OB_FRAMES.length;
 			this.updateDisplay();
 			scheduleNext();
