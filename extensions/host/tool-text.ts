@@ -64,28 +64,33 @@ export function makeToolText(last: unknown, text: string, style: ToolTextStylePr
 }
 
 const TOOL_TEXT_CACHE_LIMIT = 32;
+// Skip caching very large outputs: the key duplicates the full text, so an
+// unbounded entry would pin ~2x its payload (key plus wrapped lines).
+const TOOL_TEXT_CACHE_TEXT_LIMIT = 256_000;
 // Width+text LRU so repeated renders of unchanged tool output (every frame
 // re-renders settled rows) reuse the wrapped lines instead of allocating a
 // throwaway ToolTextComponent per call. Keyed on the style strings too, so a
-// theme/palette change cannot serve stale-colored rows.
-const toolTextCache = new Map<string, string[]>();
+// theme/palette change cannot serve stale-colored rows. Hits are frozen, so a
+// caller can never mutate a shared entry and corrupt future renders.
+const toolTextCache = new Map<string, readonly string[]>();
 
 export function renderToolTextLines(text: string, width: number, style: ToolTextStyle): string[] {
+	if (text.length > TOOL_TEXT_CACHE_TEXT_LIMIT) return new ToolTextComponent(text, () => style).render(width);
 	const key = `${width}\n${style.rule}\n${style.reset}\n${text}`;
 	const cached = toolTextCache.get(key);
 	if (cached) {
 		toolTextCache.delete(key);
 		toolTextCache.set(key, cached);
-		return cached;
+		return [...cached];
 	}
-	const rendered = new ToolTextComponent(text, () => style).render(width);
+	const rendered = Object.freeze(new ToolTextComponent(text, () => style).render(width));
 	toolTextCache.set(key, rendered);
 	while (toolTextCache.size > TOOL_TEXT_CACHE_LIMIT) {
 		const oldest = toolTextCache.keys().next();
 		if (oldest.done) break;
 		toolTextCache.delete(oldest.value);
 	}
-	return rendered;
+	return [...rendered];
 }
 
 export function renderPrewrappedDiffLines(text: string, width: number): string[] {

@@ -12,6 +12,9 @@ interface PendingWrite {
 	absolutePath: string;
 	content: string;
 	snapshot: WriteSnapshot;
+	// False between synchronous slot reservation and the snapshot fill below.
+	// A result arriving in that window must fail native, never record the placeholder.
+	snapshotReady: boolean;
 	ambiguous: boolean;
 }
 
@@ -51,11 +54,6 @@ export class ToolProvenanceObserver {
 		const content = typeof input?.content === "string" ? input.content : "";
 		if (!filePath) return;
 		const absolutePath = resolve(cwd, filePath);
-		// Skip the preimage read when diff presentation is off: details are never
-		// rendered, so any fs access on dispatch is pure event-loop cost.
-		const snapshot: WriteSnapshot = this.dependencies.isDiffPresentationEnabled?.() === false
-			? { kind: "omitted", reason: "unreadable" }
-			: await captureWriteSnapshot(absolutePath);
 		for (const pending of this.pendingWrites.values()) {
 			if (pending.absolutePath === absolutePath) pending.ambiguous = true;
 		}
@@ -65,13 +63,27 @@ export class ToolProvenanceObserver {
 			this.unavailableWrites.add(evicted);
 		}
 		while (this.unavailableWrites.size > MAX_PENDING_WRITE_SNAPSHOTS) this.unavailableWrites.delete(this.unavailableWrites.values().next().value!);
+		// Reserve the slot synchronously: result-before-registration ordering
+		// must never depend on how the host awaits async tool_call handlers.
+		// The snapshot fills in after the await below.
 		this.pendingWrites.set(event.toolCallId, {
 			filePath,
 			absolutePath,
 			content,
-			snapshot,
+			snapshot: { kind: "new" },
+			snapshotReady: false,
 			ambiguous: [...this.pendingWrites.values()].some((pending) => pending.absolutePath === absolutePath),
 		});
+		// Skip the preimage read when diff presentation is off: details are never
+		// rendered, so any fs access on dispatch is pure event-loop cost.
+		const snapshot: WriteSnapshot = this.dependencies.isDiffPresentationEnabled?.() === false
+			? { kind: "omitted", reason: "unreadable" }
+			: await captureWriteSnapshot(absolutePath);
+		const target = this.pendingWrites.get(event.toolCallId);
+		if (target) {
+			target.snapshot = snapshot;
+			target.snapshotReady = true;
+		}
 	}
 
 	onToolResult(event: ToolResultObservation): { details: unknown } | undefined {
@@ -85,7 +97,7 @@ export class ToolProvenanceObserver {
 			const finalInput = event.input as Record<string, unknown> | undefined;
 			const finalPath = typeof finalInput?.path === "string" ? finalInput.path : typeof finalInput?.file_path === "string" ? finalInput.file_path : "";
 			const finalContent = typeof finalInput?.content === "string" ? finalInput.content : "";
-			if (!pending || pending.ambiguous || finalPath !== pending.filePath || finalContent !== pending.content) {
+			if (!pending || !pending.snapshotReady || pending.ambiguous || finalPath !== pending.filePath || finalContent !== pending.content) {
 				const existing = event.details && typeof event.details === "object" ? event.details as Record<string, unknown> : {};
 				return { details: { ...existing, _type: "diffOmitted", reason: "unavailable", filePath: finalPath || pending?.filePath || "", lines: finalContent ? finalContent.split("\n").length : 0 } };
 			}

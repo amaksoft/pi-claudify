@@ -24,8 +24,10 @@ export async function captureWriteSnapshot(fullPath: string): Promise<WriteSnaps
 		if (size > MAX_WRITE_SNAPSHOT_BYTES) return { kind: "omitted", reason: "oversized", bytes: size };
 		if (size === 0) return { kind: "content", content: "", bytes: 0 };
 		const buffer = Buffer.alloc(size);
-		await handle.read(buffer, 0, size, 0);
-		return { kind: "content", content: buffer.toString("utf8"), bytes: size };
+		// A concurrent truncation between stat and read short-reads; only the
+		// bytes actually read may be stringified, never the NUL-filled tail.
+		const { bytesRead } = await handle.read(buffer, 0, size, 0);
+		return { kind: "content", content: buffer.subarray(0, bytesRead).toString("utf8"), bytes: bytesRead };
 	} catch {
 		return { kind: "omitted", reason: "unreadable" };
 	} finally {

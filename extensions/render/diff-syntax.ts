@@ -158,7 +158,10 @@ export async function hlBlock(code: string, language: BundledLanguage | undefine
 	if (!language || code.length > MAX_HL_CHARS) return code.split("\n");
 	const lightMode = claudeDiffLightMode;
 	const themeName = DIFF_THEME;
-	const key = `${themeName}\0${lightMode ? "light" : "dark"}\0${language}\0${code}`;
+	// FG_SAFE_MUTED is baked into cached rows by normalizeShikiContrast and can
+	// change on same-polarity theme switches without changing themeName/lightMode,
+	// so it is part of the key; otherwise warm rows would keep a stale muted forever.
+	const key = `${themeName}\0${lightMode ? "light" : "dark"}\0${language}\0${FG_SAFE_MUTED}\0${code}`;
 	const hit = hlCache.get(key);
 	if (hit) return touchCache(key, hit);
 	try {

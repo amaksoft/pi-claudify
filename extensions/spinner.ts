@@ -213,12 +213,12 @@ const SHIMMER_CYCLE_MS = SHIMMER_SWEEP_MS + SHIMMER_BREATHE_MS;
 const SHIMMER_SWEEP_STEP_MS = 200; // ~5 char-steps/s
 const SHIMMER_BREATH_PERIOD_MS = 1_600;
 const SHIMMER_BREATHE_MIN = 0.55; // dimmest fraction of base brightness within a breath
-// Refresh cadence while the animation runs. Aligned to the 500 ms glyph timer:
-// every refresh forces a full-TUI repaint, so a faster shimmer tick stacks
-// redundant repaints on top of the glyph frames (~7/s combined). The sweep and
-// breathe phases are functions of wall-clock elapsed time, not tick count, so
-// sampling them at 2 Hz keeps the captured escalation correct with coarser
-// motion — roughly 4 repaints/s worst case instead of 7.
+// Refresh cadence while the animation runs. Same 500 ms cadence as the glyph
+// timer (not phase-locked to it): every refresh forces a full-TUI repaint, so
+// a faster shimmer tick stacks redundant repaints on top of the glyph frames
+// (~7/s combined). The sweep and breathe phases are functions of wall-clock
+// elapsed time, not tick count, so sampling them at 2 Hz keeps the captured
+// escalation correct with coarser motion — at most 4 repaints/s instead of 7.
 export const SHIMMER_REFRESH_MS = 500;
 
 function rgbAnsi({ r, g, b }: Rgb): string {

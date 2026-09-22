@@ -30,6 +30,15 @@ try {
 	assert.equal((writePatch?.details as any)?.diff?.added, 1);
 	assert.equal(observer.pendingCount(), 0);
 
+	const syncReservation = observer.onToolCall({ toolCallId: "sync-slot", toolName: "write", input: { path: "value.ts", content: "const value = 3;\n" } }, root);
+	assert.equal(observer.pendingCount(), 1, "provenance slot is reserved synchronously, before the snapshot await, so result ordering never depends on host await behavior");
+	await syncReservation;
+	const syncPatch = observer.onToolResult({
+		toolCallId: "sync-slot", toolName: "write", input: { path: "value.ts", content: "const value = 3;\n" },
+		content: [{ type: "text", text: "wrote" }], details: {}, isError: false,
+	});
+	assert.equal((syncPatch?.details as any)?._type, "diff", "a normally-settled call still records its filled snapshot");
+
 	writeFileSync(file, "A");
 	await observer.onToolCall({ toolCallId: "parallel-1", toolName: "write", input: { path: "value.ts", content: "B" } }, root);
 	await observer.onToolCall({ toolCallId: "parallel-2", toolName: "write", input: { path: "value.ts", content: "C" } }, root);

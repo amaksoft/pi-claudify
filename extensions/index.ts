@@ -295,11 +295,10 @@ export function renderUnified(diff: ParsedDiff, language: BundledLanguage | unde
 }
 
 function clearHighlightCache(): void {
-	if (diffSyntaxModule) { diffSyntaxModule.clearHighlightCache(); return; }
-	// Unloaded: the highlight cache starts empty, so there is nothing to
-	// clear yet. Prime the load so a pre-first-render clear still reaches the
-	// live cache; output is unaffected either way (the cache is perf-only).
-	void loadDiffSyntax().then((syntax) => syntax.clearHighlightCache());
+	// Unloaded: the highlight cache starts empty, so there is nothing to clear
+	// and no reason to import the Shiki graph for a perf-only no-op. Once
+	// loaded, clears go straight to the live cache.
+	if (diffSyntaxModule) diffSyntaxModule.clearHighlightCache();
 }
 import { configureMessageComponents, DottedParagraph, ThinkingParagraph } from "./render/message-components.ts";
 export { DottedParagraph, ThinkingParagraph } from "./render/message-components.ts";

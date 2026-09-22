@@ -65,10 +65,12 @@ export async function executeWriteWithSnapshot(
 	inFlightWrites.set(fullPath, concurrent);
 	// Skip the preimage read entirely when diff presentation is off: the
 	// enriched details are never rendered, so any fs access is pure dispatch cost.
-	const snapshot: WriteSnapshot = dependencies.isDiffPresentationEnabled?.() === false
-		? { kind: "omitted", reason: "unreadable" }
-		: await captureWriteSnapshot(fullPath);
+	// The snapshot await lives inside try so a rejection can never leak the
+	// inFlightWrites registration above (stale ambiguous forever).
 	try {
+		const snapshot: WriteSnapshot = dependencies.isDiffPresentationEnabled?.() === false
+			? { kind: "omitted", reason: "unreadable" }
+			: await captureWriteSnapshot(fullPath);
 		const result: any = await createWriteToolDefinition(cwd).execute(toolCallId, params, signal, onUpdate, ctx);
 		return enrichWriteResultWithSnapshot(operation.ambiguous ? { kind: "omitted", reason: "unreadable" } : snapshot, filePath, params.content ?? "", result, dependencies);
 	} finally {
