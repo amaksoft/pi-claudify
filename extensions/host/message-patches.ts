@@ -18,6 +18,18 @@ function runtime(owner: object): MessagePatchRuntime {
 }
 function activeRuntime(): MessagePatchRuntime | undefined { return testedPiPatchBroker.active<MessagePatchRuntime>(SURFACE); }
 
+function expandedSummaryComponent(root: any): any | undefined {
+	const candidates: any[] = [];
+	const visit = (value: any): void => {
+		if (!value || typeof value !== "object") return;
+		if (typeof value.setText === "function") candidates.push(value);
+		if (Array.isArray(value.children)) for (const child of value.children) visit(child);
+		if (value.child) visit(value.child); // Pi 0.86 wraps compaction content in MouseRegion.
+	};
+	visit(root);
+	return candidates.at(-1);
+}
+
 export function patchCustomMessageRenderer(ComponentClass: any, flag: symbol, owner: object, normalizeLine: (line: string) => string): void {
 	runtime(owner).normalizeLine = normalizeLine;
 	patchMethodOnce(ComponentClass?.prototype, flag, "render", (originalRender) =>
@@ -43,14 +55,24 @@ export function patchCompactionSummaryRenderer(
 			originalUpdateDisplay.call(this);
 			const active = activeRuntime();
 			if (!active || active.enabled?.() === false) return;
-			const summary = this.expanded && Array.isArray(this.children) ? this.children[this.children.length - 1] : undefined;
-			if (summary && typeof summary.setText === "function") summary.setText(this.message.summary);
+			const summary = this.expanded ? expandedSummaryComponent(this) : undefined;
+			if (summary) summary.setText(this.message.summary);
 			this.paddingX = 0;
 			this.paddingY = 0;
 			this.setBgFn?.(undefined);
-			this.clear();
-			this.addChild(new Text(active.headerText?.() ?? "Compacted", 0, 0));
-			if (summary) { this.addChild(new Spacer(1)); this.addChild(summary); }
+			const nativeMouseRegion = Array.isArray(this.children) && this.children.length === 1
+				&& this.children[0]?.child && typeof this.children[0].child.clear === "function"
+				&& typeof this.children[0].child.addChild === "function"
+				? this.children[0]
+				: undefined;
+			const target = nativeMouseRegion?.child ?? this;
+			target.clear();
+			target.addChild(new Text(active.headerText?.() ?? "Compacted", 0, 0));
+			if (summary) { target.addChild(new Spacer(1)); target.addChild(summary); }
+			if (nativeMouseRegion) {
+				this.clear();
+				this.addChild(nativeMouseRegion);
+			}
 		},
 	);
 }

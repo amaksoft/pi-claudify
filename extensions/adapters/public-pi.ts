@@ -24,5 +24,16 @@ export function activatePortablePi(
 		onDiagnostic,
 	});
 	registerPortableAdditiveLifecycle(pi, runtime, additive);
+	if (plan.host.selectionReason === "unrecognized-host") {
+		let warned = false;
+		pi.on("session_start", async (_event, ctx) => {
+			if (warned || !ctx?.hasUI || typeof ctx.ui?.notify !== "function") return;
+			warned = true;
+			ctx.ui.notify(
+				`Claudify visual mode is disabled for unrecognized Pi ${plan.host.piVersion ?? "version"}: required compatibility probes did not pass. Running the portable profile; update Claudify or use PI_CLAUDIFY_PROFILE=tested-pi only after validation.`,
+				"warning",
+			);
+		});
+	}
 	runtime.activate();
 }

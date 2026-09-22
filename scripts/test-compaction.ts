@@ -78,6 +78,10 @@ assert.doesNotMatch(settledRaw, /\x1b\[(?:4[0-9]|10[0-7]|48;)/, "settled head ha
 const settled = plainLines(component);
 assert.deepEqual(settled, ["  ⎿  Compacted (ctrl+o to see full summary)"]);
 assert.doesNotMatch(settled.join("\n"), /\[compaction\]|Compacted from|85,175 tokens|to expand/);
+const mouseResult = component.handleMouse({ type: "click", button: "left", x: 2, y: 0, width: 100, height: settled.length } as any);
+assert.equal(mouseResult?.handled, true, "Pi 0.86's native compaction MouseRegion remains attached");
+assert.equal((component as any).expanded, true, "clicking the compacted row expands it");
+component.setExpanded(false);
 
 component.setExpanded(true);
 const expanded = plainLines(component);

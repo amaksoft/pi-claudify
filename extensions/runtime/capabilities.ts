@@ -1,6 +1,6 @@
 import type { CapabilityId, ClaudifyProfile, ClaudifyProfilePreference, HostDescriptor } from "./contracts.ts";
 
-export const TESTED_PI_VERSIONS = ["0.74.0", "0.80.6", "0.85.1"] as const;
+export const TESTED_PI_VERSIONS = ["0.74.0", "0.80.6", "0.85.1", "0.86.1"] as const;
 
 const PUBLIC_CAPABILITIES: readonly CapabilityId[] = [
 	"public:commands",
@@ -8,6 +8,17 @@ const PUBLIC_CAPABILITIES: readonly CapabilityId[] = [
 	"public:tools",
 	"public:send-user-message",
 	"public:tui",
+];
+
+const PROBE_COMPATIBILITY_CAPABILITIES: readonly CapabilityId[] = [
+	"public:commands",
+	"public:events",
+	"public:tools",
+	"public:tui",
+	"tested:component-renderers",
+	"tested:container-composition",
+	"tested:message-renderers",
+	"tested:spinner-loader",
 ];
 
 const TESTED_CAPABILITIES: readonly CapabilityId[] = [
@@ -39,6 +50,8 @@ export function detectHostDescriptor(input: HostDetectionInput = {}): HostDescri
 	const preference = input.profilePreference ?? "auto";
 	const environment = input.environment ?? "npm";
 	const exactTested = !!input.piVersion && (TESTED_PI_VERSIONS as readonly string[]).includes(input.piVersion);
+	const probeCompatible = !!input.observedCapabilities
+		&& PROBE_COMPATIBILITY_CAPABILITIES.every((capability) => input.observedCapabilities!.has(capability));
 	let profile: ClaudifyProfile;
 	let selectionReason: string;
 
@@ -56,6 +69,15 @@ export function detectHostDescriptor(input: HostDetectionInput = {}): HostDescri
 	} else if (exactTested) {
 		profile = "tested-pi";
 		selectionReason = "exact-tested-version";
+	} else if (probeCompatible) {
+		// Compatible Pi releases should not lose the entire visual layer merely
+		// because their version is newer than the explicit validation matrix.
+		// Core private contracts still have to prove their runtime shape, and the
+		// activation plan independently disables every feature whose own probe is
+		// absent. Semantic regressions remain recoverable through the existing
+		// feature/tool kill switches or PI_CLAUDIFY_PROFILE=portable.
+		profile = "tested-pi";
+		selectionReason = "capability-probed-host";
 	} else if (input.preserveCurrentBehavior !== false) {
 		// Transitional behavior: until the portable adapter exposes all safe
 		// public surfaces, auto keeps the already-supported path. Structural
