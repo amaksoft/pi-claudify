@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { Loader } from "@earendil-works/pi-tui";
 
+import { activatePortablePi } from "../extensions/adapters/public-pi.ts";
 import { activateTestedPiRuntime } from "../extensions/adapters/tested-pi/adapter.ts";
 import { testedPiPatchBroker } from "../extensions/adapters/tested-pi/patch-broker.ts";
 import { probeTestedPiCapabilities } from "../extensions/adapters/tested-pi/probes.ts";
@@ -13,7 +14,7 @@ import { RuntimeHandle } from "../extensions/runtime/runtime-handle.ts";
 assert.equal(parseProfilePreference(undefined), "auto");
 assert.equal(parseProfilePreference(" PORTABLE "), "portable");
 assert.equal(parseProfilePreference("future-value"), "auto");
-assert.deepEqual(TESTED_PI_VERSIONS, ["0.74.0", "0.80.6", "0.85.1"]);
+assert.deepEqual(TESTED_PI_VERSIONS, ["0.74.0", "0.80.6", "0.85.1", "0.86.1"]);
 
 const testedHost = detectHostDescriptor({ piVersion: "0.85.1", preserveCurrentBehavior: false });
 assert.equal(testedHost.profile, "tested-pi");
@@ -45,6 +46,34 @@ const completeProbe = probeTestedPiCapabilities({
 assert.equal(completeProbe.failures.length, 0);
 assert.equal(completeProbe.capabilities.has("tested:spinner-loader"), true);
 assert.equal(completeProbe.capabilities.has("public:send-user-message"), true);
+const futureCompatibleHost = detectHostDescriptor({
+	piVersion: "0.87.0",
+	preserveCurrentBehavior: false,
+	observedCapabilities: completeProbe.capabilities,
+});
+assert.equal(futureCompatibleHost.profile, "tested-pi", "unknown compatible releases keep the visual adapter after proving core contracts");
+assert.equal(futureCompatibleHost.selectionReason, "capability-probed-host");
+const futureIncompatibleHost = detectHostDescriptor({
+	piVersion: "0.87.0",
+	preserveCurrentBehavior: false,
+	observedCapabilities: new Set([...completeProbe.capabilities].filter((capability) => capability.startsWith("public:"))),
+});
+assert.equal(futureIncompatibleHost.profile, "portable", "unknown releases still fail closed when private contracts do not probe successfully");
+assert.equal(futureIncompatibleHost.selectionReason, "unrecognized-host");
+const warningEvents = new Map<string, Function[]>();
+const warningMessages: string[] = [];
+const warningTools = new Map<string, any>();
+const warningPi = {
+	on(name: string, handler: Function) { warningEvents.set(name, [...(warningEvents.get(name) ?? []), handler]); },
+	registerTool(definition: any) { warningTools.set(definition.name, definition); },
+	getAllTools() { return [...warningTools.values()]; },
+};
+const warningRuntime = new RuntimeHandle("portable-warning");
+activatePortablePi(warningPi as any, warningRuntime, buildActivationPlan(futureIncompatibleHost, undefined), undefined);
+for (const handler of warningEvents.get("session_start") ?? []) await handler({}, { mode: "tui", hasUI: true, ui: { notify(message: string) { warningMessages.push(message); }, custom() {}, input() {} }, isProjectTrusted: () => false });
+for (const handler of warningEvents.get("session_start") ?? []) await handler({}, { mode: "tui", hasUI: true, ui: { notify(message: string) { warningMessages.push(message); }, custom() {}, input() {} }, isProjectTrusted: () => false });
+assert.equal(warningMessages.length, 1, "an unrecognized host warns once instead of silently looking stock");
+assert.match(warningMessages[0], /visual mode is disabled.*0\.87\.0.*portable profile/i);
 const noSendProbe = probeTestedPiCapabilities({ extensionApi: { registerCommand() {}, on() {}, registerTool() {}, getAllTools() {} } });
 const noSendHost = detectHostDescriptor({ piVersion: "0.85.1", observedCapabilities: noSendProbe.capabilities });
 assert.equal(buildActivationPlan(noSendHost, undefined).featureEnabled("scheduledTasks"), false, "Cron fails closed without sendUserMessage");

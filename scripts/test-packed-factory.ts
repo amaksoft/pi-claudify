@@ -20,7 +20,7 @@ try {
 	const tarball = readdirSync(sandbox).find((name) => name.endsWith(".tgz"));
 	assert.ok(tarball, "npm pack produced a tarball");
 	writeFileSync(join(consumer, "package.json"), JSON.stringify({ name: "claudify-packed-consumer", private: true }));
-	run("npm", ["install", "--ignore-scripts", join(sandbox, tarball!), "@earendil-works/pi-coding-agent@0.85.1", "@earendil-works/pi-tui@0.85.1", "@sinclair/typebox"], consumer);
+	run("npm", ["install", "--ignore-scripts", join(sandbox, tarball!), "@earendil-works/pi-coding-agent@0.86.1", "@earendil-works/pi-tui@0.86.1", "@sinclair/typebox"], consumer);
 	const packagePath = join(consumer, "node_modules", "@owlburtoe", "pi-claudify");
 	const manifest = JSON.parse(readFileSync(join(packagePath, "package.json"), "utf8"));
 	assert.deepEqual(manifest.pi.extensions, ["./extensions/index.ts"]);
