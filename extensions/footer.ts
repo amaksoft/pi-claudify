@@ -234,6 +234,34 @@ export interface ProviderUsageSourceOptions {
 	readonly now?: () => number;
 }
 
+/** Pi's virtual-model API marker. Compared by literal so older hosts without
+ * virtual models simply never match; no version import needed. */
+const VIRTUAL_MODEL_API = "pi-virtual";
+
+/** Physical model behind a virtual selection, for quota attribution.
+ * Display keeps the virtual selection name; spend is metered against the
+ * provider that actually served the latest successful response. Anything
+ * unreadable falls back to the selection model (today's behavior). */
+export function physicalQuotaModel(ctx: any): any | undefined {
+	try {
+		const selection = ctx?.model;
+		if (!selection || (selection as any)?.api !== VIRTUAL_MODEL_API) return undefined;
+		const branch = ctx?.sessionManager?.getBranch?.() ?? ctx?.sessionManager?.getEntries?.() ?? [];
+		if (!Array.isArray(branch)) return undefined;
+		for (let index = branch.length - 1; index >= 0; index--) {
+			const message = (branch[index] as any)?.message;
+			if (message?.role === "assistant"
+				&& typeof message?.provider === "string"
+				&& (message as any)?.api !== VIRTUAL_MODEL_API) {
+				return { ...selection, provider: message.provider, id: message.model ?? selection.id, api: message.api ?? selection.api };
+			}
+		}
+	} catch {
+		// Unreadable history keeps today's selection-model attribution.
+	}
+	return undefined;
+}
+
 function usageTarget(provider: string): UsageTarget | null {
 	if (provider === "anthropic") {
 		return {
@@ -783,7 +811,7 @@ export function installClaudeFooter(ctx: any, pi?: any, metricsOwner?: object): 
 			&& typeof registry.getApiKeyForProvider === "function"
 			&& typeof globalThis.fetch === "function"
 			? new ProviderUsageSource({
-				getModel: () => ctx.model,
+				getModel: () => physicalQuotaModel(ctx) ?? ctx.model,
 				modelRegistry: registry,
 				fetcher: globalThis.fetch.bind(globalThis),
 				onUpdate: () => {

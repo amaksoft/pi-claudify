@@ -14,7 +14,7 @@ import { RuntimeHandle } from "../extensions/runtime/runtime-handle.ts";
 assert.equal(parseProfilePreference(undefined), "auto");
 assert.equal(parseProfilePreference(" PORTABLE "), "portable");
 assert.equal(parseProfilePreference("future-value"), "auto");
-assert.deepEqual(TESTED_PI_VERSIONS, ["0.74.0", "0.80.6", "0.85.1", "0.86.1"]);
+assert.deepEqual(TESTED_PI_VERSIONS, ["0.74.0", "0.80.6", "0.85.1", "0.86.1", "1.0.1"]);
 
 const testedHost = detectHostDescriptor({ piVersion: "0.85.1", preserveCurrentBehavior: false });
 assert.equal(testedHost.profile, "tested-pi");

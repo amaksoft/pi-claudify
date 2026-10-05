@@ -89,5 +89,6 @@
   "promptPointer": true,
   "footerCost": true,
   "footerSessionStats": true,
-  "footerTimeMode": "active"
+  "footerTimeMode": "active",
+  "fullscreenWheelRows": 1
 }

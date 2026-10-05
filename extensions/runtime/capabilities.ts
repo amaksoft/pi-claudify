@@ -1,6 +1,6 @@
 import type { CapabilityId, ClaudifyProfile, ClaudifyProfilePreference, HostDescriptor } from "./contracts.ts";
 
-export const TESTED_PI_VERSIONS = ["0.74.0", "0.80.6", "0.85.1", "0.86.1"] as const;
+export const TESTED_PI_VERSIONS = ["0.74.0", "0.80.6", "0.85.1", "0.86.1", "1.0.1"] as const;
 
 const PUBLIC_CAPABILITIES: readonly CapabilityId[] = [
 	"public:commands",

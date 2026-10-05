@@ -27,6 +27,7 @@ const {
 	patchEditorBorderColor,
 	projectNameFrom,
 	ProviderUsageSource,
+	physicalQuotaModel,
 	resolveFooterSettings,
 } = await import("../extensions/footer.ts");
 const { clearSettingsCache } = await import("../extensions/settings.ts");
@@ -156,6 +157,34 @@ const withSessionMetrics = buildFooterLine(
 	{ ...colored, cost: true, sessionStats: true },
 );
 assert.match(withSessionMetrics, /\$1\.25/, "session cost is additive and opt-in");
+
+const virtualCtx = {
+	model: { name: "Router", id: "router", provider: "virtual-team", api: "pi-virtual" },
+	sessionManager: {
+		getBranch: () => [
+			{ type: "message", message: { role: "user", content: [] } },
+			{ type: "message", message: { role: "assistant", provider: "anthropic", model: "claude-fable-5", api: "anthropic-messages", content: [] } },
+		],
+	},
+};
+const physical = physicalQuotaModel(virtualCtx);
+assert.equal(physical?.provider, "anthropic", "quota follows the physical provider behind a virtual selection");
+assert.equal(physical?.id, "claude-fable-5");
+assert.equal(
+	physicalQuotaModel({ model: { name: "Fable 5", id: "fable", provider: "anthropic", api: "anthropic-messages" }, sessionManager: { getBranch: () => [] } }),
+	undefined,
+	"non-virtual selections keep today's attribution untouched",
+);
+assert.equal(physicalQuotaModel({}), undefined, "unreadable context falls back to the selection model");
+const failedRoutingCtx = {
+	model: { name: "Router", id: "router", provider: "virtual-team", api: "pi-virtual" },
+	sessionManager: {
+		getBranch: () => [
+			{ type: "message", message: { role: "assistant", provider: "virtual-team", model: "router", api: "pi-virtual", content: [] } },
+		],
+	},
+};
+assert.equal(physicalQuotaModel(failedRoutingCtx), undefined, "failed routing leaves no physical model to attribute");
 assert.match(withSessionMetrics, /1m 5s · 2 prompts/, "elapsed time and prompt count share one segment");
 assert.match(
 	buildFooterLine({ ...fullData, sessionCost: 0, sessionCostAvailable: true }, { ...colored, cost: true }),
@@ -426,6 +455,7 @@ const rendered = component.render(200);
 assert.equal(rendered[0], "  project │ ⎇ main │ Fable 5 │ Ctx: 25% │ Week: 50% ▓▓▓▓▓░░░░░ → Reset: 08:00 PM");
 assert.deepEqual(rendered.slice(1), ["  a status line", "  MCP: 0/8 servers", "  z status"], "extension statuses render sorted, sanitized, and stripped of baked colors");
 assert.ok(component.render(20)[0].replace(/\x1b\[[0-9;]*m/g, "").length <= 20, "lines truncate to the viewport");
+
 let timedRepaints = 0;
 const timedComponent = new ClaudeFooterComponent(fakeFooterData, {
 	getDirectory: () => "project",

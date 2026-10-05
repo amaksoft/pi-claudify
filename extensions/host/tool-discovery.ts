@@ -49,16 +49,24 @@ export function isMcpToolCandidate(tool: unknown): boolean {
 	return name === "mcp" || /^mcp__/.test(name) || /^mcp\b/i.test(label);
 }
 
-export function noteMcpTool(tool: unknown, owner?: object): void {
+export function noteMcpTool(tool: unknown, owner?: object, namespace?: unknown): void {
 	const record = tool as Record<string, unknown> | undefined;
 	const name = typeof record?.name === "string" ? record.name : "";
 	if (!name) return;
 	const current = state(owner);
 	current.mcpNames.add(name);
+	// Authoritative host grouping (Pi >= 1.0.1 getNamespace) wins over label
+	// parsing when present; older hosts keep the label-derived mapping below.
+	if (typeof namespace === "string") {
+		const server = /^mcp__([^_]+)/.exec(namespace)?.[1];
+		if (server) current.mcpServers.set(name, server);
+	}
 	const label = typeof record?.label === "string" ? record.label : "";
 	const original = /^mcp:\s*(.+)$/i.exec(label)?.[1]?.trim();
 	if (!original) return;
 	current.mcpOriginals.set(name, original);
+	// Never let label parsing clobber an authoritative host namespace mapping.
+	if (typeof namespace === "string" && /^mcp__([^_]+)/.test(namespace)) return;
 	const suffix = `_${original}`;
 	if (name.endsWith(suffix) && name.length > suffix.length) current.mcpServers.set(name, name.slice(0, -suffix.length));
 }

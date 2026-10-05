@@ -140,6 +140,7 @@ import {
 	releaseToolRowLayout,
 } from "./host/tool-component-patches.ts";
 import { installToolPresentations, installToolRendererPatch, markToolRendererPatchRetiring, releaseToolRendererPatch } from "./host/tool-renderer-patch.ts";
+import { createToolRendererResolver, supportsToolRendererResolver } from "./host/tool-renderer-resolver.ts";
 import { applyAccentOverride as applyAccentOverrideHost } from "./host/theme-accent.ts";
 import { createThemeOrchestrator } from "./host/theme-orchestrator.ts";
 import {
@@ -1231,15 +1232,57 @@ function activateCurrentTestedPi(
 		workedDurationText,
 		enabled: () => true,
 	});
+	// Pi >= 1.0.1 path: presentation-only decoration through the host's
+	// resolver chain. No prototype patch, no execution re-registration, and
+	// disposal is scoped to this extension record by the host. The legacy
+	// ToolExecutionComponent patch (patchToolExecutionRenderers below) stays
+	// intact for older hosts; retiring it later means switching this flag off
+	// and deleting host/tool-renderer-patch.ts, while this block stands alone.
+	// installCompatibleToolPresentations / mark / release calls elsewhere are
+	// safe no-ops on this path: without installToolRendererPatch there is no
+	// broker owner state, so they install and release nothing.
+	const useToolRendererResolver = supportsToolRendererResolver(pi);
+	// Shared with the catch-fallback below; the legacy installer keeps its own
+	// identical inline closure so that file stays untouched.
+	const resolverCanOverrideSelfShell = (name: string, definition: unknown): boolean => {
+		const directOwner = classifyToolOwner(definition);
+		return directOwner !== "external" && (directOwner === "builtin" || executionOwners.get(name.toLowerCase()) === "builtin");
+	};
+	const registerResolverToolPresentations = (): void => {
+		try {
+			(pi as any).registerToolRenderer(createToolRendererResolver({
+				isCurrent: () => runtime.isCurrent(),
+				presentationSkipped: toolPresentationSkipped,
+				shouldUseGeneric: (name) => isTaskToolName(name)
+					? taskPresentation?.supports(name) === true
+					: shouldUseGenericToolRenderer(name),
+				shouldUseNativeCall: (_name, row) => taskPresentation?.shouldUseNativeResult(row) === true,
+				shouldUseNativeResult: (_name, row) => taskPresentation?.shouldUseNativeResult(row) === true,
+				renderApplyCall: (args, theme, ctx) => renderApplyPatchCall(args, theme, ctx, (path) => shortPath(ctx.cwd ?? process.cwd(), path)),
+				renderApplyResult: (result, options, theme, ctx) => renderApplyPatchResult(result, !!options?.isPartial, theme, ctx),
+				renderGenericCall: (name, args, theme, ctx) => taskPresentation?.renderCall(name) ?? renderGenericToolCall(name, args, theme, ctx),
+				renderGenericResult: (name, result, options, theme, ctx) => taskPresentation?.renderResult(name, !!ctx?.isError) ?? renderGenericToolResult(name, result, options, theme, ctx),
+				canOverrideSelfShell: resolverCanOverrideSelfShell,
+				diagnostic: (key, error) => debugDiagnostic(key, error),
+				presentations: () => presentationAdapters(),
+			}));
+		} catch (error) {
+			debugDiagnostic("tool-renderer-resolver", error);
+			patchToolExecutionRenderers(toolRendererOwner, resolverCanOverrideSelfShell, taskPresentation);
+		}
+	};
 	if (featureEnabled("toolBackground")) patchToolRowIndent(fallbackSanitizerOwner);
-	if (featureEnabled("toolPresentation")) patchToolExecutionRenderers(
-		toolRendererOwner,
-		(name, definition) => {
-			const directOwner = classifyToolOwner(definition);
-			return directOwner !== "external" && (directOwner === "builtin" || executionOwners.get(name.toLowerCase()) === "builtin");
-		},
-		taskPresentation,
-	);
+	if (featureEnabled("toolPresentation")) {
+		if (useToolRendererResolver) registerResolverToolPresentations();
+		else patchToolExecutionRenderers(
+			toolRendererOwner,
+			(name, definition) => {
+				const directOwner = classifyToolOwner(definition);
+				return directOwner !== "external" && (directOwner === "builtin" || executionOwners.get(name.toLowerCase()) === "builtin");
+			},
+			taskPresentation,
+		);
+	}
 	if (featureEnabled("footer")) patchEditorBorderColor(runtime.owner);
 	if (featureEnabled("diffPresentation")) applyDiffPalette();
 	if (featureEnabled("assistantMessages")) messageLifecycle.register(pi, {

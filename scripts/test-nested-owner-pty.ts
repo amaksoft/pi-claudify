@@ -33,11 +33,17 @@ try {
 	run(tmux, ["send-keys", "-t", session, "/repro-nested-owner", "Enter"]);
 	await waitFor("nested owner result", () => existsSync(statePath));
 	const result = JSON.parse(readFileSync(statePath, "utf8"));
+	const expectedNative = result.useResolverPath
+		? { beforeNative: true, duringNative: false, afterNative: true }
+		: { beforeNative: false, duringNative: false, afterNative: false };
 	assert.deepEqual(
 		{ beforeNative: result.beforeNative, duringNative: result.duringNative, afterNative: result.afterNative },
-		{ beforeNative: false, duringNative: false, afterNative: false },
-		"child extension teardown restores the still-running parent renderer",
+		expectedNative,
+		result.useResolverPath
+			? "resolver chain is consulted at row creation, so direct construction reads native except while the nested legacy child owns the global patch"
+			: "child extension teardown restores the still-running parent renderer",
 	);
+	if (result.useResolverPath) assert.equal(result.prototypeUnpatchedBefore, true, "resolver path installs no legacy prototype patch");
 	assert.equal(result.ownersBefore, 1, "the package creates one broker owner for its generation");
 	assert.equal(result.ownersDuring, 2, "the nested generation has an independent broker owner");
 	assert.equal(result.ownersAfter, 1, "nested teardown releases its broker owner without leaking it");
