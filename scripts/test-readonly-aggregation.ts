@@ -104,7 +104,7 @@ assert.doesNotMatch(oneRead, /⏺ Read\(/);
 assert.doesNotMatch(oneRead, /lines loaded/);
 
 const oneBash = render([tool(pi, "bash", "b1", { command: "echo hello" }, "hello")]);
-assert.match(oneBash, /^ {2}Ran 1 shell command$/m);
+assert.match(oneBash, /^ {2}Ran echo hello$/m);
 assert.doesNotMatch(oneBash, /⏺ Bash\(/);
 
 const oneGrep = render([tool(pi, "grep", "g1", { pattern: "needle", path: "src" }, "src/alpha.ts:1: needle")]);
@@ -134,7 +134,7 @@ const inFlight = render([
 	tool(pi, "grep", "g2", { pattern: "needle", path: "src" }, "", { settled: false }),
 	tool(pi, "bash", "b2", { command: "echo hi" }, "", { settled: false }),
 ]);
-assert.match(inFlight, /^⏺ Searching for 1 pattern, reading 1 file, running 1 shell command…$/m);
+assert.match(inFlight, /^⏺ Searching for 1 pattern, reading 1 file, running echo hi…$/m);
 assert.match(inFlight, /^ {2}⎿ {2}src\/alpha\.ts$/m);
 // Claude Code shows the bare quoted pattern — never the search path.
 assert.match(inFlight, /^ {2}⎿ {2}"needle"$/m);

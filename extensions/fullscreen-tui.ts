@@ -1,6 +1,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { matchesKey, truncateToWidth, visibleWidth, type Component, type TUI } from "@earendil-works/pi-tui";
 
+import { readSettings } from "./settings.ts";
+
 export const FULLSCREEN_WIDGET_KEY = "claudify-fullscreen-tui";
 export const ALT_SCREEN_ENTER = "\x1b[?1049h\x1b[2J\x1b[H";
 export const ALT_SCREEN_LEAVE = "\x1b[?1049l";
@@ -148,7 +150,38 @@ function hasFullscreenCapabilities(tui: TUI): tui is FullscreenTui {
 		&& typeof tui.terminal?.rows === "number";
 }
 
-export function createFullscreenController(tui: TUI, marker: string): FullscreenController | undefined {
+/** Rows moved per mouse-wheel tick. Explicit `fullscreenWheelRows` wins; else Pi's
+ * `fullscreenWheelScrollLines` (Pi >= 1.0.1 via `getSettings`) when numeric;
+ * Pi's `"auto"` accelerates natively but our viewport moves a fixed step, so it
+ * falls through to the default. Anything unreadable or out of range → 1. */
+export const DEFAULT_FULLSCREEN_WHEEL_ROWS = 1;
+export const MAX_FULLSCREEN_WHEEL_ROWS = 10;
+
+export function resolveFullscreenWheelRows(piSettings?: () => unknown): number {
+	const normalize = (value: unknown): number | undefined =>
+		typeof value === "number" && Number.isFinite(value)
+			? Math.min(MAX_FULLSCREEN_WHEEL_ROWS, Math.max(1, Math.floor(value)))
+			: undefined;
+	try {
+		const own = normalize(readSettings().values.fullscreenWheelRows);
+		if (own !== undefined) return own;
+	} catch {
+		// Unreadable settings never break scrolling; fall through below.
+	}
+	try {
+		const piValue = normalize((piSettings?.() as any)?.fullscreenWheelScrollLines);
+		if (piValue !== undefined) return piValue;
+	} catch {
+		// Host settings access is best effort for the same reason.
+	}
+	return DEFAULT_FULLSCREEN_WHEEL_ROWS;
+}
+
+export interface FullscreenControllerOptions {
+	wheelRows?: () => number;
+}
+
+export function createFullscreenController(tui: TUI, marker: string, options: FullscreenControllerOptions = {}): FullscreenController | undefined {
 	if (!hasFullscreenCapabilities(tui)) return undefined;
 
 	const originalRender = tui.render;
@@ -267,9 +300,17 @@ export function createFullscreenController(tui: TUI, marker: string): Fullscreen
 		},
 		scrollWheel(direction) {
 			if (!enabled || maxScrollOffset === 0) return;
+			let step = DEFAULT_FULLSCREEN_WHEEL_ROWS;
+			try {
+				step = options.wheelRows?.() ?? resolveFullscreenWheelRows();
+			if (!Number.isFinite(step)) step = DEFAULT_FULLSCREEN_WHEEL_ROWS;
+			step = Math.min(MAX_FULLSCREEN_WHEEL_ROWS, Math.max(1, Math.floor(step)));
+		} catch {
+			step = DEFAULT_FULLSCREEN_WHEEL_ROWS;
+		}
 			const nextOffset = direction === "up"
-				? Math.min(maxScrollOffset, scrollOffset + 1)
-				: Math.max(0, scrollOffset - 1);
+				? Math.min(maxScrollOffset, scrollOffset + step)
+				: Math.max(0, scrollOffset - step);
 			if (nextOffset !== scrollOffset) {
 				scrollOffset = nextOffset;
 				tui.requestRender();
@@ -393,7 +434,17 @@ export function registerFullscreenTui(pi: ExtensionAPI): void {
 					tui = capturedTui;
 					return createFullscreenMarker(marker);
 				});
-				controller = tui ? createFullscreenController(tui, marker) : undefined;
+				controller = tui
+					? createFullscreenController(tui, marker, {
+						wheelRows: () => resolveFullscreenWheelRows(() => {
+							try {
+								return (pi as any)?.getSettings?.();
+							} catch {
+								return undefined;
+							}
+						}),
+					})
+					: undefined;
 				if (!controller || !tui || typeof ctx.ui.onTerminalInput !== "function") {
 					clearWidget();
 					ctx.ui.notify("Fullscreen TUI is unavailable in this Pi version", "warning");

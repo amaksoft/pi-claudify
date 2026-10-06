@@ -46,10 +46,14 @@ const EXPECTED_FEATURE_IDS = [
 	"scheduledTasks",
 	"askUserQuestion",
 	"taskPresentation",
+	"detachedPresentation",
+	// Deprecated alias for detachedPresentation (one release).
+	"bgPresentation",
 ];
+
 assert.deepEqual([...COMPATIBILITY_FEATURE_IDS], EXPECTED_FEATURE_IDS, "the feature ids are fixed and ordered");
-assert.equal(COMPATIBILITY_FEATURE_IDS.length, 20, "exactly 20 feature ids");
-assert.equal(new Set(COMPATIBILITY_FEATURE_IDS).size, 20, "feature ids are unique");
+assert.equal(COMPATIBILITY_FEATURE_IDS.length, 22, "exactly 22 feature ids");
+assert.equal(new Set(COMPATIBILITY_FEATURE_IDS).size, 22, "feature ids are unique");
 for (const id of EXPECTED_FEATURE_IDS) assert.ok(isCompatibilityFeatureId(id), `${id} is a recognized feature id`);
 assert.equal(isCompatibilityFeatureId("notAFeature"), false);
 assert.equal(isCompatibilityFeatureId(42), false);
@@ -119,8 +123,11 @@ for (const id of COMPATIBILITY_FEATURE_IDS) {
 		`${id}: global false wins even over an explicit feature true`,
 	);
 	// Every OTHER feature id must stay enabled when only this one is disabled.
+	// Exception: detachedPresentation/bgPresentation are one aliased feature.
+	const ALIAS_PAIR = new Set(["detachedPresentation", "bgPresentation"]);
 	for (const other of COMPATIBILITY_FEATURE_IDS) {
 		if (other === id) continue;
+		if (ALIAS_PAIR.has(id) && ALIAS_PAIR.has(other)) continue;
 		assert.equal(
 			resolveCompatibilityFeatureEnabled({ features: { [id]: false } }, other),
 			true,
@@ -128,6 +135,26 @@ for (const id of COMPATIBILITY_FEATURE_IDS) {
 		);
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Deprecated alias: bgPresentation governs detachedPresentation either way.
+// ---------------------------------------------------------------------------
+
+assert.equal(
+	resolveCompatibilityFeatureEnabled({ features: { bgPresentation: false } }, "detachedPresentation"),
+	false,
+	"legacy bgPresentation:false disables detachedPresentation",
+);
+assert.equal(
+	resolveCompatibilityFeatureEnabled({ features: { detachedPresentation: false } }, "bgPresentation"),
+	false,
+	"detachedPresentation:false disables legacy bgPresentation",
+);
+assert.equal(
+	resolveCompatibilityFeatureEnabled({ features: { detachedPresentation: true } }, "bgPresentation"),
+	true,
+	"alias reads through when enabled",
+);
 
 // ---------------------------------------------------------------------------
 // resolveCompatibilityToolEnabled: precedence — global, exact name, legacy

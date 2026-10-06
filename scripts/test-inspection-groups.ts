@@ -305,7 +305,7 @@ const shellDefault = render([
 	tool(pi, "read", "g1", { path: "src/alpha.ts" }, "a", "settled"),
 	tool(pi, "bash", "g2", { command: "echo hi && ls -1" }, "hi", "settled"),
 ]);
-assert.match(shellDefault, /^ {2}Read 1 file, ran 1 shell command$/m);
+assert.match(shellDefault, /^ {2}Read 1 file, ran echo hi && ls -1$/m);
 
 // Three-or-more shell groups must survive repeated global and pointer cycles.
 // A local click does not update Pi's global expansion boolean; the coordinator
@@ -320,14 +320,14 @@ for (const count of [3, 4, 5]) {
 	const members = Array.from({ length: count }, (_, index) => settledShell(`cycle-${count}-${index}`, index + 1));
 	for (const member of members) shellBox.addChild(member);
 	const collapsed = plainRows(shellBox).join("\n");
-	assert.match(collapsed, new RegExp(`^ {2}Ran ${count} shell commands$`, "m"), `${count} commands collapse to one summary`);
+	assert.match(collapsed, new RegExp(`^ {2}Ran ${count} shell commands: printf shell-1, printf shell-2, …$`, "m"), `${count} commands collapse to one summary`);
 	const group = (shellBox as any).children[0] as InspectionGroupComponent;
 	const summaryY = plainRows(shellBox).findIndex((line) => line.includes(`Ran ${count} shell commands`));
 	group.handleMouse({ type: "click", button: "left", y: summaryY, width: 120 });
 	assert.ok(members.every((member) => (member as any).expanded), `click expands all ${count} member rows`);
 	assert.deepEqual(handlePointerExpansionInput("\x0f"), { consume: true }, "first Ctrl+O after a local click is consumed as collapse");
 	assert.ok(members.every((member) => !(member as any).expanded), `one Ctrl+O collapses all ${count} pointer-opened rows`);
-	assert.match(plainRows(shellBox).join("\n"), new RegExp(`^ {2}Ran ${count} shell commands$`, "m"));
+	assert.match(plainRows(shellBox).join("\n"), new RegExp(`^ {2}Ran ${count} shell commands: printf shell-1, printf shell-2, …$`, "m"));
 	assert.equal(handlePointerExpansionInput("\x0f"), undefined, "next Ctrl+O falls through to Pi's normal global toggle");
 
 	// Exercise two more cycles to catch stale wrapper/member ownership.
@@ -336,7 +336,7 @@ for (const count of [3, 4, 5]) {
 		const nextY = plainRows(shellBox).findIndex((line) => line.includes(`Ran ${count} shell commands`));
 		nextGroup.handleMouse({ type: "click", button: "left", y: nextY, width: 120 });
 		assert.deepEqual(handlePointerExpansionInput("\x0f"), { consume: true });
-		assert.match(plainRows(shellBox).join("\n"), new RegExp(`^ {2}Ran ${count} shell commands$`, "m"));
+		assert.match(plainRows(shellBox).join("\n"), new RegExp(`^ {2}Ran ${count} shell commands: printf shell-1, printf shell-2, …$`, "m"));
 	}
 }
 
@@ -345,7 +345,7 @@ const zeroHeightSeparatedShellBox = new Container();
 zeroHeightSeparatedShellBox.addChild(settledShell("zero-gap-1", 1));
 zeroHeightSeparatedShellBox.addChild({ render: () => [], invalidate() {} } as any);
 zeroHeightSeparatedShellBox.addChild(settledShell("zero-gap-2", 2));
-assert.match(plainRows(zeroHeightSeparatedShellBox).join("\n"), /^ {2}Ran 2 shell commands$/m, "zero-height assistant placeholders do not split a historical inspection group");
+assert.match(plainRows(zeroHeightSeparatedShellBox).join("\n"), /^ {2}Ran 2 shell commands: printf shell-1, printf shell-2$/m, "zero-height assistant placeholders do not split a historical inspection group");
 
 clearPointerExpandedMembers();
 const separatedShellBox = new Container();
@@ -354,8 +354,8 @@ const separator = tool(pi, "write", "shell-separator", { path: "separator.txt", 
 const rightShells = Array.from({ length: 4 }, (_, index) => settledShell(`right-shell-${index}`, index + 1));
 for (const member of [...leftShells, separator, ...rightShells]) separatedShellBox.addChild(member);
 const separatedRows = plainRows(separatedShellBox);
-assert.match(separatedRows.join("\n"), /^ {2}Ran 3 shell commands$/m);
-assert.match(separatedRows.join("\n"), /^ {2}Ran 4 shell commands$/m);
+assert.match(separatedRows.join("\n"), /^ {2}Ran 3 shell commands: printf shell-1, printf shell-2, …$/m);
+assert.match(separatedRows.join("\n"), /^ {2}Ran 4 shell commands: printf shell-1, printf shell-2, …$/m);
 const separatedGroups = (separatedShellBox as any).children.filter((child: unknown) => child instanceof InspectionGroupComponent) as InspectionGroupComponent[];
 assert.equal(separatedGroups.length, 2);
 for (const group of separatedGroups) {
@@ -377,7 +377,7 @@ const activeShellMembers = [
 ];
 for (const member of activeShellMembers) activeShellBox.addChild(member);
 const activeShellRows = plainRows(activeShellBox);
-assert.match(activeShellRows.join("\n"), /^⏺ Running 3 shell commands…$/m);
+assert.match(activeShellRows.join("\n"), /^⏺ Running 3 shell commands: echo settled, echo streaming…$/m);
 const activeShellGroup = (activeShellBox as any).children[0] as InspectionGroupComponent;
 const activeTargetY = activeShellRows.findIndex((line) => line.includes("$ echo"));
 activeShellGroup.handleMouse({ type: "click", button: "left", y: activeTargetY, width: 120 });
@@ -393,12 +393,12 @@ for (const member of restoredShells) {
 	restoredShellBox.addChild(member);
 }
 const restoredShellRows = plainRows(restoredShellBox);
-assert.match(restoredShellRows.join("\n"), /^ {2}Ran 3 shell commands$/m);
+assert.match(restoredShellRows.join("\n"), /^ {2}Ran 3 shell commands: printf shell-1, printf shell-2, …$/m);
 const restoredShellGroup = (restoredShellBox as any).children[0] as InspectionGroupComponent;
 const restoredY = restoredShellRows.findIndex((line) => line.includes("Ran 3 shell commands"));
 restoredShellGroup.handleMouse({ type: "click", button: "left", y: restoredY, width: 120 });
 assert.deepEqual(handlePointerExpansionInput("\x0f"), { consume: true });
-assert.match(plainRows(restoredShellBox).join("\n"), /^ {2}Ran 3 shell commands$/m, "restored rows cycle without stale expansion state");
+assert.match(plainRows(restoredShellBox).join("\n"), /^ {2}Ran 3 shell commands: printf shell-1, printf shell-2, …$/m, "restored rows cycle without stale expansion state");
 
 // Off: the shell call keeps its own row and the reads still aggregate, so a
 // command is visible as it happens without needing to expand the transcript.
@@ -492,7 +492,7 @@ const activeCommand = "for i in 1 2 3; do echo tick$i; sleep 1; done";
 const activeMember = tool(pi, "bash", "click-running", { command: activeCommand }, "tick1\ntick2", "streaming");
 activeBox.addChild(activeMember);
 const activeRows = plainRows(activeBox);
-assert.match(activeRows.join("\n"), /^⏺ Running 1 shell command…$/m);
+assert.match(activeRows.join("\n"), /^⏺ Running for i in 1 2 3; do echo tick\$i; sleep 1; done…$/m);
 const activeGroup = (activeBox as any).children[0] as InspectionGroupComponent;
 assert.ok(activeGroup instanceof InspectionGroupComponent);
 const targetY = activeRows.findIndex((line) => line.includes(`$ ${activeCommand}`));
@@ -555,7 +555,7 @@ const splitReadC = tool(pi, "read", "split-c", { path: "src/c.ts" }, "c", "settl
 splitBox.addChild(splitReadA);
 splitBox.addChild(splitBash);
 splitBox.addChild(splitReadC);
-assert.match(plainRows(splitBox).join("\n"), /Read 2 files, ran 1 shell command/);
+assert.match(plainRows(splitBox).join("\n"), /Read 2 files, ran echo split/);
 writeSettingsKey("groupShellCommands", false);
 clearSettingsCache();
 try {

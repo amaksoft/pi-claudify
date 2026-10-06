@@ -29,6 +29,10 @@ const FEATURE_REQUIREMENTS: Readonly<Record<CompatibilityFeatureId, readonly Cap
 	scheduledTasks: ["public:events", "public:tools", "public:send-user-message"],
 	askUserQuestion: ["public:tools", "public:tui"],
 	taskPresentation: ["tested:component-renderers", "tested:task-widget"],
+	detachedPresentation: TESTED_PRESENTATION,
+	// Deprecated alias id: same requirements; user-facing behavior merges
+	// in resolveCompatibilityFeatureEnabled (either side disables).
+	bgPresentation: TESTED_PRESENTATION,
 };
 
 export function buildActivationPlan(host: HostDescriptor, compatibility: CompatibilityConfig | undefined): ActivationPlan {

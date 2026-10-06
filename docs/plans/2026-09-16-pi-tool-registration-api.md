@@ -27,7 +27,11 @@ Expose `phase: "loading" | "runtime" | "disposed"` and throw a stable typed phas
 
 Support `registerTool(definition, { mode: "fallback" })`: the declaration is effective only while no exclusive declaration owns the name, becomes shadowed deterministically, and reappears when the exclusive owner is removed. This matches Claudify's additive Cron/Ask policy without check-then-register races.
 
-### Add presentation-only decoration
+### Add presentation-only decoration — SHIPPED in Pi 1.0.1 as `pi.registerToolRenderer()`
+
+Pi 1.0.1 implements this request as `registerToolRenderer(resolver)` with `(toolName, next) => renderers | undefined` chaining (`ToolRendererResolver`), per-extension scoping, and coverage of unregistered tools. Claudify migrates its core adapters to it behind a capability probe (`supportsToolRendererResolver`), keeping the legacy `ToolExecutionComponent` patch for older hosts until the migration is over. Details: `extensions/host/tool-renderer-resolver.ts`.
+
+Original request (kept for history):
 
 Provide `decorateTool({ name, owner?: "builtin" }, { renderCall, renderResult, promptSnippet, promptGuidelines })`. Decoration must never acquire execution ownership and must be generation-scoped. This would eliminate Claudify's built-in executable overrides and private prototype renderer patch.
 

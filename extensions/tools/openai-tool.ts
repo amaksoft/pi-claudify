@@ -15,6 +15,33 @@ export interface OpenAiToolRuntime {
 	summarize(text: string, max: number): string;
 }
 
+/** A track-owned presenter for openai-style tool rows. Either slot may be
+ * omitted; returning undefined passes to the next presenter. The built-in
+ * switch below is the final fallback, so tracks never edit this module to
+ * add a tool family — they register a presenter during activation. */
+export interface OpenAiStylePresenter {
+	readonly id: string;
+	summarizeCall?(name: string, args: any, theme: Theme, helpers: OpenAiSummarizeHelpers): string | undefined;
+	renderResult?(runtime: OpenAiToolRuntime, name: string, result: any, expanded: boolean, isPartial: boolean, theme: Theme, ctx: any): unknown;
+}
+
+export interface OpenAiSummarizeHelpers {
+	shortPath(path: string): string;
+	summarize(text: string, max: number): string;
+}
+
+const stylePresenters: OpenAiStylePresenter[] = [];
+
+export function registerOpenAiStylePresenter(presenter: OpenAiStylePresenter): void {
+	const index = stylePresenters.findIndex((entry) => entry.id === presenter.id);
+	if (index >= 0) stylePresenters[index] = presenter;
+	else stylePresenters.push(presenter);
+}
+
+export function openAiStylePresenters(): readonly OpenAiStylePresenter[] {
+	return stylePresenters;
+}
+
 export function summarizeOpenAiToolCall(
 	name: string,
 	args: any,
@@ -22,6 +49,10 @@ export function summarizeOpenAiToolCall(
 	shortPath: (path: string) => string,
 	summarize: (text: string, max: number) => string,
 ): string {
+	for (const presenter of stylePresenters) {
+		const owned = presenter.summarizeCall?.(name, args, theme, { shortPath, summarize });
+		if (owned !== undefined) return owned;
+	}
 	switch (name) {
 		case "apply_patch": {
 			const files = extractApplyPatchFiles(getRawStringArg(args, "patchText", "patch_text"));
@@ -133,13 +164,15 @@ function capturedResult(name: string, result: any, theme: Theme, ctx: any): stri
 		const count = getStringArg(ctx.args, "query") ? 1 : getStringArrayArg(ctx.args, "queries").length;
 		return count > 0 ? theme.fg("muted", `Did ${count} search${count === 1 ? "" : "es"}`) : theme.fg("success", "Done");
 	}
-	if (name === "Agent") return theme.fg("success", "Done");
 	return undefined;
 }
 
 export function renderOpenAiToolResult(runtime: OpenAiToolRuntime, name: string, result: any, expanded: boolean, isPartial: boolean, theme: Theme, ctx: any): any {
+	for (const presenter of stylePresenters) {
+		const owned = presenter.renderResult?.(runtime, name, result, expanded, isPartial, theme, ctx);
+		if (owned !== undefined) return owned;
+	}
 	if (isPartial) {
-		if (name === "Agent") return runtime.makeText(ctx.lastComponent, runtime.withBranch(theme.fg("dim", "Initializing…"), theme));
 		runtime.startBlink(ctx);
 		return runtime.makeText(ctx.lastComponent, runtime.withBranch(theme.fg("dim", `${humanizeToolName(name)}...`), theme));
 	}

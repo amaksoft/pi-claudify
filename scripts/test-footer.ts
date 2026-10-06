@@ -27,9 +27,15 @@ const {
 	patchEditorBorderColor,
 	projectNameFrom,
 	ProviderUsageSource,
+	physicalQuotaModel,
 	resolveFooterSettings,
 } = await import("../extensions/footer.ts");
 const { clearSettingsCache } = await import("../extensions/settings.ts");
+const { backgroundJobsSegmentFactory } = await import("../extensions/footer-bg.ts");
+const { registerFooterSegment } = await import("../extensions/footer.ts");
+// Production wiring lives in index.ts activation; tests declare the same
+// dependency explicitly so the footer core stays track-agnostic.
+registerFooterSegment(backgroundJobsSegmentFactory);
 const { registerSessionMetrics, releaseSessionMetrics } = await import("../extensions/session-metrics.ts");
 const { ClaudifyScreen, CLAUDIFY_SECTIONS } = await import("../extensions/claudify-screen.ts");
 
@@ -60,11 +66,14 @@ assert.deepEqual(defaults, {
 	effort: true,
 	cost: true,
 	sessionStats: true,
+	bgJobs: true,
 	timeMode: "active",
 	editorBorder: "gray",
 });
 assert.equal(resolveFooterSettings({ footerColor: "not-a-color" }).color, DEFAULT_FOOTER_COLOR, "invalid stored hex falls back");
 assert.equal(resolveFooterSettings({ footerStyle: "pi" }).style, "pi");
+assert.equal(resolveFooterSettings({}).bgJobs, true, "the background-jobs segment defaults on");
+assert.equal(resolveFooterSettings({ footerBgJobs: false }).bgJobs, false);
 assert.equal(resolveFooterSettings({}).effort, true, "the effort suffix defaults on");
 assert.equal(resolveFooterSettings({ footerEffort: false }).effort, false);
 assert.equal(resolveFooterSettings({ footerTimeMode: "wall" }).timeMode, "wall", "legacy wall-clock mode remains available explicitly");
@@ -156,6 +165,34 @@ const withSessionMetrics = buildFooterLine(
 	{ ...colored, cost: true, sessionStats: true },
 );
 assert.match(withSessionMetrics, /\$1\.25/, "session cost is additive and opt-in");
+
+const virtualCtx = {
+	model: { name: "Router", id: "router", provider: "virtual-team", api: "pi-virtual" },
+	sessionManager: {
+		getBranch: () => [
+			{ type: "message", message: { role: "user", content: [] } },
+			{ type: "message", message: { role: "assistant", provider: "anthropic", model: "claude-fable-5", api: "anthropic-messages", content: [] } },
+		],
+	},
+};
+const physical = physicalQuotaModel(virtualCtx);
+assert.equal(physical?.provider, "anthropic", "quota follows the physical provider behind a virtual selection");
+assert.equal(physical?.id, "claude-fable-5");
+assert.equal(
+	physicalQuotaModel({ model: { name: "Fable 5", id: "fable", provider: "anthropic", api: "anthropic-messages" }, sessionManager: { getBranch: () => [] } }),
+	undefined,
+	"non-virtual selections keep today's attribution untouched",
+);
+assert.equal(physicalQuotaModel({}), undefined, "unreadable context falls back to the selection model");
+const failedRoutingCtx = {
+	model: { name: "Router", id: "router", provider: "virtual-team", api: "pi-virtual" },
+	sessionManager: {
+		getBranch: () => [
+			{ type: "message", message: { role: "assistant", provider: "virtual-team", model: "router", api: "pi-virtual", content: [] } },
+		],
+	},
+};
+assert.equal(physicalQuotaModel(failedRoutingCtx), undefined, "failed routing leaves no physical model to attribute");
 assert.match(withSessionMetrics, /1m 5s · 2 prompts/, "elapsed time and prompt count share one segment");
 assert.match(
 	buildFooterLine({ ...fullData, sessionCost: 0, sessionCostAvailable: true }, { ...colored, cost: true }),
@@ -426,6 +463,53 @@ const rendered = component.render(200);
 assert.equal(rendered[0], "  project │ ⎇ main │ Fable 5 │ Ctx: 25% │ Week: 50% ▓▓▓▓▓░░░░░ → Reset: 08:00 PM");
 assert.deepEqual(rendered.slice(1), ["  a status line", "  MCP: 0/8 servers", "  z status"], "extension statuses render sorted, sanitized, and stripped of baked colors");
 assert.ok(component.render(20)[0].replace(/\x1b\[[0-9;]*m/g, "").length <= 20, "lines truncate to the viewport");
+
+// --- ClaudeFooterComponent: background jobs segment + done flash ------------
+
+const stripBgAnsi = (text: string): string => text.replace(/\x1b\[[0-9;]*m/g, "");
+const bgStatuses = new Map([["backgroundBashTmuxCommands", "2 background procs"]]);
+const bgData = { getGitBranch: () => "main", getExtensionStatuses: () => bgStatuses };
+const bgComponent = new ClaudeFooterComponent(bgData, {
+	getDirectory: () => "project",
+	getBranch: (data) => data.getGitBranch(),
+	getModelName: () => "Fable 5",
+	getEffort: () => null,
+	getContextPercent: () => 25,
+	getUsage: () => [],
+});
+setSettings({ footerColorMode: "monochrome" });
+const bgLine = stripBgAnsi(bgComponent.render(200)[0]);
+assert.ok(bgLine.includes("Bg: 2"), "live background count renders as a segment");
+const bgLines = bgComponent.render(200).map(stripBgAnsi);
+assert.ok(!bgLines.slice(1).some((line) => line.includes("background proc")), "consumed status key leaves the passthrough lines");
+bgStatuses.set("backgroundBashTmuxCommands", "1 background proc");
+bgComponent.render(200);
+bgStatuses.delete("backgroundBashTmuxCommands");
+const flashLine = stripBgAnsi(bgComponent.render(200)[0]);
+assert.ok(flashLine.includes("\u2190 1 done") && !flashLine.includes("Bg:"), "count decrease flashes instead of the count slot");
+// The real engine path: key cleared outright on last exit (no intermediate 1).
+bgStatuses.set("backgroundBashTmuxCommands", "2 background procs");
+bgComponent.render(200);
+bgStatuses.delete("backgroundBashTmuxCommands");
+const clearFlash = stripBgAnsi(bgComponent.render(200)[0]);
+assert.ok(clearFlash.includes("\u2190 2 done"), "cleared key flashes the full last count");
+bgStatuses.set("backgroundBashTmuxCommands", "nonsense value");
+const fallbackLines = bgComponent.render(200).map(stripBgAnsi);
+assert.ok(!fallbackLines[0].includes("Bg:"), "unparseable value renders no segment");
+assert.ok(fallbackLines.slice(1).some((line) => line.includes("nonsense value")), "unparseable value stays in passthrough");
+setSettings({ footerColorMode: "monochrome", footerBgJobs: false });
+const offLines = bgComponent.render(200).map(stripBgAnsi);
+assert.ok(!offLines[0].includes("Bg:"), "setting off renders no segment");
+assert.ok(offLines.slice(1).some((line) => line.includes("nonsense value")), "setting off keeps passthrough");
+setSettings({ footerColorMode: "monochrome" });
+bgStatuses.set("backgroundBashTmuxCommands", "1 background proc");
+bgComponent.render(200);
+bgStatuses.delete("backgroundBashTmuxCommands");
+assert.ok(stripBgAnsi(bgComponent.render(200)[0]).includes("\u2190 1 done"), "flash arms");
+setSettings({ footerColorMode: "monochrome", footerBgJobs: false });
+assert.ok(!stripBgAnsi(bgComponent.render(200)[0]).includes("\u2190"), "setting off clears a live flash");
+setSettings({ footerColorMode: "monochrome" });
+setSettings({ footerColorMode: "monochrome" });
 let timedRepaints = 0;
 const timedComponent = new ClaudeFooterComponent(fakeFooterData, {
 	getDirectory: () => "project",
@@ -578,5 +662,45 @@ for (const char of "00bfff") screen.handleInput(char);
 screen.handleInput("enter");
 assert.equal(JSON.parse(readFileSync(settingsPath, "utf8")).footerColor, "#00BFFF", "valid hex commits normalized");
 assert.deepEqual(changed.at(-1), ["footerColor", "#00BFFF"], "the commit reaches onSettingChange for live reflection");
+
+// --- footer segment registry: tracks contribute, never edit buildFooterLine ---
+const orderedLine = stripAnsi(buildFooterLine(
+	{ ...fullData, sessionCost: 1.25, sessionCostAvailable: true, sessionElapsedMs: 65_000, promptCount: 2 },
+	{ ...colored, cost: true, sessionStats: true },
+	undefined,
+	["Bg: 2", "Probe: on"],
+));
+assert.ok(
+	orderedLine.indexOf("$1.25") < orderedLine.indexOf("Bg: 2")
+	&& orderedLine.indexOf("Bg: 2") < orderedLine.indexOf("2 prompts"),
+	"extra segments render after cost and before session stats",
+);
+let disposedProbe = false;
+registerFooterSegment({
+	id: "probe-disposable",
+	create: () => ({
+		render: () => null,
+		dispose: () => { disposedProbe = true; },
+	}),
+});
+registerFooterSegment({
+	id: "probe-throwing",
+	create: () => ({
+		render: () => { throw new Error("boom"); },
+	}),
+});
+const probeSources = {
+	getDirectory: () => "project",
+	getBranch: () => null,
+	getModelName: () => "Fable 5",
+	getEffort: () => null,
+	getContextPercent: () => 0,
+	getUsage: () => [],
+};
+const probeComponent = new ClaudeFooterComponent(fakeFooterData, probeSources);
+const probeLine = stripAnsi(probeComponent.render(200)[0]);
+assert.ok(probeLine.includes("Fable 5"), "a throwing segment never blanks the footer line");
+probeComponent.dispose();
+assert.equal(disposedProbe, true, "component disposal propagates to segment instances");
 
 console.log("footer and input-border tests passed");

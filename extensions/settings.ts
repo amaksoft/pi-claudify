@@ -58,6 +58,9 @@ export interface SettingsFile {
 	footerEffort?: boolean;
 	footerCost?: boolean;
 	footerSessionStats?: boolean;
+	/** Rows moved per mouse-wheel tick in /tui fullscreen. Overrides Pi's fullscreenWheelScrollLines when set. */
+	fullscreenWheelRows?: number;
+	footerBgJobs?: boolean;
 	footerTimeMode?: "active" | "wall";
 	editorBorder?: "gray" | "thinking";
 	accentColor?: "claude" | "theme" | `#${string}`;

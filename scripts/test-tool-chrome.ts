@@ -313,8 +313,11 @@ agentInFlight.updateResult(
 );
 const agentInFlightPlain = plainRender(agentInFlight);
 assert.match(agentInFlightPlain, /^⏺ Agent\(Count lines with 'fox'\)$/m);
-assert.match(agentInFlightPlain, /^ {2}⎿ {2}Initializing…$/m);
-assert.doesNotMatch(agentInFlightPlain, /Agent\.\.\.|running command|Running…|ctrl\+b/);
+// In-flight rows show live details.activity (subagents-presentation.ts owns
+// Agent rows): strictly more informative than the old static Initializing…,
+// matching Claude Code's live rows and pi-subagents' own spinner+activity.
+assert.match(agentInFlightPlain, /^ {2}⎿ {2}running command…$/m);
+assert.doesNotMatch(agentInFlightPlain, /Agent\.\.\.|Initializing…|Running…|ctrl\+b/);
 
 const agent = component(pi, "Agent", "chrome-agent", { description: "Count lines with 'fox'" });
 agent.updateResult(
@@ -323,8 +326,11 @@ agent.updateResult(
 );
 const agentPlain = plainRender(agent);
 assert.match(agentPlain, /^⏺ Agent\(Count lines with 'fox'\)$/m);
-assert.match(agentPlain, /^ {2}⎿ {2}Done$/m);
-assert.doesNotMatch(agentPlain, /ctrl\+o to expand|lines returned|child result|final response/);
+// Finished runs preview their result, not bare "Done" (a completed tool
+// call is not a completed agent) — the original complaint behind the
+// subagents presenter. Empty results still read Done (see below).
+assert.match(agentPlain, /^ {2}⎿ {2}child result$/m);
+assert.doesNotMatch(agentPlain, /ctrl\+o to expand|lines returned|final response/);
 
 // The shared collapsed OpenAI-style result path also drops the uncaptured hint.
 const codeSearch = component(pi, "code_search", "chrome-code-search", { query: "render tool row" });

@@ -2,6 +2,12 @@ import { createBashToolDefinition, type BashToolDetails, type Theme } from "@ear
 
 import { bashHeaderCommand } from "../bash-preview.ts";
 import { classifyBashCommandForDisplay, emptyBashResultLabel } from "../domain/bash-display.ts";
+import {
+	collapsedHint,
+	nonBlankLines,
+	settledVerdict,
+	type VerdictSegment,
+} from "../render/grammar.verdict.ts";
 import type { ToolPresentationAdapter } from "../domain/tool-presentation.ts";
 import type { VisualPreviewMode } from "../visual-preview.ts";
 import type { WidthAwareToolRuntime } from "./presenter-runtime.ts";
@@ -9,6 +15,10 @@ import type { WidthAwareToolRuntime } from "./presenter-runtime.ts";
 export interface BashToolRuntime extends WidthAwareToolRuntime {
 	hostSettings(cwd: string, ctx: any): { shellPath?: string; commandPrefix?: string };
 	semanticEnabled(): boolean;
+	/** Detached-background presentation (any background engine); fail-open when false. */
+	detachedEnabled(): boolean;
+	/** Running-row detach hint when a background-capable bash is registered, else null. */
+	detachHint(): string | null;
 	shortPath(path: string, cwd: string): string;
 	errorText(theme: Theme, text: string): string;
 	visualPreview(text: string, width: number, rows: number, mode: VisualPreviewMode, theme: Theme, style: "dim" | "error" | "claudeError", options: Record<string, unknown>): string;
@@ -123,6 +133,14 @@ function cachedRunningPreview(ctx: any, runtime: BashToolPresentationRuntime, ou
 	return text;
 }
 
+/**
+ * Detached-background recognition lives in the verdict grammar module
+ * (single parser); re-exported here so existing importers keep working.
+ */
+import { parseDetached } from "../render/grammar.verdict.ts";
+export { parseDetached as detectDetachedBash } from "../render/grammar.verdict.ts";
+export type { DetachedBashInfo, DetachedBashOutcome } from "../render/grammar.verdict.ts";
+
 /** Creates the Bash renderer without coupling it to a schema or execution. */
 export function createBashToolPresentation(runtime: BashToolPresentationRuntime) {
 	return {
@@ -136,7 +154,20 @@ export function createBashToolPresentation(runtime: BashToolPresentationRuntime)
 				const path = runtime.shortPath(semantic.path, ctx.cwd ?? runtime.cwd);
 				return semantic.rangeLabel ? `${path} ${theme.fg("muted", `(${semantic.rangeLabel})`)}` : path;
 			});
-			return runtime.makeText(ctx.lastComponent, runtime.header(semantic?.label ?? "Bash", summary, theme, runtime.statusDot(ctx, theme)));
+			// Hotkey hint: only when a background-capable bash is registered, so the
+			// row never advertises a key that does nothing. Foreground calls only.
+			// Background launches say so in the summary instead, so collapsed
+			// rows stay distinguishable without expanding.
+			const bgLaunched = args.background === true || args.run_in_background === true;
+			const bgHint = (runtime.detachedEnabled?.() ?? false) && !bgLaunched
+				? runtime.detachHint?.() ?? null
+				: null;
+			const headerSummary = bgHint
+				? `${summary} ${theme.fg("muted", `· ${bgHint}`)}`
+				: bgLaunched
+					? `${summary} ${theme.fg("muted", "· background")}`
+					: summary;
+			return runtime.makeText(ctx.lastComponent, runtime.header(semantic?.label ?? "Bash", headerSummary, theme, runtime.statusDot(ctx, theme)));
 		},
 		renderResult(result: any, { expanded, isPartial }: any, theme: Theme, ctx: any) {
 			const details = result.details as BashToolDetails | undefined;
@@ -152,7 +183,8 @@ export function createBashToolPresentation(runtime: BashToolPresentationRuntime)
 				const previewLimit = runtime.collapsedLimit();
 				const previewRevision = runtime.revision();
 				const bucket = Math.floor(output.length / RUNNING_PREVIEW_QUANTUM);
-				const key = `bash-running:${bucket}:${lineCount}:${previewMode}:${previewLimit}:${previewRevision}`;
+				const hintFlag = (runtime.detachedEnabled?.() ?? false) && runtime.detachHint?.() ? 1 : 0;
+				const key = `bash-running:${bucket}:${lineCount}:${previewMode}:${previewLimit}:${previewRevision}:${hintFlag}`;
 				return runtime.widthAware(ctx.lastComponent, key, (width) => {
 					// Read live inside the rebuild: a settings change bumps revision and
 					// re-renders this cached row without re-invoking renderResult, so the
@@ -162,21 +194,43 @@ export function createBashToolPresentation(runtime: BashToolPresentationRuntime)
 					const liveRevision = runtime.revision();
 					const liveBucket = Math.floor(output.length / RUNNING_PREVIEW_QUANTUM);
 					let text = theme.fg("warning", `${running}... (${lineCount} lines)`);
+					// Re-read live inside the rebuild (see comment above): engine presence
+					// can flip on reload without bumping bucket or revision.
+					const detachHint = (runtime.detachedEnabled?.() ?? false) ? runtime.detachHint?.() ?? null : null;
+					if (detachHint) text += ` ${theme.fg("muted", `(${detachHint})`)}`;
 					if (lineCount > 0) text += `\n${cachedRunningPreview(ctx, runtime, output, liveBucket, liveRevision, width, liveLimit, liveMode, theme)}`;
 					return runtime.renderLines(runtime.withBranch(text, theme), width);
 				}, runtime.revision);
 			}
-			const nonEmpty = output.split("\n").filter((line: string) => line.trim().length > 0);
+			// Hint presence doubles as the capability leg: detachHint is non-null
+			// exactly when a background-capable bash is registered (same probe).
+			const detached = (runtime.detachedEnabled?.() ?? false)
+				? parseDetached(details, rawOutput, runtime.detachHint?.() != null)
+				: undefined;
+			if (detached) {
+				runtime.stopBlink(ctx);
+				runtime.setStatus(ctx, "pending");
+				const jobLine = detached.jobId ? `job ${detached.jobId}` : "background task";
+				const body = [
+					`${theme.fg("warning", "Running in background")} ${theme.fg("muted", `· ${jobLine}`)}`,
+					...(detached.logPath ? [theme.fg("dim", `log: ${detached.logPath}`)] : []),
+				].join("\n");
+				return runtime.makeText(ctx.lastComponent, runtime.withBranch(body, theme));
+			}
+			const nonEmpty = nonBlankLines(output);
 			runtime.stopBlink(ctx);
 			runtime.setStatus(ctx, ctx.isError ? "error" : "success");
 			const exitMatch = output.match(/(?:exit code:|exited with code)\s+(\d+)/i);
 			const exitCode = exitMatch ? Number.parseInt(exitMatch[1], 10) : null;
 			const isError = ctx.isError || (exitCode !== null && exitCode !== 0);
-			let text = isError
-				? runtime.errorText(theme, exitCode !== null ? `Exit ${exitCode}` : "Failed")
-				: semantic?.kind === "read"
-					? `${theme.fg("success", "Read")} ${theme.fg("muted", `${nonEmpty.length} line${nonEmpty.length === 1 ? "" : "s"}`)}`
-					: `${theme.fg("success", "Done")}${theme.fg("muted", ` (${nonEmpty.length} lines)`)}`;
+			const paintVerdictSegment = (segment: VerdictSegment): string =>
+				segment.tone === "error" ? runtime.errorText(theme, segment.text) : theme.fg(segment.tone, segment.text);
+			let text = settledVerdict({
+				isError,
+				exitCode,
+				lineCount: nonEmpty.length,
+				kind: semantic?.kind,
+			}).map(paintVerdictSegment).join("");
 			if (details?.truncation?.truncated) text += theme.fg("warning", " [truncated]");
 			const mode = runtime.outputMode();
 			if (mode === "summary") return runtime.makeText(ctx.lastComponent, runtime.withBranch(text, theme));
@@ -190,7 +244,8 @@ export function createBashToolPresentation(runtime: BashToolPresentationRuntime)
 				}, runtime.revision);
 			}
 			if (!expanded && nonEmpty.length > 0) {
-				const hint = semantic?.suppressCollapsedHint ? "" : theme.fg("muted", " (ctrl+o to expand)");
+				const hint = collapsedHint(semantic?.suppressCollapsedHint === true)
+					.map((segment) => theme.fg(segment.tone, segment.text)).join("");
 				return runtime.makeText(ctx.lastComponent, runtime.withBranch(`${text}${hint}`, theme));
 			}
 			if (!expanded) return runtime.makeText(ctx.lastComponent, runtime.withBranch(text, theme));

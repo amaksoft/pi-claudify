@@ -5,7 +5,7 @@
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 import type { InspectionGroupFrame } from "../inspection-group.ts";
-import { describeInspectionsActive, describeInspectionsDone } from "../inspection-summary.ts";
+import { describeInspectionsActive, describeInspectionsDone, inspectionExtraLabels } from "../inspection-summary.ts";
 import { WRAP_MARK } from "../terminal-sanitize.ts";
 import { inspectionKind, isMcpToolExecution, mcpServersInGroup, readOnlyToolGroupLimit } from "./inspection-candidates.ts";
 import { summarizeReadOnlyInspectionTool } from "./inspection-targets.ts";
@@ -59,6 +59,7 @@ export function renderSettledInspectionGroup(group: unknown[], width: number, ru
 	const summary = `${CLAUDE_COLLAPSED_INDENT}${WRAP_MARK}${runtime.workedLineForeground()}${describeInspectionsDone(
 		group.map(inspectionKind),
 		mcpServersInGroup(group),
+		inspectionExtraLabels(group),
 	)}${RESET}`;
 	return frameInspectionLines(fitInspectionLine(summary, width, runtime), width, runtime);
 }
@@ -68,12 +69,27 @@ export function renderActiveInspectionGroup(group: unknown[], width: number, run
 	const targets = group.filter((entry) => !isMcpToolExecution(entry));
 	const shown = targets.slice(0, readOnlyToolGroupLimit());
 	const remaining = targets.length - shown.length;
+	// Single foreground bash: the header itself advertises detach (silent
+	// commands never grow per-call running rows to carry the hint).
+	const loneBash = group.length === 1 && inspectionKind(group[0]) === "bash";
+	const detachHint = loneBash ? runtime.detachHintText?.() ?? runtime.bgDetachHintText?.() ?? null : null;
 	const core: string[] = [`${WRAP_MARK}${CLAUDE_TOOL_GLYPH} ${describeInspectionsActive(
 		group.map(inspectionKind),
 		mcpServersInGroup(group),
-	)}`];
-	for (const entry of shown) {
-		core.push(`${runtime.toolRule()}${CLAUDE_RESULT_PREFIX}${TRANSPARENT_RESET}${WRAP_MARK}${summarizeReadOnlyInspectionTool(entry, runtime)}`);
+		inspectionExtraLabels(group),
+	)}${detachHint ? ` (${detachHint})` : ""}`];
+	// Identical background launches collapse (`⎿ $ sleep 90 ×5`) instead of
+	// repeating the same target row once per call.
+	const summarized = shown.map((entry) => summarizeReadOnlyInspectionTool(entry, runtime));
+	const collapsed: { text: string; count: number }[] = [];
+	for (const text of summarized) {
+		const last = collapsed[collapsed.length - 1];
+		if (last && last.text === text) last.count += 1;
+		else collapsed.push({ text, count: 1 });
+	}
+	for (const row of collapsed) {
+		const suffix = row.count > 1 ? ` ×${row.count}` : "";
+		core.push(`${runtime.toolRule()}${CLAUDE_RESULT_PREFIX}${TRANSPARENT_RESET}${WRAP_MARK}${row.text}${suffix}`);
 	}
 	if (remaining > 0) {
 		core.push(`${runtime.toolRule()}${CLAUDE_RESULT_PREFIX}${TRANSPARENT_RESET}${WRAP_MARK}… +${remaining} more`);

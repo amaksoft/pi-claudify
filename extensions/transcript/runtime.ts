@@ -23,6 +23,10 @@ export interface InspectionGroupRuntime {
 	borderLine(width: number): string;
 	syncToolBackgroundMode(): void;
 	toolBackgroundMode(): ToolBackgroundMode;
+	/** Detached hint for single-bash group headers; absent when no background engine. */
+	detachHintText?(): string | null;
+	/** Deprecated alias of detachHintText (one release). */
+	bgDetachHintText?(): string | null;
 	toolRule(): string;
 	workedLineForeground(): string;
 }

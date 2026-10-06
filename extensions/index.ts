@@ -42,7 +42,8 @@ import { debugDiagnostic } from "./debug.ts";
 import { bumpDiffPresentationEpoch, diffCard } from "./diff-card.ts";
 import { markPointerExpandedMembers } from "./expansion-coordinator.ts";
 import { deferGenerationRelease } from "./lifecycle/generation-handoff.ts";
-import { installClaudeFooter, patchEditorBorderColor, releaseEditorBorderColor } from "./footer.ts";
+import { installClaudeFooter, patchEditorBorderColor, registerFooterSegment, releaseEditorBorderColor } from "./footer.ts";
+import { backgroundJobsSegmentFactory } from "./footer-bg.ts";
 import { registerClaudifyCommand } from "./lifecycle/claudify-command.ts";
 import { MessageLifecycle } from "./lifecycle/message-lifecycle.ts";
 import { registerPointerExpansionLifecycle } from "./lifecycle/pointer-expansion.ts";
@@ -97,8 +98,10 @@ function registerFullscreenTuiLazy(pi: ExtensionAPI): void {
 import {
 	describeInspectionsActive,
 	describeInspectionsDone,
+	registerInspectionLabelProvider,
 	type InspectionKind,
 } from "./inspection-summary.ts";
+import { bashLabelsInGroup } from "./transcript/inspection-candidates.ts";
 import { describeEdit, type SummaryEmphasis } from "./mutation-summary.ts";
 import { anchorFramedHeights } from "./mouse-layout.ts";
 import { patchAssistantMessageRenderer, releaseAssistantMessageRenderer } from "./host/assistant-message-patch.ts";
@@ -140,6 +143,7 @@ import {
 	releaseToolRowLayout,
 } from "./host/tool-component-patches.ts";
 import { installToolPresentations, installToolRendererPatch, markToolRendererPatchRetiring, releaseToolRendererPatch } from "./host/tool-renderer-patch.ts";
+import { createToolRendererResolver, supportsToolRendererResolver } from "./host/tool-renderer-resolver.ts";
 import { applyAccentOverride as applyAccentOverrideHost } from "./host/theme-accent.ts";
 import { createThemeOrchestrator } from "./host/theme-orchestrator.ts";
 import {
@@ -331,7 +335,9 @@ import { TaskPresentationController } from "./tools/task-presentation.ts";
 import { renderApplyPatchCall as renderApplyPatchCallWithRuntime, renderApplyPatchResult as renderApplyPatchResultWithRuntime, type ApplyPatchRuntime } from "./tools/apply-patch-tool.ts";
 import { renderGenericToolCall as renderGenericCall, renderGenericToolResult as renderGenericResult, type GenericToolRuntime } from "./tools/generic-tool.ts";
 import { mcpServerName, renderMcpToolResult as renderMcpResult } from "./tools/mcp-tool.ts";
-import { renderOpenAiToolResult as renderOpenAiResult, summarizeOpenAiToolCall as summarizeOpenAiCall } from "./tools/openai-tool.ts";
+import { registerOpenAiStylePresenter, renderOpenAiToolResult as renderOpenAiResult, summarizeOpenAiToolCall as summarizeOpenAiCall } from "./tools/openai-tool.ts";
+import { subagentsPresenter } from "./tools/subagents-presentation.ts";
+import { bgToolPresenter } from "./tools/bg-tool-presentation.ts";
 export { mcpServerName } from "./tools/mcp-tool.ts";
 import { firstImageBlock, renderReadImage } from "./tools/read-image.ts";
 
@@ -479,8 +485,17 @@ function plural(count: number, noun: string): string {
  * always reflects the current settings/theme, matching the pre-extraction
  * behavior of reading module-level state directly at render time.
  */
+// Module-scope detach-hint probe (set on every activate). The probe closure
+// needs the activate-scoped `pi`, so it cannot live here directly — but a
+// bare reference to it from module scope is a ReferenceError that silently
+// dissolves grouping. Never reference activate bindings from this function.
+let currentDetachHintProbe: (() => string | null) | null = null;
+
 function inspectionGroupRuntime(pointerOwner?: object): InspectionGroupRuntime {
 	return {
+		...(currentDetachHintProbe
+			? { detachHintText: currentDetachHintProbe, bgDetachHintText: currentDetachHintProbe }
+			: {}),
 		isPresentationOverrideSkipped: presentationOverrideSkipped,
 		onPointerExpand: (members) => markPointerExpandedMembers(members, undefined, pointerOwner),
 		shortPath,
@@ -513,7 +528,8 @@ function patchGlobalToolBorders(owner: object, pointerOwner: object, taskPresent
 			presentationSkipped: presentationOverrideSkipped,
 			hideToolRow: (value) => taskPresentation?.shouldHideRow(value) === true,
 			isInspectionCandidate: (value) => isInspectionGroupCandidate(value, presentationOverrideSkipped),
-			ensureInspectionGroups: (container, width) => ensureInspectionGroupsWithRuntime(container, inspectionGroupRuntime(pointerOwner), width),
+			ensureInspectionGroups: (container, width) =>
+				ensureInspectionGroupsWithRuntime(container, inspectionGroupRuntime(pointerOwner), width),
 			renderStackedBash: (container, width) => renderWithStackedConsecutiveBash(container, width, { isBlankLine }),
 			settingsRevision: getSettingsRevision,
 			presentationRevision: currentToolPresentationRevision,
@@ -1178,12 +1194,31 @@ function activateCurrentTestedPi(
 		testedPiPatchBroker.claimSessionHandoff(runtime.owner, String(key));
 	};
 	let executionOwners = new Map<string, ToolOwnerKind>();
+	// Live lookup (not cached): the call row renders before any execution event
+	// fires, so a flag refreshed on tool_execution_start would always miss the
+	// first call. getAllTools is a sync metadata read; renderCall runs once
+	// per tool call, never per frame.
+	const detachHintText = (): string | null => {
+		try {
+			const tools = (pi as any).getAllTools?.();
+			if (!Array.isArray(tools)) return null;
+			const bash = tools.find((tool: any) => String(tool?.name ?? "").toLowerCase() === "bash");
+			const properties = (bash?.parameters as any)?.properties;
+			const present = !!properties && typeof properties === "object" &&
+				"run_in_background" in properties;
+			return present ? "ctrl+b to background" : null;
+		} catch {
+			return null;
+		}
+	};
+	currentDetachHintProbe = detachHintText;
 	const refreshExecutionOwners = (knownTools?: unknown[], failClosed = false): void => {
 		const observed = readToolOwners(() => knownTools ?? (pi as any).getAllTools?.());
 		if (observed) executionOwners = observed;
 		else if (failClosed) executionOwners = new Map();
 	};
 	try { refreshExecutionOwners(); } catch { /* registry is unavailable during factory loading on current Pi */ }
+
 	const taskPresentation = featureEnabled("taskPresentation")
 		&& featureEnabled("toolPresentation")
 		&& taskPresentationEnvironmentEnabled(process.env.PI_CLAUDIFY_TASK_PRESENTATION)
@@ -1231,15 +1266,57 @@ function activateCurrentTestedPi(
 		workedDurationText,
 		enabled: () => true,
 	});
+	// Pi >= 1.0.1 path: presentation-only decoration through the host's
+	// resolver chain. No prototype patch, no execution re-registration, and
+	// disposal is scoped to this extension record by the host. The legacy
+	// ToolExecutionComponent patch (patchToolExecutionRenderers below) stays
+	// intact for older hosts; retiring it later means switching this flag off
+	// and deleting host/tool-renderer-patch.ts, while this block stands alone.
+	// installCompatibleToolPresentations / mark / release calls elsewhere are
+	// safe no-ops on this path: without installToolRendererPatch there is no
+	// broker owner state, so they install and release nothing.
+	const useToolRendererResolver = supportsToolRendererResolver(pi);
+	// Shared with the catch-fallback below; the legacy installer keeps its own
+	// identical inline closure so that file stays untouched.
+	const resolverCanOverrideSelfShell = (name: string, definition: unknown): boolean => {
+		const directOwner = classifyToolOwner(definition);
+		return directOwner !== "external" && (directOwner === "builtin" || executionOwners.get(name.toLowerCase()) === "builtin");
+	};
+	const registerResolverToolPresentations = (): void => {
+		try {
+			(pi as any).registerToolRenderer(createToolRendererResolver({
+				isCurrent: () => runtime.isCurrent(),
+				presentationSkipped: toolPresentationSkipped,
+				shouldUseGeneric: (name) => isTaskToolName(name)
+					? taskPresentation?.supports(name) === true
+					: shouldUseGenericToolRenderer(name),
+				shouldUseNativeCall: (_name, row) => taskPresentation?.shouldUseNativeResult(row) === true,
+				shouldUseNativeResult: (_name, row) => taskPresentation?.shouldUseNativeResult(row) === true,
+				renderApplyCall: (args, theme, ctx) => renderApplyPatchCall(args, theme, ctx, (path) => shortPath(ctx.cwd ?? process.cwd(), path)),
+				renderApplyResult: (result, options, theme, ctx) => renderApplyPatchResult(result, !!options?.isPartial, theme, ctx),
+				renderGenericCall: (name, args, theme, ctx) => taskPresentation?.renderCall(name) ?? renderGenericToolCall(name, args, theme, ctx),
+				renderGenericResult: (name, result, options, theme, ctx) => taskPresentation?.renderResult(name, !!ctx?.isError) ?? renderGenericToolResult(name, result, options, theme, ctx),
+				canOverrideSelfShell: resolverCanOverrideSelfShell,
+				diagnostic: (key, error) => debugDiagnostic(key, error),
+				presentations: () => presentationAdapters(),
+			}));
+		} catch (error) {
+			debugDiagnostic("tool-renderer-resolver", error);
+			patchToolExecutionRenderers(toolRendererOwner, resolverCanOverrideSelfShell, taskPresentation);
+		}
+	};
 	if (featureEnabled("toolBackground")) patchToolRowIndent(fallbackSanitizerOwner);
-	if (featureEnabled("toolPresentation")) patchToolExecutionRenderers(
-		toolRendererOwner,
-		(name, definition) => {
-			const directOwner = classifyToolOwner(definition);
-			return directOwner !== "external" && (directOwner === "builtin" || executionOwners.get(name.toLowerCase()) === "builtin");
-		},
-		taskPresentation,
-	);
+	if (featureEnabled("toolPresentation")) {
+		if (useToolRendererResolver) registerResolverToolPresentations();
+		else patchToolExecutionRenderers(
+			toolRendererOwner,
+			(name, definition) => {
+				const directOwner = classifyToolOwner(definition);
+				return directOwner !== "external" && (directOwner === "builtin" || executionOwners.get(name.toLowerCase()) === "builtin");
+			},
+			taskPresentation,
+		);
+	}
 	if (featureEnabled("footer")) patchEditorBorderColor(runtime.owner);
 	if (featureEnabled("diffPresentation")) applyDiffPalette();
 	if (featureEnabled("assistantMessages")) messageLifecycle.register(pi, {
@@ -1263,6 +1340,10 @@ function activateCurrentTestedPi(
 				&& settings.footerTimeMode !== "wall";
 		},
 	});
+	// Feature-track footer segments register here, never inside footer.ts:
+	// the background-jobs segment owns its flash state, timers, and status-key
+	// consumption, and degrades to null (native passthrough) when disabled.
+	if (featureEnabled("footer")) registerFooterSegment(backgroundJobsSegmentFactory);
 	if (featureEnabled("banner")) registerBanner(pi);
 	if (featureEnabled("promptPointer")) registerPromptPointer(pi);
 
@@ -1422,6 +1503,8 @@ function activateCurrentTestedPi(
 		getSettingsRevision,
 		hashText,
 		bashSemanticDisplayEnabled,
+		detachedDisplayEnabled: () => featureEnabled("detachedPresentation"),
+		detachHint: () => detachHintText(),
 		bashOutputMode,
 		bashRunningPreview,
 		bashCollapsedLimit,
@@ -1450,6 +1533,19 @@ function activateCurrentTestedPi(
 		buildEditPreviewText,
 		diffPresentationEnabled: () => featureEnabled("diffPresentation"),
 	});
+
+	// Openai-style tool families are owned by track presenters, never by the
+	// shared switch: subagents rows by the subagents track, tmux/bg summaries
+	// by the background-shell track. Registration is idempotent by id, so
+	// re-running activation (reload, new contexts) cannot duplicate entries.
+	// Add future families here — never inside openai-tool.ts.
+	registerOpenAiStylePresenter(subagentsPresenter);
+	registerOpenAiStylePresenter(bgToolPresenter);
+	// Group-header label families follow the same rule: the bash-label
+	// provider lives in the transcript track, and the renderers compose every
+	// registered provider. Add future families here — never in
+	// inspection-render.ts.
+	registerInspectionLabelProvider({ id: "bash", labelsFor: bashLabelsInGroup });
 
 	// Presentation is selected by the observable call/result contract, not by the
 	// package that owns execution. Externally-owned compatible tools therefore
@@ -1493,7 +1589,18 @@ function activateCurrentTestedPi(
 		for (const tool of allTools) {
 			// Public ToolInfo is metadata-only. Record provable MCP identity for
 			// presentation, but never replace execution from private fields.
-			if (isMcpToolCandidate(tool)) noteMcpTool(tool, runtime.owner);
+			if (!isMcpToolCandidate(tool)) continue;
+			// Pi >= 1.0.1 exposes authoritative tool namespaces; older hosts
+			// keep label-derived grouping inside noteMcpTool.
+			let namespace: unknown;
+			try {
+				namespace = typeof (pi as any)?.getNamespace === "function"
+					? (pi as any).getNamespace((tool as any)?.name)?.name
+					: undefined;
+			} catch {
+				namespace = undefined;
+			}
+			noteMcpTool(tool, runtime.owner, namespace);
 		}
 	};
 

@@ -23,6 +23,7 @@ export interface FooterSettings {
 	readonly colorMode: FooterColorMode;
 	readonly color: string;
 	readonly usageBar: boolean;
+readonly bgJobs: boolean;
 	readonly effort: boolean;
 	readonly cost: boolean;
 	readonly sessionStats: boolean;
@@ -109,6 +110,7 @@ export function resolveFooterSettings(values: SettingsFile): FooterSettings {
 		colorMode,
 		color,
 		usageBar: values.footerUsageBar !== false,
+bgJobs: values.footerBgJobs !== false,
 		effort: values.footerEffort !== false,
 		cost: values.footerCost !== false,
 		sessionStats: values.footerSessionStats !== false,
@@ -232,6 +234,34 @@ export interface ProviderUsageSourceOptions {
 	readonly fetcher: UsageFetch;
 	readonly onUpdate: () => void;
 	readonly now?: () => number;
+}
+
+/** Pi's virtual-model API marker. Compared by literal so older hosts without
+ * virtual models simply never match; no version import needed. */
+const VIRTUAL_MODEL_API = "pi-virtual";
+
+/** Physical model behind a virtual selection, for quota attribution.
+ * Display keeps the virtual selection name; spend is metered against the
+ * provider that actually served the latest successful response. Anything
+ * unreadable falls back to the selection model (today's behavior). */
+export function physicalQuotaModel(ctx: any): any | undefined {
+	try {
+		const selection = ctx?.model;
+		if (!selection || (selection as any)?.api !== VIRTUAL_MODEL_API) return undefined;
+		const branch = ctx?.sessionManager?.getBranch?.() ?? ctx?.sessionManager?.getEntries?.() ?? [];
+		if (!Array.isArray(branch)) return undefined;
+		for (let index = branch.length - 1; index >= 0; index--) {
+			const message = (branch[index] as any)?.message;
+			if (message?.role === "assistant"
+				&& typeof message?.provider === "string"
+				&& (message as any)?.api !== VIRTUAL_MODEL_API) {
+				return { ...selection, provider: message.provider, id: message.model ?? selection.id, api: message.api ?? selection.api };
+			}
+		}
+	} catch {
+		// Unreadable history keeps today's selection-model attribution.
+	}
+	return undefined;
 }
 
 function usageTarget(provider: string): UsageTarget | null {
@@ -558,9 +588,44 @@ function resetTime(resetsAt: number | null): string | null {
 	}
 }
 
-export function buildFooterLine(data: FooterLineData, settings: FooterSettings, theme?: any): string {
+/** Extra statusline segments contributed by feature tracks. Core segments stay
+ * inline in buildFooterLine; tracks contribute here instead of editing it:
+ * register a factory during activation and render into the Bg-style slot
+ * (after cost, before session stats). Returning null omits the segment. */
+export interface FooterSegmentInput {
+	readonly settings: FooterSettings;
+	readonly palette: SegmentPalette;
+	readonly paint: (color: string, text: string) => string;
+	readonly statuses: ReadonlyMap<string, string>;
+}
+
+export interface FooterSegment {
+	render(input: FooterSegmentInput): string | null;
+	/** Claim a status key so it never leaks into the passthrough lines below. */
+	consumeStatus?(key: string, value: string, input: FooterSegmentInput): boolean;
+	dispose?(): void;
+}
+
+export interface FooterSegmentFactory {
+	readonly id: string;
+	create(requestRender?: () => void): FooterSegment;
+}
+
+const footerSegmentFactories: FooterSegmentFactory[] = [];
+
+export function registerFooterSegment(factory: FooterSegmentFactory): void {
+	const at = footerSegmentFactories.findIndex((entry) => entry.id === factory.id);
+	if (at >= 0) footerSegmentFactories[at] = factory;
+	else footerSegmentFactories.push(factory);
+}
+
+function footerPaint(settings: FooterSettings, theme?: any): { palette: SegmentPalette; paint: (color: string, text: string) => string } {
 	const palette = paletteFor(settings, theme);
-	const paint = (color: string, text: string): string => (color ? `${color}${text}${palette.reset}` : text);
+	return { palette, paint: (color: string, text: string): string => (color ? `${color}${text}${palette.reset}` : text) };
+}
+
+export function buildFooterLine(data: FooterLineData, settings: FooterSettings, theme?: any, extraSegments: readonly string[] = []): string {
+	const { palette, paint } = footerPaint(settings, theme);
 	const segments: string[] = [];
 
 	if (data.directory) segments.push(paint(palette.dir, data.directory));
@@ -591,7 +656,8 @@ export function buildFooterLine(data: FooterLineData, settings: FooterSettings, 
 	if (settings.cost && data.sessionCostAvailable === true && typeof data.sessionCost === "number") {
 		segments.push(paint(palette.separator, `$${data.sessionCost.toFixed(2)}`));
 	}
-	if (settings.sessionStats && typeof data.promptCount === "number" && data.promptCount > 0) {
+	for (const extra of extraSegments) segments.push(extra);
+if (settings.sessionStats && typeof data.promptCount === "number" && data.promptCount > 0) {
 		const duration = formatSessionDuration(data.sessionElapsedMs ?? 0);
 		segments.push(paint(palette.separator, `${duration} · ${data.promptCount} ${data.promptCount === 1 ? "prompt" : "prompts"}`));
 	}
@@ -677,6 +743,7 @@ export class ClaudeFooterComponent {
 	private repaintTimer?: ReturnType<typeof setInterval>;
 	private readonly unsubscribeMetrics?: () => void;
 	private lastStatusFingerprint: string | null = null;
+	private readonly extraSegments: FooterSegment[];
 	private sortedStatuses: Array<readonly [string, string]> = [];
 
 	constructor(footerData: FooterDataLike, sources: FooterSources, theme?: unknown, requestRender?: () => void, metricsOwner?: object) {
@@ -685,6 +752,7 @@ export class ClaudeFooterComponent {
 		this.theme = theme;
 		this.requestRender = requestRender;
 		this.metricsOwner = metricsOwner;
+		this.extraSegments = footerSegmentFactories.map((factory) => factory.create(requestRender));
 		if (requestRender) {
 			this.unsubscribeMetrics = subscribeSessionMetrics(() => {
 				this.syncRepaintTimer(resolveFooterSettings(readSettings().values));
@@ -714,12 +782,31 @@ export class ClaudeFooterComponent {
 	dispose(): void {
 		if (this.repaintTimer) clearInterval(this.repaintTimer);
 		this.repaintTimer = undefined;
+		for (const segment of this.extraSegments) {
+			try {
+				segment.dispose?.();
+			} catch {
+			// A failing extra must not break footer teardown.
+			}
+		}
 		this.unsubscribeMetrics?.();
 		this.sources.dispose?.();
 	}
 
 	render(width: number): string[] {
 		const settings = resolveFooterSettings(readSettings().values);
+		const { palette, paint } = footerPaint(settings, this.theme);
+		const extensionStatuses = this.footerData.getExtensionStatuses();
+		const segmentInput: FooterSegmentInput = { settings, palette, paint, statuses: extensionStatuses };
+		const extras: string[] = [];
+		for (const segment of this.extraSegments) {
+			try {
+				const text = segment.render(segmentInput);
+				if (text) extras.push(text);
+			} catch {
+				// A failing extra segment must never blank the footer.
+			}
+		}
 		const session = getSessionMetrics(this.metricsOwner);
 		this.syncRepaintTimer(settings);
 		const line = buildFooterLine(
@@ -739,6 +826,7 @@ export class ClaudeFooterComponent {
 			},
 			settings,
 			this.theme,
+			extras,
 		);
 		const lines = [truncateToWidth(line, width, "…")];
 		// pi's stock footer surfaces other extensions' ctx.ui.setStatus lines;
@@ -753,7 +841,14 @@ export class ClaudeFooterComponent {
 		}
 		const statuses = this.sortedStatuses;
 		const dim = settings.colorMode === "monochrome" ? "" : GRAY;
-		for (const [, text] of statuses) {
+		for (const [key, text] of statuses) {
+			if (this.extraSegments.some((segment) => {
+				try {
+					return segment.consumeStatus?.(key, text, segmentInput) === true;
+				} catch {
+					return false;
+				}
+			})) continue;
 			const status = sanitizeStatusText(text);
 			if (!status) continue;
 			lines.push(truncateToWidth(dim ? `  ${dim}${status}${RESET}` : `  ${status}`, width, "…"));
@@ -783,7 +878,7 @@ export function installClaudeFooter(ctx: any, pi?: any, metricsOwner?: object): 
 			&& typeof registry.getApiKeyForProvider === "function"
 			&& typeof globalThis.fetch === "function"
 			? new ProviderUsageSource({
-				getModel: () => ctx.model,
+				getModel: () => physicalQuotaModel(ctx) ?? ctx.model,
 				modelRegistry: registry,
 				fetcher: globalThis.fetch.bind(globalThis),
 				onUpdate: () => {

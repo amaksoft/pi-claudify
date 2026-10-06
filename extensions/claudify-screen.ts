@@ -92,7 +92,9 @@ type EditableSettingsKey =
 	| "footerEffort"
 	| "footerCost"
 	| "footerSessionStats"
+	| "footerBgJobs"
 	| "footerTimeMode"
+	| "fullscreenWheelRows"
 	| "editorBorder"
 	| "accentColor"
 	| "userMessageBox";
@@ -486,12 +488,28 @@ const FOOTER_ROWS: readonly ImmediateRowDefinition[] = [
 		defaultValue: true,
 	},
 	{
+		kind: "boolean",
+		key: "footerBgJobs",
+		label: "Background jobs",
+		description: "Shows live background shell count with a done flash (bg-shell).",
+		defaultValue: true,
+	},
+	{
 		kind: "enum",
 		key: "footerTimeMode",
 		label: "Time metric",
 		description: "Active counts foreground-agent work; wall preserves elapsed session age.",
 		values: ["active", "wall"],
 		defaultValue: "active",
+	},
+	{
+		kind: "number",
+		key: "fullscreenWheelRows",
+		label: "Mouse wheel rows",
+		description: "Rows moved per wheel tick in /tui fullscreen. Follows Pi's fullscreenWheelScrollLines when unset.",
+		defaultValue: 1,
+		min: 1,
+		max: 10,
 	},
 	{
 		kind: "enum",

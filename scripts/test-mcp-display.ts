@@ -249,7 +249,10 @@ both.addChild(tool(pi, "read", "x1", { path: "sample.txt" }, "hello"));
 both.addChild(tool(pi, "plane_get_me", "x2", {}, "{}"));
 both.addChild(tool(pi, "mcp", "x3", { tool: "forgejo_get_my_user_info", args: "{}" }, "{}"));
 both.addChild(tool(pi, "bash", "x4", { command: "echo hi" }, "hi"));
-assert.match(plain(both.render(140)), /^ {2}Read 1 file, called plane, forgejo 2 times, ran 1 shell command$/m);
+// Bash contributes its verbatim command (display priority: given name >
+// short command > derived label); count phrasing survives only for
+// read-like commands and kind-only summaries (see lines 69-71 above).
+assert.match(plain(both.render(140)), /^ {2}Read 1 file, called plane, forgejo 2 times, ran echo hi$/m);
 
 // --- An aggregated MCP call must be recoverable in full. ---------------------
 

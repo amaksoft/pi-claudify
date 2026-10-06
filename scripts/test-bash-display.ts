@@ -222,7 +222,7 @@ activeContainer.addChild(runningTool(pi, "read", "run-read-2", { path: "src/two.
 activeContainer.addChild(runningTool(pi, "bash", "run-bash", { command: "git log --oneline -3" }));
 
 const activeRendered = activeContainer.render(120).map((line) => line.replace(/\x1b\]8;;[^\x07]*\x07/g, "").replace(/\x1b\[[0-9;]*m/g, "").replace(/\s+$/, "")).join("\n");
-assert.match(activeRendered, /^⏺ Reading 2 files, running 1 shell command…$/m);
+assert.match(activeRendered, /^⏺ Reading 2 files, running git log --oneline -3…$/m);
 assert.match(activeRendered, /^ {2}⎿ {2}src\/one\.ts$/m);
 assert.match(activeRendered, /^ {2}⎿ {2}src\/two\.ts$/m);
 assert.match(activeRendered, /^ {2}⎿ {2}\$ git log --oneline -3$/m);
@@ -249,8 +249,9 @@ function renderOne(component: ToolExecutionComponent, width = 120): string {
 // Collapsed, the command is not merely clipped — it is absent: the aggregate
 // replaces the row entirely. So expansion is the ONLY way back to the text.
 const clipped = renderOne(completedTool(pi, "bash", "clip-1", { command: LONG_COMMAND }, "done"));
-assert.match(clipped, /Ran 1 shell command/, "collapsed shows the aggregate");
-assert.ok(!clipped.includes("rm -rf"), "collapsed shows nothing of the command");
+assert.match(clipped, /^ {2}Ran rm -rf \/Users\/dev\/work\/build-artifacts\/stale-cache-directory *$/m, "collapsed names the truncated label");
+assert.doesNotMatch(clipped, /install\.sh/, "the full command stays absent from the aggregate");
+assert.ok(clipped.includes("rm -rf"), "collapsed names the truncated label, not nothing");
 
 // Expanded (ctrl+o): the whole command, wrapped across rows rather than clipped.
 // setExpanded is exactly what pi's ctrl+o handler calls (setToolsExpanded walks
@@ -305,7 +306,7 @@ assert.ok(
 // …and collapsing again returns to the aggregate rather than stranding the
 // expanded text in a collapsed row.
 latched.setExpanded(false);
-assert.match(renderOne(latched), /Ran 1 shell command/, "re-collapsing restores the aggregate");
+assert.match(renderOne(latched), /Ran rm -rf \/Users\/dev\/work\/build-artifacts\/stale-cache-directory/, "re-collapsing restores the aggregate");
 
 // A command is model output: escape sequences must never reach the row. A bare
 // SGR reset is not enough — ESC(0 survives it and redraws later rows as line art.
@@ -351,7 +352,11 @@ assert.match(c1Audit, /true \\u\{009D\}0; printf C1 \\u\{009C\}/, "C1 OSC/ST con
 // path becomes the one place aggregation stays unrecoverable.
 const SEMANTIC_COMMAND = "nl -ba apps/backend/src/lib/notification-unsubscribe.ts | sed -n '1,200p'";
 const semanticCollapsed = renderOne(completedTool(pi, "bash", "sem-1", { command: SEMANTIC_COMMAND }, "1\tline"));
-assert.match(semanticCollapsed, /Ran 1 shell command/, "a read-like command still aggregates");
+assert.match(semanticCollapsed, /Ran 1 shell command/, "a read-like command still aggregates (no raw leak)");
+// Explicit names override the semantic guard.
+const SEMANTIC_NAMED = "read backend notifications";
+const semanticNamed = renderOne(completedTool(pi, "bash", "sem-2", { command: SEMANTIC_COMMAND, name: SEMANTIC_NAMED }, "1\tline"));
+assert.match(semanticNamed, /Ran read backend notifications/, "explicit name beats the semantic guard");
 
 const semanticOpen = completedTool(pi, "bash", "sem-2", { command: SEMANTIC_COMMAND }, "1\tline");
 semanticOpen.setExpanded(true);

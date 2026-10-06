@@ -37,6 +37,9 @@ export const COMPATIBILITY_FEATURE_IDS = [
 	"scheduledTasks",
 	"askUserQuestion",
 	"taskPresentation",
+	"detachedPresentation",
+	// Deprecated alias: pre-rename configs keep working.
+	"bgPresentation",
 ] as const;
 
 export type CompatibilityFeatureId = (typeof COMPATIBILITY_FEATURE_IDS)[number];
@@ -144,6 +147,14 @@ export function resolveCompatibilityFeatureEnabled(
 	featureId: CompatibilityFeatureId,
 ): boolean {
 	if (config?.enabled === false) return false;
+	// Deprecated alias: pre-rename `bgPresentation` configs govern
+	// `detachedPresentation` (either side disabling disables the feature,
+	// nothing else is affected).
+	if (featureId === "bgPresentation" || featureId === "detachedPresentation") {
+		if (config?.features?.["bgPresentation"] === false) return false;
+		if (config?.features?.["detachedPresentation"] === false) return false;
+		return true;
+	}
 	return config?.features?.[featureId] !== false;
 }
 

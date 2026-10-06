@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 import extension from "../extensions/index.ts";
 import {
@@ -9,8 +11,23 @@ import {
 	createFullscreenController,
 	createFullscreenMarker,
 	fillFullscreenLines,
+	resolveFullscreenWheelRows,
 	stripMountedIdleStatus,
 } from "../extensions/fullscreen-tui.ts";
+import { clearSettingsCache } from "../extensions/settings.ts";
+import { trackedTempDir } from "./sandbox-home.ts";
+
+// Wheel-distance resolution reads the user settings file: sandbox HOME so the
+// runner's own configuration can never change the asserted defaults.
+const settingsSandbox = trackedTempDir("claudify-fullscreen-settings");
+const settingsHome = join(settingsSandbox, "home");
+mkdirSync(join(settingsHome, ".pi"), { recursive: true });
+process.env.HOME = settingsHome;
+const settingsPath = join(settingsHome, ".pi", "settings.json");
+function setWheelSettings(values: Record<string, unknown>): void {
+	writeFileSync(settingsPath, JSON.stringify(values));
+	clearSettingsCache();
+}
 
 const marker = "\x1b_pi:claudify-fullscreen:test\x07";
 const capturedMouseEnable = "\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h";
@@ -359,5 +376,22 @@ assert.equal(commandTui.writes.filter((write) => write === capturedMouseDisable)
 assert.equal(commandTui.writes.filter((write) => write === NORMAL_SCREEN_CLEAR).length, 1, "quit clears only the restored viewport before returning to the shell");
 assert.equal(commandTui.writes.at(-1), NORMAL_SCREEN_CLEAR, "quit cleanup runs after later extensions' queued repaints");
 assert.deepEqual(widgetOperations.at(-1), [FULLSCREEN_WIDGET_KEY, "clear"], "quit shutdown removes the marker widget");
+
+// --- fullscreenWheelRows -----------------------------------------------------
+
+assert.equal(resolveFullscreenWheelRows(), 1, "wheel distance defaults to one row");
+setWheelSettings({ fullscreenWheelRows: 4 });
+assert.equal(resolveFullscreenWheelRows(), 4, "explicit wheel rows win");
+setWheelSettings({ fullscreenWheelRows: 99 });
+assert.equal(resolveFullscreenWheelRows(), 10, "wheel rows clamp to the maximum");
+setWheelSettings({ fullscreenWheelRows: "fast" });
+assert.equal(resolveFullscreenWheelRows(), 1, "non-numeric wheel rows fall back to one");
+setWheelSettings({});
+assert.equal(resolveFullscreenWheelRows(() => ({ fullscreenWheelScrollLines: 3 })), 3, "Pi's wheel setting is honored when ours is unset");
+assert.equal(resolveFullscreenWheelRows(() => ({ fullscreenWheelScrollLines: "auto" })), 1, "Pi's auto acceleration has no fixed-step equivalent, so it falls back to one");
+assert.equal(resolveFullscreenWheelRows(() => { throw new Error("no host"); }), 1, "unreadable host settings never break scrolling");
+setWheelSettings({ fullscreenWheelRows: 2 });
+assert.equal(resolveFullscreenWheelRows(() => ({ fullscreenWheelScrollLines: 5 })), 2, "explicit wheel rows beat Pi's setting");
+setWheelSettings({});
 
 console.log("fullscreen TUI tests passed");

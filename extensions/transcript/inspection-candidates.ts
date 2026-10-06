@@ -3,6 +3,8 @@
 // clause (read/grep/ls/bash/mcp) each one contributes to the header.
 
 import { settingsFeatureEnabled } from "../domain/compatibility.ts";
+import { sanitizeToolText } from "../terminal-sanitize.ts";
+import { classifyBashCommandForDisplay } from "../domain/bash-display.ts";
 import { isMcpToolName } from "../host/tool-discovery.ts";
 import type { InspectionKind } from "../inspection-summary.ts";
 import { readSettings } from "../settings.ts";
@@ -77,4 +79,45 @@ export function inspectionKind(value: unknown): InspectionKind {
 /** Servers addressed by the group's MCP calls, in first-seen order. */
 export function mcpServersInGroup(group: unknown[]): string[] {
 	return group.filter(isMcpToolExecution).map(mcpServerForComponent);
+}
+
+/**
+ * Human labels for the group's bash calls, in first-seen order. Reads the
+ * bg-shell `displayName` result-details contract first (given name > short
+ * command > derived label), falling back to args for results without
+ * details (e.g. background launches whose details are undefined).
+ */
+export function bashLabelsInGroup(group: unknown[]): string[] {
+	const labels: string[] = [];
+	for (const value of group) {
+		const record = snapshotToolExecution(value);
+		if (!record || record.name !== "bash") continue;
+		// Headers never carry raw model text: sanitize every label the same
+		// way per-row rendering does (bidi overrides, zero-width splits).
+		const clean = (text: string): string => sanitizeToolText(text).trim().slice(0, 60);
+		const args = record.args as Record<string, unknown>;
+		// Background launches stay marked in collapsed summaries: the aggregate
+		// otherwise reads identically to foreground runs.
+		const launchedBackground = args["background"] === true || args["run_in_background"] === true;
+		const mark = (label: string): string => (launchedBackground ? `${label} · background` : label);
+		const details = (record.result as { details?: { displayName?: unknown } } | null)?.details;
+		const fromDetails = typeof details?.displayName === "string" ? clean(details.displayName) : "";
+		if (fromDetails.length > 0) {
+			labels.push(mark(fromDetails));
+			continue;
+		}
+		const given = typeof args["name"] === "string" ? clean(args["name"] as string) : "";
+		if (given.length > 0) {
+			labels.push(mark(given));
+			continue;
+		}
+		const command = typeof args["command"] === "string" ? (args["command"] as string) : "";
+		// Read-like commands keep semantic display (friendly target, no raw
+		// command leak): skip derived labels so the count phrasing survives.
+		// Explicit names (details.displayName, args.name) always win.
+		if (classifyBashCommandForDisplay(command)?.kind === "read") continue;
+		const firstLine = clean(command.split("\n")[0]);
+		labels.push(mark(firstLine.length > 0 ? firstLine : "shell command"));
+	}
+	return labels;
 }
